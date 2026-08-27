@@ -41,8 +41,11 @@ _CTX = dict(model=None, analysis='figures', tag=None, publish=False)
 
 
 def _save(fig, name, **cfg):
+    # the published copy carries the model prefix: docs/figures/ is shared across models, so
+    # `surfaces_pulse.png` would collide the moment Korencic is run.
+    pub = f"{_CTX['model']}_{name}" if _CTX['publish'] else None
     p = paths.save_figure(fig, _CTX['model'], _CTX['analysis'], name, tag=_CTX['tag'],
-                          publish=(name if _CTX['publish'] else None), **cfg)
+                          publish=pub, **cfg)
     plt.close(fig)
     return p
 
@@ -144,7 +147,6 @@ def fig_ptc_examples(pt, model, target, mode):
     old = np.asarray(pt['old'])
     fac = np.asarray(pt['factors'], float)
     names = [str(p) for p in pt['params']]
-    tw_base = np.asarray(pt['base_twist'])
     hi = 5                                       # x1.26
     have = [np.isfinite(grids[i, hi]).any() for i in range(grids.shape[0])]
     ex = _pick_examples(names, pt['twist_span'], valid=have)
@@ -161,8 +163,7 @@ def fig_ptc_examples(pt, model, target, mode):
 
     for r, i in enumerate(ex):
         g = grids[i, hi]
-        phase_map(axes[r][0], old, doses, base, title='base' if r == 0 else None,
-                  twist=tw_base)
+        phase_map(axes[r][0], old, doses, base, title='base' if r == 0 else None)
         phase_map(axes[r][1], old, doses, g,
                   title=f'x{fac[hi]:g}' if r == 0 else None)
         d = ((g - base + 0.5) % 1.0) - 0.5

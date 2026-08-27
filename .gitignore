@@ -1,0 +1,24 @@
+# generated outputs & caches (never versioned; results synced separately)
+out/
+__pycache__/
+*.pyc
+*.pyo
+*.nbi
+*.nbc
+.numba_cache/
+*.log
+slurm-*.out
+
+# npz/pickle intermediates are regenerable -- EXCEPT anything under fixtures/,
+# which is a tracked input the cluster needs.
+*.npz
+*.pkl
+!fixtures/**
+
+# editor / OS cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.tmp

@@ -348,12 +348,11 @@ def fig_direction_examples(cf, model, target, mode, n_states=3):
         axes[r][n_states + 2].set_yscale('log')
         axes[r][n_states + 2].set_xlabel('old phase')
         if r == 0:
-            axes[r][n_states + 2].set_title('$\Delta$ PTC (shared scale)', fontsize=9)
+            axes[r][n_states + 2].set_title(r'$\Delta$ PTC (shared scale)', fontsize=9)
         plt.colorbar(im, ax=axes[r][n_states + 2], fraction=0.046)
     axes[0][0].legend(fontsize=7, loc='best')
-    fig.suptitle(f"{model} / {target} ({mode}): the SAME nudge (eps={eps:g}) seen in the limit "
-                 f"cycle and in the PTC
-"
+    fig.suptitle(f"{model} / {target} ({mode}): the SAME nudge (eps={eps:g}) seen in the "
+                 f"limit cycle and in the PTC\n"
                  f"dLC / dPTC in the row labels are measured on the ADAPTIVE engine; "
                  f"{engine_note}", fontsize=11)
     fig.tight_layout()

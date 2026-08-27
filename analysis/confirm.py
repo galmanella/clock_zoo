@@ -43,6 +43,66 @@ import analysis  # noqa: F401
 import paths
 
 
+def _full_params(model, names, values):
+    """A COMPLETE parameter dict: the model's base, with `names` overridden by `values`.
+
+    `names` is the gauge-quotiented subset the coupling analysis kept, not the whole parameter
+    set, so a dict built from it alone is missing entries the RHS needs."""
+    pd = dict(model.get_parameters())
+    pd.update({n: float(v) for n, v in zip(names, values)})
+    return pd
+
+
+def dense_render(model_name, target, mode='pulse', n_phase=32):
+    """Add a dense JAX render of an EXISTING confirm run, in place.
+
+    This is what saving `param_values` buys: the expensive adaptive verification does not have
+    to be repeated to get a better picture of the same parameter sets. Reads the npz, computes,
+    writes it back."""
+    import jax
+    from models import get_model
+    from engine.orbit import make_orbit_finder
+    from engine.ptc import make_ptc, grid_points, phase_or_nan, valid_mask, recommended_skip
+    from analysis.ptc_sens import load_grid
+
+    model = get_model(model_name)
+    fp = paths.out_path(model_name, 'coupling', f'confirm_{target}_{mode}.npz')
+    cf = dict(np.load(fp, allow_pickle=True))
+    names = [str(x) for x in cf['param_names']]
+    dgrid, ddt = load_grid(model_name, target, mode)
+    skip_p, _mu, _r = recommended_skip(model, tol=1e-2, verbose=False)
+    f, _sv = make_ptc(model, target, mode=mode, readout='raw', skip_p=skip_p,
+                      dt=ddt or 0.02, track_min=True)
+    fj = jax.jit(f)
+    gph, gdz = grid_points(n_phase, dgrid)
+    find, _s = make_orbit_finder(model)
+
+    def one(params):
+        x0, _T, _C, st = find(params)
+        if x0 is None:
+            return None, st
+        z, mn = fj(model.jax_params(params), x0, gph, gdz)
+        p, _a = phase_or_nan(np.asarray(z))
+        p = np.where(valid_mask(np.asarray(mn)), p, np.nan)
+        return p.reshape(len(dgrid), n_phase).T, 'ok'
+
+    db, st = one(model.get_parameters())
+    if db is None:
+        raise SystemExit(f'base orbit not usable ({st})')
+    grids = []
+    for pv in np.asarray(cf['param_values']):
+        g, st = one(_full_params(model, names, pv))
+        grids.append(g if g is not None else np.full_like(db, np.nan))
+    cf.update(dense_doses=np.asarray(dgrid), dense_old=np.arange(n_phase) / n_phase,
+              dense_base=db.astype(np.float32),
+              dense_ptc_grids=np.array(grids, dtype=np.float32),
+              dense_dt=float(ddt or 0.02), dense_engine='jax')
+    paths.savez(fp, **cf)
+    print(f"[confirm] dense render {n_phase}x{len(dgrid)} added for "
+          f"{len(grids)} displacement(s) -> {fp}")
+    return cf
+
+
 def displaced(model, names, v, eps):
     """Base parameters displaced by exp(eps * v) in log space, v unit-norm."""
     base = model.get_parameters()
@@ -201,7 +261,11 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
             return p.reshape(len(dgrid), nph).T          # (n_phase, n_dose)
 
         db = dense_ptc(model.get_parameters())
-        dg = [dense_ptc({n: float(val) for n, val in zip(names, pv)}) for pv in PARAMSETS]
+        # start from the FULL base dict and override the kept names: `names` is the gauge-
+        # quotiented subset the coupling analysis kept (15 of Almeida's 18), so a dict built
+        # from it alone is missing parameters the model needs and the RHS raises on the first
+        # one it cannot find.
+        dg = [dense_ptc(_full_params(model, names, pv)) for pv in PARAMSETS]
         dense = dict(dense_doses=np.asarray(dgrid), dense_old=np.arange(nph) / nph,
                      dense_base=db.astype(np.float32),
                      dense_ptc_grids=np.array([g if g is not None else
@@ -259,7 +323,12 @@ def main(argv=None):
     ap.add_argument('--eps', type=float, default=0.15)
     ap.add_argument('--n-phases', type=int, default=16)
     ap.add_argument('--n-dose', type=int, default=3)
+    ap.add_argument('--dense-only', action='store_true',
+                    help='add/refresh the dense JAX render of an existing run, no re-verify')
     a = ap.parse_args(argv)
+    if a.dense_only:
+        dense_render(a.model, a.target, a.mode)
+        return 0
     run(a.model, a.target, a.mode, a.eps, a.n_phases, a.n_dose)
     return 0
 

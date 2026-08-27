@@ -302,6 +302,19 @@ the PTC by 3.0% rms — an actual PTC-per-LC ratio **11x** that of the coupled c
 positive control moves both, so the measurement is working rather than reporting noise; and the
 two signs agree closely (0.0300 / 0.0305), so this is not a one-sided artifact of the step.
 
+![The same nudge in LC and in PTC](docs/figures/almeida_direction_examples_BMAL1_pulse.png)
+
+**Read that figure carefully, because it does not say what a quick glance suggests.** In row 1
+the dashed +/-eps cycles are invisible under the black base curve, and the PTC Delta is a small
+dipole localised at the singularity. In rows 2-3 the cycles visibly separate and the PTC Delta
+is broad and strong. So the decoupled direction does **not** move the PTC more in absolute
+terms -- it moves it about 3.5x LESS (0.028 vs 0.098). What makes it decoupled is that it moves
+the limit cycle 38-57x less than that. The claim is a RATIO, and the figure shows the ratio,
+not a large PTC excursion.
+
+The localisation is itself the expected signature: a red/blue dipole at the singularity is the
+phase singularity being displaced, which is exactly what an isochron change looks like.
+
 **The magnitude is overstated by the linear analysis, and that matters.** rho is a ratio of
 squared responses, so the comparable linear prediction for the amplitude ratio is
 `sqrt(122.3/0.01) ~ 140x` against an actual **11x** — the jacobian overstates by roughly 13x.

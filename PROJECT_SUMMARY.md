@@ -16,9 +16,16 @@ gradient descent recovers 132/132 parameters *from the truth* and stalls at ~26/
 distance*. That "from-distance locality" blocked the actual scientific question. So: change
 the model, not the optimizer, and re-ask it on models small enough to optimise.
 
-**Status.** The stack is built and gated. Objective (a) is answered for Almeida; (b) is in
-progress. The most consequential findings so far are methodological, and each one changed a
-scientific answer:
+**Status.** The stack is built and gated. Objectives (a) and (b) are answered for Almeida.
+
+**The headline scientific result so far:** for Almeida at base, there IS a parameter
+combination that the PTC constrains and the limit cycle leaves ~11x freer -- confirmed by
+finite displacement on an independent adaptive solver, with controls (§3.6). No single
+parameter shows this (best ratio 1.04); it only appears in a COMBINATION, which is why a
+per-parameter sensitivity scatter misses it entirely. This is the opposite of the Mirsky
+result, where no direction decoupled.
+
+The most consequential methodological findings, each of which changed a scientific answer:
 
 - **Almeida's PTC type-transition dose is a property of the integrator step until you refine
   it.** At `dt=0.02`, 3 of 8 targets appeared to reset; refined, **7 of 8 do**.
@@ -27,6 +34,9 @@ scientific answer:
   "sensitivities" (5e98, 1e11) before being caught.
 - **Almeida is far less gauge-degenerate than Mirsky** — 2 flat directions of 18, versus 13 of
   132 — so its identifiability question is essentially unconfounded by units.
+- **A jacobian ratio overstates decoupling.** The linear analysis predicted ~140x for the
+  direction above; a finite displacement gives 11x. The ordering survives, the magnitude does
+  not — so the finite-displacement number is the one to quote.
 
 ---
 
@@ -211,12 +221,7 @@ direction carries the largest PTC response (1.000) while the 1st carries 0.375.
    axes (see the figure), so the quadrant split is a median cut through a tight cluster, not
    an order-of-magnitude separation like Mirsky's. "4 in the prize quadrant" should not be
    read as "4 decoupled parameters".
-2. **The candidate directions are unconfirmed.** Directions 9, 10 and 12 (LC sigma 0.015–0.064,
-   PTC response 0.18–0.25, dominated by `gamma_BP`/`ke`/`gamma_CP`/`kd`/`ker`) are the
-   shortlist. A finite displacement along each must be pushed through the independent adaptive
-   engine before any of it is cited. In `input_screen` the jacobian-derived version of exactly
-   this claim was wrong by ~80 orders of magnitude and only the finite-displacement evidence
-   survived.
+2. **The candidate direction has now been confirmed — see §3.6.**
 3. **3 of 18 parameters were dropped**, lacking a converged orbit at both difference factors.
 
 **One thing that IS solid**: after the gauge projection, the two exactly-null directions of
@@ -279,7 +284,38 @@ it**. This is the concrete reason the per-parameter scatter in §3.4 under-repor
 sharpens the contrast with Mirsky, where the equivalent search was done over `J_LC`'s singular
 directions rather than as an extremal problem.
 
-It still needs the finite-displacement confirmation of §5.1 before it is cited as a result.
+### 3.6 CONFIRMED by finite displacement — and the magnitude is NOT
+
+`analysis/confirm.py`: step a finite `eps = 0.15` in log-parameter space along each direction,
+recompute the limit cycle on the orbit solver and the PTC on **`engine/reference.py`, the
+independent adaptive engine** that shares no numerical machinery with the JAX engine the
+jacobian came from. Both signs, three directions, 12 phases x 3 doses.
+
+| direction | rho | dLC | dPTC (rms) | dPTC (max) | **actual PTC per LC** |
+|---|---|---|---|---|---|
+| **decoupled** (candidate) | 122.3 | **0.0017** | **0.0303** | 0.052 | **18.1** |
+| **coupled** (control) | 0.01 | 0.0725 | 0.1182 | 0.42 | **1.64** |
+| **stiffest LC** (positive control) | — | 0.1077 | 0.1325 | 0.46 | 1.23 |
+
+**The ordering is real.** The candidate direction moves the limit cycle by 0.17% while moving
+the PTC by 3.0% rms — an actual PTC-per-LC ratio **11x** that of the coupled control. The
+positive control moves both, so the measurement is working rather than reporting noise; and the
+two signs agree closely (0.0300 / 0.0305), so this is not a one-sided artifact of the step.
+
+**The magnitude is overstated by the linear analysis, and that matters.** rho is a ratio of
+squared responses, so the comparable linear prediction for the amplitude ratio is
+`sqrt(122.3/0.01) ~ 140x` against an actual **11x** — the jacobian overstates by roughly 13x.
+The direction is genuinely decoupled; it is **not** decoupled by two orders of magnitude. Quote
+the finite-displacement number.
+
+This is precisely why the confirmation step is mandatory rather than a formality. It is also a
+much milder version of the `input_screen` failure, where the linear step was wrong by ~80
+orders of magnitude — the difference being that here the jacobian is finite-difference on an
+adaptive-verified engine rather than autodiff through fixed-step RK4.
+
+**So, for Almeida at base: PTC data does constrain a parameter combination that the limit cycle
+leaves ~11x freer.** That is a positive answer to the project's question for this model, at this
+operating point, for this one probe — and the opposite of what Mirsky gave.
 
 ---
 

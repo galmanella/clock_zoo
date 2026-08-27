@@ -25,11 +25,17 @@ and adds no new integration. Three levels, cheapest first.
    the whole reason this repo exists.
 
 2. LOCAL COUPLING MATRIX
-   Stack the per-factor responses into J_LC and J_PTC (settings x parameters, in log-parameter
-   space), PROJECT OUT THE GAUGE, and compare their row spaces by PRINCIPAL ANGLES. Small
-   angles mean the two measurements constrain the same combinations; a large angle is a
-   direction one sees and the other does not. Also reports, for each right-singular direction
-   of J_LC ordered by LC-sensitivity, how strongly J_PTC responds -- the sloppy-tail question.
+   Central-difference jacobians of the FULL observables with respect to log-parameters --
+   J_LC over the phase-aligned cycle profiles plus the period, J_PTC over the PTC surface --
+   with the gauge PROJECTED OUT, compared by PRINCIPAL ANGLES between their row spaces. Small
+   angles mean the two measurements constrain the same parameter combinations; a large angle
+   is a direction one sees and the other does not. Also reports, for each right-singular
+   direction of J_LC ordered by LC-sensitivity, how strongly J_PTC responds.
+
+   THE JACOBIANS COME FROM THE RAW GRIDS, not from the per-factor sensitivity scalars. That
+   shortcut gives a matrix of rank <= n_factors, so most parameter directions are invisible to
+   it by under-determination alone, and they then read as "LC-sloppy but PTC-responsive" --
+   a fabricated identifiability prize. See `build_jacobians`.
 
    THE GAUGE PROJECTION IS NOT OPTIONAL. A gauge direction is exactly LC-null by construction
    while moving a fixed-absolute-dose PTC (the dose axis rescales), so leaving it in
@@ -88,6 +94,73 @@ def align(lc, pt):
     return common, np.array(li), np.array(pi)
 
 
+def build_jacobians(lc, pt, names, li, pi, ok, hi=5, lo=3):
+    """Central-difference jacobians of the FULL observables w.r.t. log-parameters.
+
+        J_LC  : (n_states * m + 1) x n_param   phase-aligned cycle profiles, plus the period
+        J_PTC : (n_phase * n_dose) x n_param   the PTC surface itself
+
+    BUILT FROM THE RAW GRIDS, NOT FROM THE SCALAR SUMMARIES. The obvious shortcut is to stack
+    the per-factor sensitivity SCALARS into a (n_factor x n_param) matrix -- and it is wrong in
+    a way that manufactures exactly the result this analysis is looking for. With 9 factors and
+    18 parameters such a matrix has rank <= 9, so at least 9 parameter directions are invisible
+    to it PURELY BY UNDER-DETERMINATION. Its SVD then reports singular values of ~1e-17 for
+    them, and since J_PTC responds to those arbitrary null vectors, they read as
+    "LC-sloppy but PTC-responsive" -- a fake identifiability prize. That is the same class of
+    error as input_screen's null(J_LC), which reported 7.2e-5 for a provably-zero direction.
+
+    With one column per parameter and thousands of rows, the rank is limited by the physics
+    rather than by the experiment design, which is the only way the null space means anything.
+
+    `hi`/`lo` index the factor grid symmetrically about 1.0 (default x1.26 and x0.79, i.e.
+    +/-0.235 in log), so the difference is a genuine central difference in log-parameter.
+    """
+    fac = np.asarray(lc['factors'], float)
+    dlog = np.log(fac[hi]) - np.log(fac[lo])
+    prof = np.asarray(lc['profiles'])                      # (n_param, n_fac, n_states, m)
+    scale = np.asarray(lc['scale'])[None, :, None]
+    dT = np.asarray(lc['dT'])
+    grids = np.asarray(pt['ptc_grids'])                    # (n_param, n_fac, n_phase, n_dose)
+
+    cols_lc, cols_pt, kept, keep = [], [], [], []
+    for j, i in enumerate(range(len(names))):
+        if not ok[i]:
+            continue
+        a, b = prof[li[i], hi], prof[li[i], lo]
+        ga, gb = grids[pi[i], hi], grids[pi[i], lo]
+        if not (np.isfinite(a).all() and np.isfinite(b).all()):
+            continue                                       # a rejected setting: no derivative
+        dtemp = (dT[li[i], hi] - dT[li[i], lo])
+        if not np.isfinite(dtemp):
+            continue
+        cols_lc.append(np.concatenate([((a - b) / scale[0]).ravel() / dlog, [dtemp / dlog]]))
+        # circular difference for phases, and NaN (unusable points) contributes nothing
+        d = ((ga - gb + 0.5) % 1.0) - 0.5
+        cols_pt.append(np.nan_to_num(d).ravel() / dlog)
+        kept.append(names[i]); keep.append(i)
+    if not kept:
+        raise SystemExit('no parameter has finite raw grids at both difference factors')
+    return (np.array(cols_lc).T, np.array(cols_pt).T, kept, np.array(keep))
+
+
+def top_subspace_angles(A, B, ks=(1, 2, 3, 5)):
+    """{k: principal angles (deg) between the leading-k right-singular subspaces of A and B}.
+
+    "Do the two experiments determine the SAME best-determined parameter combinations?" --
+    which is the question the full-row-space angle cannot answer once both jacobians are full
+    rank, since two rank-r subspaces of a p-dimensional space are then forced to intersect in
+    at least 2r - p dimensions regardless of any physics."""
+    _ua, _sa, vta = np.linalg.svd(np.nan_to_num(A), full_matrices=False)
+    _ub, _sb, vtb = np.linalg.svd(np.nan_to_num(B), full_matrices=False)
+    out = {}
+    for k in ks:
+        if k > min(vta.shape[0], vtb.shape[0]):
+            continue
+        sv = np.linalg.svd(vta[:k] @ vtb[:k].T, compute_uv=False)
+        out[k] = np.degrees(np.arccos(np.clip(sv, -1, 1)))
+    return out
+
+
 def principal_angles(A, B, tol=1e-10):
     """Principal angles (degrees) between the ROW spaces of A and B, ascending.
 
@@ -143,18 +216,11 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
           f"{', '.join(f'{names[i]} ({ratio[i]:.2f})' for i in top)}")
 
     # ---- 2. local coupling matrix ---------------------------------------------------- #
-    # rows = factor settings, cols = parameters, in LOG-parameter displacement
-    fac = np.asarray(lc['factors'], float)
-    dlog = np.log(fac)[None, :]                            # displacement per setting
-    with np.errstate(invalid='ignore', divide='ignore'):
-        J_LC = (np.asarray(lc['shape_all'])[li] / dlog).T          # (n_fac, n_param)
-        J_PT = (np.asarray(pt[feature])[pi] / dlog).T
-    keep = np.array([i for i in range(len(names)) if ok[i]])
-    J_LC, J_PT = J_LC[:, keep], J_PT[:, keep]
-    kept = [names[i] for i in keep]
+    J_LC, J_PT, kept, keep = build_jacobians(lc, pt, names, li, pi, ok)
 
     g = Gauge(get_model(model_name))
     gi = [g.names.index(p) for p in kept if p in g.names]
+    n_obs_lc, n_obs_pt = J_LC.shape[0], J_PT.shape[0]
     Gsub = g.G[gi] if len(gi) == len(kept) else None
     if Gsub is not None and Gsub.size:
         Q, _ = np.linalg.qr(Gsub)
@@ -166,12 +232,19 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
         J_LCq, J_PTq = np.nan_to_num(J_LC), np.nan_to_num(J_PT)
         print(f"\n2. LOCAL COUPLING  (gauge NOT projected -- parameter sets differ)")
 
-    ang, _Qa, _Qb = principal_angles(J_LCq, J_PTq)
-    if ang.size:
-        print(f"   principal angles between row(J_LC) and row(J_PTC), degrees:")
-        print(f"     {np.array2string(np.round(ang, 1), max_line_width=70)}")
-        print(f"     smallest {ang.min():.1f} deg (shared), largest {ang.max():.1f} deg "
-              f"(seen by one only)")
+    # Angles between the DOMINANT subspaces, not between the full row spaces. Both jacobians
+    # are essentially full rank here, and two rank-r subspaces of a p-dimensional space must
+    # intersect in at least 2r-p dimensions -- so the full-row-space angles come out as a row
+    # of exact zeros that says nothing except "both are full rank". The informative question
+    # is whether the two experiments determine the same BEST-determined combinations, which is
+    # the angle between their leading k directions.
+    ang = top_subspace_angles(J_LCq, J_PTq)
+    print(f"   angle between the top-k best-determined subspaces of each (degrees):")
+    print(f"     {'k':>3s} {'angles':>34s}")
+    for k, a in ang.items():
+        print(f"     {k:3d} {np.array2string(np.round(a, 1), max_line_width=60):>34s}")
+    print(f"   (0 deg = the two experiments pin the same combination; 90 deg = one sees a "
+          f"direction\n    the other is blind to)")
 
     # for each LC singular direction, how much does the PTC move?
     u, s_lc, vt = np.linalg.svd(J_LCq, full_matrices=False)
@@ -183,13 +256,22 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
     for i in range(len(s_lc)):
         mark = '  <- LC-sloppy but PTC-responsive' if (s_n[i] < 0.1 and r_n[i] > 0.3) else ''
         print(f"     {s_n[i]:13.3e} {r_n[i]:14.3e}{mark}")
-    tail = s_n < 0.1
-    frac = (np.sum(resp[tail] ** 2) / np.sum(resp ** 2)) if np.any(tail) and resp.any() else 0.0
+    phys = s_n > 1e-12          # drop the directions the gauge projection annihilated
+    tail = (s_n < 0.1) & phys
+    frac = ((np.sum(resp[tail] ** 2) / np.sum(resp[phys] ** 2))
+            if np.any(tail) and resp[phys].any() else 0.0)
     print(f"   the LC-sloppiest directions (sigma < 0.1 max, {int(tail.sum())} of "
-          f"{len(s_lc)}) carry {100 * frac:.1f}% of the total PTC response")
+          f"{int(phys.sum())} physical) carry {100 * frac:.1f}% of the total PTC response")
+    n_num_null = int(np.sum(s_n < 1e-12))
+    if n_num_null:
+        print(f"   NOTE {n_num_null} direction(s) are numerically null in J_LC. With "
+              f"{n_obs_lc} observables against")
+        print(f"        {len(kept)} parameters that is a genuine flat direction rather than "
+              f"a rank artifact --")
+        print(f"        but confirm it by finite displacement before believing it (see 3).")
 
     # ---- 3. what to confirm ----------------------------------------------------------- #
-    cand = [i for i in np.argsort(-r_n) if s_n[i] < 0.1][:3]
+    cand = [i for i in np.argsort(-r_n) if (s_n[i] < 0.1 and s_n[i] > 1e-12)][:3]
     print(f"\n3. TO CONFIRM (candidates only -- a linear summary is not a result)")
     if cand:
         for i in cand:
@@ -210,7 +292,8 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
                 params=np.array(kept), lc_sens=x[keep], ptc_sens=y[keep],
                 corr=r, quadrants=np.array(list(quad.values())),
                 quadrant_names=np.array(list(quad)),
-                principal_angles=ang, sigma_lc=s_lc, ptc_response=resp,
+                top_angles=np.array([np.mean(a) for a in ang.values()]),
+                top_angle_ks=np.array(list(ang)), sigma_lc=s_lc, ptc_response=resp,
                 sloppy_ptc_fraction=frac, J_LC=J_LCq, J_PTC=J_PTq)
     out = paths.out_path(model_name, 'coupling', f'coupling_{target}_{mode}_{feature}.npz')
     paths.savez(out, **blob)

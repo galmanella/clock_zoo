@@ -84,6 +84,7 @@ def run_param(cycle_of, name, base, obs_idx, C0, T0, scale, factors=FACTORS):
     shape_obs = np.full(len(factors), np.nan)
     dT = np.full(len(factors), np.nan)
     status = np.array(['?'] * len(factors), dtype=object)
+    prof = np.full((len(factors),) + C0.shape, np.nan, np.float32)   # raw cycles, for coupling
 
     def one(k, y_seed):
         """Solve at factor k, continuing from the previous cycle point; if that fails, retry
@@ -102,6 +103,7 @@ def run_param(cycle_of, name, base, obs_idx, C0, T0, scale, factors=FACTORS):
         status[k] = st
         if C is None:
             return None
+        prof[k] = C.astype(np.float32)         # raw cycle saved BEFORE any summarising
         d = (C - C0) / scale[:, None]
         shape_all[k] = float(np.sqrt(np.mean(d ** 2)))
         shape_obs[k] = float(np.sqrt(np.mean(d[obs_idx] ** 2)))
@@ -117,7 +119,7 @@ def run_param(cycle_of, name, base, obs_idx, C0, T0, scale, factors=FACTORS):
             xn = one(k, x)
             if xn is not None:
                 x = xn                             # keep the last good x across a failure
-    return shape_all, shape_obs, dT, status
+    return shape_all, shape_obs, dT, status, prof
 
 
 def run(model_name, shard=None, nshards=None, tag=None, m=64, factors=FACTORS):
@@ -142,17 +144,20 @@ def run(model_name, shard=None, nshards=None, tag=None, m=64, factors=FACTORS):
     print(f"[lc-sens] base T = {T0:.4f} h; observables {obs}", flush=True)
 
     t0 = time.time()
-    SA, SO, DT, ST = [], [], [], []
+    SA, SO, DT, ST, PR = [], [], [], [], []
     for i, p in enumerate(mine):
-        a, o, d, st = run_param(cycle_of, p, base, obs_idx, C0, T0, scale, factors)
-        SA.append(a); SO.append(o); DT.append(d); ST.append(st)
+        a, o, d, st, pr = run_param(cycle_of, p, base, obs_idx, C0, T0, scale, factors)
+        SA.append(a); SO.append(o); DT.append(d); ST.append(st); PR.append(pr)
         if (i + 1) % 10 == 0 or i + 1 == len(mine):
             print(f"[lc-sens] {i + 1}/{len(mine)} params ({time.time() - t0:.0f}s)", flush=True)
     SA, SO, DT, ST = np.array(SA), np.array(SO), np.array(DT), np.array(ST, dtype=object)
+    PR = np.array(PR, np.float32)
 
     span = lambda A: np.nanmax(np.abs(A), axis=1) if A.size else A
     blob = dict(model=model_name, params=np.array(mine), factors=factors,
                 shape_all=SA, shape_obs=SO, dT=DT, status=ST.astype(str),
+                profiles=PR, base_profiles=C0.astype(np.float32), scale=scale,
+                obs_idx=obs_idx,
                 shape_all_span=span(SA), shape_obs_span=span(SO), dT_span=span(DT),
                 T0=T0, observables=np.array(obs), base_idx=BASE_IDX)
     blob['lc_sens'] = np.sqrt(blob['shape_all_span'] ** 2 + blob['dT_span'] ** 2)
@@ -201,11 +206,13 @@ def merge(model_name, tag=None):
         print(f"[lc-sens] nothing to merge for {model_name} tag={tag}", file=sys.stderr)
         return None
     blob = dict(model=model_name, factors=shards[0]['factors'], T0=shards[0]['T0'],
-                observables=shards[0]['observables'], base_idx=shards[0]['base_idx'])
+                observables=shards[0]['observables'], base_idx=shards[0]['base_idx'],
+                base_profiles=shards[0]['base_profiles'], scale=shards[0]['scale'],
+                obs_idx=shards[0]['obs_idx'])
     for k in ('params', 'shape_all_span', 'shape_obs_span', 'dT_span', 'lc_sens',
               'lc_sens_obs'):
         blob[k] = np.concatenate([np.atleast_1d(s[k]) for s in shards])
-    for k in ('shape_all', 'shape_obs', 'dT', 'status'):
+    for k in ('shape_all', 'shape_obs', 'dT', 'status', 'profiles'):
         blob[k] = np.concatenate([np.atleast_2d(s[k]) for s in shards], axis=0)
     out = paths.out_path(model_name, 'lc_sens', 'lc_sens_merged.npz', tag)
     paths.savez(out, **blob)

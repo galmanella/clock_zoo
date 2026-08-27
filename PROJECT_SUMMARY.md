@@ -178,12 +178,50 @@ non-converged). The rejections concentrate at large displacements, so the report
 mild **under**-estimates. The 34 non-converged are a known limitation of the orbit guess, not
 a claim that no orbit exists there.
 
-### 3.4 Objective (b), parts 2–3
+### 3.4 Objective (b), parts 2–3: PTC sensitivity and the coupling
 
-`analysis/ptc_sens.py` and `analysis/coupling.py` are built and running. **No coupling result
-is reported yet** — the sweep for Almeida/BMAL1 is in progress, and a number is not a result
-until the shortlist it produces has been confirmed by finite displacement on the independent
-adaptive engine.
+`analysis/ptc_sens.py` on Almeida / BMAL1 (pulse), 18 parameters x 9 factors on the fixed base
+dose grid 0.912–22.1. Ranked by twist response: `vd` 0.375, `gamma_c` 0.340, `vr` 0.321,
+`ke` 0.295, `gamma_P` 0.288. As with the LC, the range is narrow — 0.24 to 0.37.
+
+`analysis/coupling.py`, the gauge quotiented out (2 of 15 usable parameters), J_LC = 513
+observables x 15 parameters, J_PTC = 576 x 15.
+
+![LC vs PTC coupling](docs/figures/almeida_coupling_BMAL1.png)
+
+**Preliminary, and it points the opposite way to Mirsky — but read the caveats.**
+
+| | Mirsky (input_screen) | Almeida (here) |
+|---|---|---|
+| per-parameter log-log correlation | tight | **+0.660** (moderate) |
+| the low-LC / high-PTC quadrant | **empty** | 4 of 18 parameters |
+| angle between the single best-determined LC and PTC combination | — | **79.1 deg** |
+| LC-sloppiest directions' share of PTC response | 3.4% (pointwise) / 0.5% (twist) | **7.7%** |
+
+The clearest signal is the **79.1 deg** between the leading LC direction and the leading PTC
+direction: the combination the limit cycle pins hardest and the one the PTC pins hardest are
+nearly orthogonal. The next few are more shared (k=3: 14, 39, 84 deg; k=5: 9, 22, 45, 77, 81),
+so the two experiments overlap substantially but each retains directions the other is close to
+blind to. Consistently, the PTC response is **not monotone in LC sensitivity** — the 2nd LC
+direction carries the largest PTC response (1.000) while the 1st carries 0.375.
+
+**What this does not yet establish.** Three things, stated plainly:
+
+1. **The quadrant count is weak evidence.** Every parameter sits within a ~3x band on both
+   axes (see the figure), so the quadrant split is a median cut through a tight cluster, not
+   an order-of-magnitude separation like Mirsky's. "4 in the prize quadrant" should not be
+   read as "4 decoupled parameters".
+2. **The candidate directions are unconfirmed.** Directions 9, 10 and 12 (LC sigma 0.015–0.064,
+   PTC response 0.18–0.25, dominated by `gamma_BP`/`ke`/`gamma_CP`/`kd`/`ker`) are the
+   shortlist. A finite displacement along each must be pushed through the independent adaptive
+   engine before any of it is cited. In `input_screen` the jacobian-derived version of exactly
+   this claim was wrong by ~80 orders of magnitude and only the finite-displacement evidence
+   survived.
+3. **3 of 18 parameters were dropped**, lacking a converged orbit at both difference factors.
+
+**One thing that IS solid**: after the gauge projection, the two exactly-null directions of
+J_LC are also exactly null in J_PTC (3.5e-16). That is the correct, self-consistent behaviour
+and confirms the projection is doing what it should rather than leaking a false signal.
 
 ---
 
@@ -241,10 +279,9 @@ the live phases.
 
 ## 5. Next
 
-1. **Finish objective (b) for Almeida**: the BMAL1 PTC sweep, then the coupling scatter and
-   gauge-quotiented principal angles. The question is whether the **low-LC / high-PTC**
-   quadrant has anything in it. On Mirsky it was empty, and the only decoupling found was the
-   useless kind (parameters that move the cycle without moving the response).
+1. **Confirm the Almeida coupling candidates** (�3.4, directions 9/10/12) by finite
+   displacement on `engine/reference.py`. This is the single highest-value next step: it turns
+   a suggestive 79 deg into either a real result or a retracted one.
 2. **Run (a) and (b) for Korencic and Goldbeter.** The framework needs no changes; the
    complexity ladder 11 → 18 → 34 → 52 → (132) makes "identifiability vs model size" a
    measurable axis rather than an anecdote.
@@ -254,7 +291,7 @@ the live phases.
    survived.
 4. **Reduce the 34 non-converged LC settings** — better orbit continuation, or a
    predictor–corrector along the factor grid.
-5. **Then batch 2: optimisation.** Are there multiple distinct basins? Can PTC data constrain
+6. **Then batch 2: optimisation.** Are there multiple distinct basins? Can PTC data constrain
    globally what LC data cannot? That is the question the model switch was made to reach, and
    it is now approachable because these models are 18–52 parameters rather than 132.
 

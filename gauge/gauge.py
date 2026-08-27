@@ -101,14 +101,31 @@ def default_param_names(model):
     return [p for p in model.parameter_names if nom[p] > 0]
 
 
+def constraint_matrix(model, spec):
+    """(n_constraints x n_gauge) matrix C from `model.scale_constraints()`.
+
+    Only the coordinate directions in null(C) are genuine symmetries -- see
+    ClockModel.scale_constraints for why a model can have any."""
+    rows = []
+    for c in (getattr(model, 'scale_constraints', lambda: [])() or []):
+        r = np.zeros(spec.n_gauge)
+        for key, e in c.items():
+            r[spec.time_col if key == TIME else spec.col(key)] += float(e)
+        rows.append(r)
+    return np.array(rows) if rows else np.zeros((0, spec.n_gauge))
+
+
 def generators(model, param_names=None):
-    """The (n_param x n_gauge) integer matrix G spanning the gauge subspace in LOG-parameter
-    space, built entirely from the model's declared dimensions.
-    Returns (G, param_names, spec)."""
+    """The (n_param x n_free) matrix G spanning the gauge subspace in LOG-parameter space,
+    built entirely from the model's declared dimensions and scale constraints.
+
+    Returns (G, param_names, spec, N) where N (n_gauge x n_free) is an orthonormal basis of
+    the VALID coordinate directions, i.e. null(C). Without constraints N is the identity and
+    the free coordinates are exactly the species groups plus time."""
     spec = GaugeSpec(model)
     names = list(param_names) if param_names is not None else default_param_names(model)
     dims = model.parameter_dimensions()
-    G = np.zeros((len(names), spec.n_gauge))
+    D = np.zeros((len(names), spec.n_gauge))          # parameter response to a scale change
     for i, p in enumerate(names):
         if p not in dims:
             raise KeyError(
@@ -116,8 +133,18 @@ def generators(model, param_names=None):
                 f"Every fitted parameter needs a declaration; use an empty dict for a "
                 f"dimensionless one (a missing entry would silently be treated as inert).")
         for key, e in dims[p].items():
-            G[i, spec.time_col if key == TIME else spec.col(key)] += float(e)
-    return G, names, spec
+            D[i, spec.time_col if key == TIME else spec.col(key)] += float(e)
+
+    C = constraint_matrix(model, spec)
+    if C.shape[0] == 0:
+        N = np.eye(spec.n_gauge)
+    else:                                              # orthonormal basis of null(C) via SVD
+        _u, s, vt = np.linalg.svd(C)
+        rank = int(np.sum(s > max(C.shape) * np.finfo(float).eps * (s.max() if s.size else 1)))
+        N = vt[rank:].T
+        if N.shape[1] == 0:
+            N = np.zeros((spec.n_gauge, 0))
+    return D @ N, names, spec, N
 
 
 # --------------------------------------------------------------------------- #
@@ -133,23 +160,45 @@ class Gauge:
 
     def __init__(self, model, param_names=None, include_time=True):
         self.model = model
-        self.G_full, self.names, self.spec = generators(model, param_names)
+        self.G_full, self.names, self.spec, self.N = generators(model, param_names)
         self.include_time = include_time
-        # dropping the time column quotients only the EXACT concentration directions and
-        # leaves rho -- the right choice when the cost pins the period.
-        tc = self.spec.time_col
-        self.G = self.G_full if include_time else self.G_full[:, :tc]
-        self.gauge_names = self.spec.names if include_time else self.spec.names[:tc]
-        self.rank = int(np.linalg.matrix_rank(self.G))
+        # `N` maps free coordinates -> full (species-group, time) coordinates. With no scale
+        # constraints it is the identity and the two coincide; with constraints (Korencic) the
+        # free coordinates are combinations, so anything that needs a specific species' or the
+        # time factor must go through `full_coords`.
+        self.G = self.G_full
+        self.gauge_names = [f'g{i}' for i in range(self.G.shape[1])] \
+            if self.N.shape != (self.spec.n_gauge, self.spec.n_gauge) else list(self.spec.names)
+        if not include_time:
+            # keep only directions with no time component: project N's rows onto time = 0
+            keep = np.abs(self.N[self.spec.time_col]) < 1e-12
+            self.G = self.G_full[:, keep]
+            self.N = self.N[:, keep]
+            self.gauge_names = [n for n, k in zip(self.gauge_names, keep) if k]
+        self.rank = int(np.linalg.matrix_rank(self.G)) if self.G.size else 0
         # An orthonormal basis Q of span(G). Use the SVD rather than QR: QR returns as many
         # columns as G has, and if G is rank-deficient (a species that no parameter can
         # rescale -- see Korencic) the extra columns are arbitrary, so canonicalize() would
         # project away a genuinely physical direction.
-        u, _s, _vt = np.linalg.svd(self.G, full_matrices=False)
-        self.Q = u[:, :self.rank]
-        self.Gplus = np.linalg.pinv(self.G)
+        if self.G.size:
+            u, _s, _vt = np.linalg.svd(self.G, full_matrices=False)
+            self.Q = u[:, :self.rank]
+        else:
+            self.Q = np.zeros((len(self.names), 0))
+        self.Gplus = np.linalg.pinv(self.G) if self.G.size else np.zeros((0, len(self.names)))
         nom = model.get_parameters()
         self.z_nominal = np.log(np.array([nom[p] for p in self.names]))
+
+    def full_coords(self, w):
+        """Free gauge coordinates -> the (species-group..., time) coordinates, i.e. the actual
+        log scale factors. Identity unless the model declares scale constraints."""
+        return self.N @ np.asarray(w)
+
+    def species_scales(self, w):
+        """{species: multiplicative scale factor} and the time factor rho, for a motion `w`."""
+        fc = self.full_coords(w)
+        return ({s: float(np.exp(fc[self.spec.col(s)])) for s in self.spec.states},
+                float(np.exp(fc[self.spec.time_col])))
 
     # -- basic ops --------------------------------------------------------- #
     def apply(self, z, w):
@@ -191,10 +240,10 @@ class Gauge:
         A pulse dose is a production RATE ([target]/time), so it picks up the time factor too;
         an instant dose is a concentration displacement and does not."""
         target = target or self.model.perturbable_targets()[0]
-        w = self.gauge_coords(z, ref)
-        e = w[self.spec.col(target)]
-        if mode == 'pulse' and self.include_time:
-            e = e + w[self.spec.time_col]
+        fc = self.full_coords(self.gauge_coords(z, ref))
+        e = fc[self.spec.col(target)]
+        if mode == 'pulse':
+            e = e + fc[self.spec.time_col]
         return float(np.exp(e))
 
     # -- reporting --------------------------------------------------------- #
@@ -204,6 +253,7 @@ class Gauge:
 
     def summary(self):
         act = self.active_mask()
+        constrained = self.N.shape != (self.spec.n_gauge, self.spec.n_gauge)
         kinds = {}
         for p, a in zip(self.names, act):                 # group by leading token of the name
             head = ''.join(c for c in p.split('_')[0] if c.isalpha()) or p.split('_')[0]
@@ -212,7 +262,9 @@ class Gauge:
                  f"rank {self.rank} | {int(act.sum())}/{len(act)} parameters gauge-active",
                  f"  quotient dimension: {len(self.names)} - {self.rank} = "
                  f"{len(self.names) - self.rank} physically meaningful combinations",
-                 "  coords: " + ", ".join(self.gauge_names),
+                 ("  coords: " + ", ".join(self.gauge_names) +
+                  ("   (combinations: the model declares scale constraints)"
+                   if constrained else "")),
                  "  scale groups: " + " | ".join('+'.join(g) for g in self.spec.groups),
                  "  by parameter kind (inert / active):"]
         for k in sorted(kinds):
@@ -236,13 +288,41 @@ def z_to_params(z, g, base=None):
 
 
 def random_gauge(g, sigma=0.5, seed=0, include_time=False):
-    """A random gauge motion w ~ N(0, sigma^2). include_time=False by default: the time
-    rescale changes the period and so is not a symmetry of a period-constrained cost."""
+    """A random gauge motion w ~ N(0, sigma^2), in FREE coordinates.
+
+    include_time=False projects out any component that would rescale time -- the time rescale
+    changes the period, so it is not a symmetry of a period-constrained cost.
+
+    NB the free coordinates are not the (species-group, time) coordinates once a model
+    declares scale constraints, so "drop the time column" is wrong in general: for Korencic
+    the single generator IS the time rescale, and its time column index (15) is not even a
+    valid index into a length-1 free coordinate vector. Project instead.
+    """
     rng = np.random.default_rng(seed)
     w = rng.normal(0, sigma, g.G.shape[1])
-    if not include_time and g.include_time:
-        w[g.spec.time_col] = 0.0
+    if not include_time and g.G.shape[1]:
+        t = g.N[g.spec.time_col]                      # how each free coord contributes to rho
+        tt = float(t @ t)
+        if tt > 1e-24:
+            w = w - t * float(t @ w) / tt             # component with log(rho) = 0
     return w
+
+
+def gauged_model(model, g, w):
+    """A fresh model displaced along the gauge orbit by `w`, with `approx_period` corrected.
+
+    The correction matters: a time rescale by rho divides the period by rho, and
+    `approx_period` is what sizes the orbit solver's initial guess. Leaving it stale made a
+    rho = 0.36 motion on Almeida (true period 69 h, guess window 62 h) find no clean peak,
+    fall back to the nominal period and diverge -- reported as a 1e56 "gauge violation" when
+    the symmetry was exact to 1e-13.
+    """
+    _scales, rho = g.species_scales(w)
+    m2 = type(model)()
+    m2.set_parameters(z_to_params(g.apply(g.z_nominal, w), g))
+    if getattr(model, 'approx_period', None):
+        m2.approx_period = model.approx_period / rho
+    return m2
 
 
 def _main():

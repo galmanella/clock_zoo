@@ -369,17 +369,21 @@ def selftest(name='almeida'):
 
     print("\n3. GAUGE-COVARIANCE of the phase condition")
     print("   A species rescaling must map the solved orbit to the rescaled orbit EXACTLY:")
-    from gauge.gauge import Gauge, random_gauge, z_to_params
+    from gauge.gauge import Gauge, random_gauge, gauged_model
     g = Gauge(model)
-    w = random_gauge(g, sigma=0.4, seed=1)
-    m2 = type(model)(); m2.set_parameters(z_to_params(g.apply(g.z_nominal, w), g))
-    S = np.array([np.exp(w[g.spec.col(s)]) for s in model.state_names])
+    # include_time=True so the test is non-vacuous for a model whose ONLY generator is the
+    # time rescale (Korencic); gauged_model corrects approx_period for it.
+    w = random_gauge(g, sigma=0.4, seed=1, include_time=True)
+    m2 = gauged_model(model, g, w)
+    scales, rho = g.species_scales(w)
+    S = np.array([scales[s] for s in model.state_names])
     s2 = OrbitSolver(m2, n_steps=solver.n_steps)
     y02, T2, _r2 = jax.jit(s2.solve)(m2.jax_params(), s2.guess(m2.jax_params()))
     C2 = np.asarray(s2.cycle(m2.jax_params(), y02, T2, 64))
     C1 = np.asarray(solver.cycle(P, y0, T, 64)) * S           # predicted rescaled orbit
     rel = float(np.max(np.abs(C2 - C1)) / np.max(np.abs(C1)))
-    print(f"   period invariant: |dT|/T = {abs(float(T2) - float(T)) / float(T):.2e}")
+    Tpred = float(T) / rho
+    print(f"   period T -> T/rho: rel err = {abs(float(T2) - Tpred) / Tpred:.2e}")
     print(f"   cycle == S * cycle: max rel err = {rel:.2e}")
 
     ok = (abs(float(T) - T_sp) / T_sp < 1e-4) and float(res) < 1e-8 and dT < 1e-6

@@ -37,7 +37,8 @@ from engine.perturb import resolve_target, check_mode, displace_np
 
 #: Provisional per-model probe doses for the cross-check only. analysis/scrit.py replaces
 #: these with derived, per-target adaptive grids.
-_DEFAULT_DOSES = {'almeida': (0.0, 0.5, 2.0), 'goodwin': (0.0, 0.02, 0.1, 0.5)}
+_DEFAULT_DOSES = {'almeida': (0.0, 0.5, 2.0), 'goodwin': (0.0, 0.02, 0.1, 0.5),
+                  'korencic': (0.0, 0.3, 2.0)}
 
 
 def _peaks(t, y):

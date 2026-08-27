@@ -79,6 +79,27 @@ class ClockModel(ABC):
         """Groups of species FORCED to share one concentration unit (default: none)."""
         raise NotImplementedError
 
+    def scale_constraints(self):
+        """Linear constraints the species scales must satisfy, beyond sharing units.
+
+        Each entry is a dict {species_or_api.TIME: coefficient} meaning
+
+            sum_X  coefficient_X * log(scale_X)  =  0
+
+        Default: none, which is right whenever every term in every equation has a free
+        parameter in front of it to absorb a rescaling.
+
+        It is NOT right when a term has a hardcoded coefficient. Korencic's transcription is a
+        bare product of Hill factors with no maximal rate, so `d(gene)/dt = 1*(...) - deg*gene`
+        forces `scale[gene] * rho = 1` -- the scale is PINNED to the time rescale rather than
+        free. Without this the gauge machinery would report generators that are not symmetries
+        at all, and `gauge/validate.py identity` would (correctly) fail on them.
+
+        `scale_coupled_species` is the readable special case of this ({A: 1, B: -1} = 0);
+        declare shared units there and genuine relations here.
+        """
+        return []
+
     def parameter_dimensions(self):
         """param -> {species: exponent, ..., api.TIME: exponent}."""
         raise NotImplementedError

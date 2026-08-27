@@ -80,7 +80,7 @@ TIME = '@time'          #: sentinel key for the time exponent in parameter_dimen
 CAPABILITIES = {
     'core': ['derivatives', 'get_initial_state', 'get_parameters', 'set_parameters',
              'state_names', 'n_states', 'var_index'],
-    'dimensions': ['parameter_dimensions', 'scale_coupled_species'],
+    'dimensions': ['parameter_dimensions', 'scale_coupled_species', 'scale_constraints'],
     'jax': ['jax_params', 'jax_rhs', 'jax_apply'],
     'perturbation': ['perturbable_targets'],
     'observables': ['observable_states', 'observable_pairs'],
@@ -164,6 +164,11 @@ def check_conformance(model, verbose=True):
                 bad = [s for s in grp if s not in states]
                 if bad:
                     problems.append(f"scale_coupled_species references unknown species {bad}")
+                    break
+            for c in model.scale_constraints():
+                bad = [k for k in c if k != TIME and k not in states]
+                if bad:
+                    problems.append(f"scale_constraints references unknown species {bad}")
                     break
             if problems:
                 res['dimensions'] = '; '.join(problems)

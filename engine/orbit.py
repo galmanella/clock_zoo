@@ -234,22 +234,35 @@ class OrbitSolver:
 # --------------------------------------------------------------------------- #
 #  Convenience: params -> (T, cycle) as one jitted, differentiable call
 # --------------------------------------------------------------------------- #
-def make_cycle_fn(model, m=192, n_steps=1024, ref=None, newton_iters=12):
-    """jit(f)(P, x0) -> (T, cycle[m, n_states], residual). The phases are exactly
-    arange(m)/m, so no phase array is returned -- there is nothing to estimate."""
-    solver = OrbitSolver(model, n_steps=n_steps, ref=ref, newton_iters=newton_iters)
+def make_cycle_fn(model, m=192, n_steps=1024, ref=None, newton_iters=8, y_seed=None):
+    """jit(f)(P) -> (T, cycle[m, n_states], residual). The phases are exactly arange(m)/m, so
+    no phase array is returned -- there is nothing to estimate.
 
-    def f(P, x0):
-        y0, T, res = solver.solve(P, x0)
+    SELF-CONTAINED IN P, which is the point: the initial guess comes from `make_guess_fn`
+    inside the jit, so ONE compiled kernel serves every parameter set. A sweep that instead
+    builds a fresh solver per setting recompiles each time and spends all its time in XLA --
+    measured as the dominant cost of a 162-setting parameter sweep before this existed. It
+    also means the function is vmappable over a batch of parameter sets, which is what the
+    GPU path needs.
+
+    Returns (f, solver); `solver` is exposed for the Floquet/monodromy helpers.
+    """
+    solver = OrbitSolver(model, n_steps=n_steps, ref=ref, newton_iters=newton_iters)
+    guess = make_guess_fn(model, n_steps=n_steps, ref=ref)
+    seed = jnp.asarray(model.get_initial_state() if y_seed is None else y_seed, jnp.float64)
+
+    @jax.jit
+    def f(P):
+        y0, T, res = solver.solve(P, guess(P, seed))
         return T, solver.cycle(P, y0, T, m), res
 
-    return jax.jit(f), solver
+    return f, solver
 
 
 # --------------------------------------------------------------------------- #
 #  Jittable, vmappable initial guess  (required for any SWEEP or GLOBAL search)
 # --------------------------------------------------------------------------- #
-def make_guess_fn(model, n_steps=1024, ref=None, n_relax=8, gp=None, scan_frac=1.3):
+def make_guess_fn(model, n_steps=1024, ref=None, n_relax=8, gp=None, scan_frac=3.0):
     """Return jit(guess)(P, y_seed) -> x0 = concat([y0, T]), vmappable over a population.
 
     WHY THIS EXISTS. `OrbitSolver.guess` does a numpy peak-hunt, so it cannot be vmapped, and
@@ -262,6 +275,16 @@ def make_guess_fn(model, n_steps=1024, ref=None, n_relax=8, gp=None, scan_frac=1
     PHASE CONSISTENCY IS THE SUBTLE PART. The section f(y)[ref] = 0 has TWO roots per cycle. So
     after relaxing we advance to the next MAXIMUM of the reference species -- the first index
     where its derivative goes + -> - -- which is jittable via a masked argmax.
+
+    scan_frac=3.0, not 1.3. The period estimate comes from the gap between two maxima in a
+    window of `scan_frac` NOMINAL periods, so a window barely longer than one nominal period
+    finds no second maximum as soon as the true period grows -- and silently falls back to the
+    nominal value. MEASURED on Almeida: at gamma_P x0.5 the true period is 29.8 h and at kd x4
+    it is 67.7 h, against a nominal 24.83; with the old window both guessed 24.83 and Newton
+    then diverged or converged to a wrong orbit. Three periods of window covers a period that
+    doubles. It is not a complete fix -- a spurious secondary maximum can still give a short
+    estimate -- so callers doing a sweep should also multi-start over T (see
+    analysis/lc_sens.make_profiles_fn).
     """
     rhs = model.jax_rhs
     ref = ref or getattr(model, 'reference_variable', None) or model.state_names[0]
@@ -286,6 +309,94 @@ def make_guess_fn(model, n_steps=1024, ref=None, n_relax=8, gp=None, scan_frac=1
         return jnp.concatenate([y0, T[None]])
 
     return jax.jit(guess)
+
+
+# --------------------------------------------------------------------------- #
+#  Robust orbit finding for a parameter SWEEP
+# --------------------------------------------------------------------------- #
+#: Relative amplitude below which a solved "cycle" is an equilibrium, not an oscillation.
+MIN_REL_AMP = 1e-3
+
+#: Period multipliers tried when the guess's period estimate is unreliable. The unscaled
+#: guess first, then fanning out to cover a period that halves or triples.
+T_MULTISTART = (1.0, 1.25, 0.8, 1.6, 0.6, 2.2, 3.0, 0.45)
+
+
+def make_orbit_finder(model, m=64, n_steps=1024, newton_iters=20,
+                      min_rel_amp=MIN_REL_AMP, period_band=(0.05, 20.0)):
+    """find(params, y_seed=None) -> (x0, T, cycle[n_states, m], status).
+
+    Everything a parameter sweep needs to get a TRUSTWORTHY orbit at a displaced parameter
+    set, in one place, because three separate things go wrong and each one silently produces
+    a plausible number:
+
+    1. A SMALL RESIDUAL IS NOT ENOUGH. phi_T(y0) - y0 = 0 holds at any equilibrium for any T,
+       and the phase condition f(y0)[ref] = 0 holds there too since the whole field vanishes.
+       So a parameter that kills the oscillation yields |F| ~ 1e-15 and whatever T Newton
+       drifted to -- on Almeida at vr x4, T = 4.6e5 h, which propagated into an "LC
+       sensitivity" of 5e98. Hence the amplitude and period-band tests.
+
+    2. CONTINUE THROUGH THE RELAXATION, NOT INTO NEWTON. Handing Newton the previous
+       solution directly carries a stale period, and undamped Newton can jump out of the
+       cycle's basin -- Almeida admits a stable equilibrium alongside its limit cycle, and
+       that is where it lands. Seeding the RELAXATION with the previous cycle point instead
+       settles onto the nearby cycle and re-estimates the period from real maxima.
+
+    3. MULTI-START OVER T. The period estimate is the fragile part of the guess: a secondary
+       maximum in the reference trace gave Almeida at vr x1.6 a guess of 7.4 h against a true
+       27.9, and Newton from there converged to a degenerate T = 0 with residual 0.
+
+    Verified against independent LSODA relaxations: before this, 7 of 8 sampled "rejected"
+    settings genuinely oscillated -- so the rejections were solver failures, not model facts,
+    and they were concentrated in the large-displacement settings that matter most.
+    """
+    solver = OrbitSolver(model, n_steps=n_steps, newton_iters=newton_iters)
+    guess_fn = make_guess_fn(model, n_steps=n_steps)
+    seed0 = jnp.asarray(model.get_initial_state(), jnp.float64)
+    gp = float(model.approx_period)
+
+    @jax.jit
+    def _guess(P, y_seed):
+        return guess_fn(P, y_seed)
+
+    @jax.jit
+    def _solve(P, x0):
+        y0, T, res = solver.solve(P, x0)
+        return y0, T, res, solver.cycle(P, y0, T, m)
+
+    def find(params, y_seed=None):
+        P = model.jax_params(params) if isinstance(params, dict) else params
+        x0 = _guess(P, seed0 if y_seed is None else jnp.asarray(y_seed, jnp.float64))
+        last = (None, np.nan, None, 'no-converge')
+        for mult in T_MULTISTART:
+            xt = x0.at[-1].multiply(mult) if mult != 1.0 else x0
+            y0, T, res, C = _solve(P, xt)
+            T, res, C = float(T), float(res), np.asarray(C)
+            if not np.isfinite(res) or res > 1e-6:
+                last = (None, np.nan, None, 'no-converge')
+                continue
+            if not np.isfinite(C).all() or C.min() < -1e-8:
+                # A cycle with negative concentrations is not a solution of the physical
+                # system. It exists as a NUMERICAL solution because the models clamp the
+                # state at 0 inside their RHS, which makes the field degenerate in the
+                # negative orthant -- so a linear runaway there closes on itself and Newton
+                # accepts it. Observed on Almeida at krr x2: |F| small, T = 115 h, states
+                # down to -2.6e12, and the resulting "LC sensitivity" was 1e11. The amplitude
+                # and period tests both pass on it, which is why this test has to be separate.
+                last = (None, T, None, 'negative')
+                continue
+            rel = (C.max(0) - C.min(0)) / np.maximum(np.abs(C.mean(0)), 1e-12)
+            if not np.isfinite(rel).all() or rel.max() < min_rel_amp:
+                last = (None, T, None, 'dead')
+                continue
+            if not (period_band[0] * gp < T < period_band[1] * gp):
+                last = (None, T, None, 'period-out-of-band')
+                continue
+            xs = jnp.concatenate([y0, jnp.asarray([T])])
+            return xs, T, C.T, 'ok'
+        return last
+
+    return find, solver
 
 
 # --------------------------------------------------------------------------- #

@@ -152,6 +152,11 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
     PH = np.full((len(mine), nf), np.nan)
     ST = np.empty((len(mine), nf), dtype=object)
     grids = np.full((len(mine), nf, n_phase, len(doses)), np.nan, np.float32)
+    # amplitude and validity are RAW ENGINE OUTPUT too. They were being computed and thrown
+    # away, which meant "was this point dead or was the integrator unstable?" could only be
+    # answered by re-running the sweep. They cost the same as the phase grid to store.
+    amps = np.full((len(mine), nf, n_phase, len(doses)), np.nan, np.float32)
+    vals = np.zeros((len(mine), nf, n_phase, len(doses)), bool)
 
     t0 = time.time()
     for i, name in enumerate(mine):
@@ -168,7 +173,9 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
             ST[i, k] = st
             if p is None:
                 return None
-            grids[i, k] = p.astype(np.float32)       # raw grid saved BEFORE any detection
+            grids[i, k] = p.astype(np.float32)       # raw grids saved BEFORE any detection
+            amps[i, k] = a.astype(np.float32)
+            vals[i, k] = v
             try:                                     # (2) feature detection, separately, so a
                 pt, tw, dS, dphi, tt, S, phi = features(old, doses, p, base)   # detector bug
                 PT[i, k], TW[i, k] = pt, tw          # can never destroy the raw grid
@@ -201,6 +208,13 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
                 dS_span=span(DS), dphi_span=span(DP))
     if save_grids:
         blob['ptc_grids'] = grids
+        blob['amp_grids'] = amps
+        blob['valid_grids'] = vals
+        blob['base_amp'] = a0.astype(np.float32)
+        blob['base_valid'] = v0
+    else:
+        print("[ptc-sens] WARNING --no-grids: the raw surfaces are NOT being saved, so every "
+              "plot or re-analysis will need the whole sweep re-run", file=sys.stderr)
     out = paths.out_path(model_name, 'ptc_sens',
                          paths.shard_filename(f'ptc_sens_{target}_{mode}',
                                               idx if n > 1 else None), tag)
@@ -244,8 +258,12 @@ def merge(model_name, target, mode='pulse', tag=None):
         blob[k] = np.concatenate([np.atleast_1d(s[k]) for s in shards])
     for k in ('pointwise', 'twist', 'dS', 'dphi', 'total_twist', 'S', 'phi', 'status'):
         blob[k] = np.concatenate([np.atleast_2d(s[k]) for s in shards], axis=0)
-    if all('ptc_grids' in s for s in shards):
-        blob['ptc_grids'] = np.concatenate([s['ptc_grids'] for s in shards], axis=0)
+    for k in ('ptc_grids', 'amp_grids', 'valid_grids'):
+        if all(k in s for s in shards):
+            blob[k] = np.concatenate([s[k] for s in shards], axis=0)
+    for k in ('base_amp', 'base_valid'):
+        if k in shards[0]:
+            blob[k] = shards[0][k]
     out = paths.out_path(model_name, 'ptc_sens', f'ptc_sens_{target}_{mode}_merged.npz', tag)
     paths.savez(out, **blob)
     report(blob)

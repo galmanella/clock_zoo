@@ -95,7 +95,30 @@ Order matters: `scrit` derives the dose grid and the integrator step that `chara
    "low LC / high PTC" signal `coupling.py` is looking for.
 7. **Never swallow an exception**, and never let a downstream failure destroy an upstream
    result — PTC generation and feature detection sit in separate `try` blocks.
-8. **Never `| tail` a background job.** It buffers, and a healthy job then looks hung.
+8. **Never `| tail` a background job**, and never redirect one without `python -u`. Output
+   buffers, and a healthy job then looks hung — this cost a 7-minute run that had to be killed
+   and restarted purely because its log was empty.
+9. **SAVE THE RAW ARRAYS. Analysis is expensive; replotting is cheap.**
+   Every driver must persist the actual integrated output — cycle profiles, PTC surfaces,
+   amplitudes, validity masks — not just the scalars derived from them. A summary statistic
+   cannot be re-derived into a figure, cannot be re-analysed when the feature extractor
+   changes, and cannot be inspected when a number looks wrong; the only recovery is to re-run
+   the sweep. Storage is a few hundred kB against minutes-to-hours of adaptive integration.
+
+   Audit it, do not assume it:
+
+   ```bash
+   python -c "
+   import numpy as np, glob
+   for f in glob.glob('out/**/*.npz', recursive=True):
+       z = np.load(f, allow_pickle=True)
+       raw = [k for k in z.files if getattr(z[k], 'ndim', 0) >= 2]
+       print(f, '<-- NO RAW ARRAYS' if not raw else raw)"
+   ```
+
+   A file of a few kB where its siblings are 60–200 kB is the tell. `analysis/confirm.py`
+   shipped exactly that way: it ran ~10 minutes of adaptive integration per invocation and
+   saved six scalars.
 
 ## Provenance
 

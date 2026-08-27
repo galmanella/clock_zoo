@@ -266,6 +266,100 @@ def fig_directions(cp, model, target, mode):
     return _save(fig, f"{model}_directions_{target}_{mode}.png")
 
 
+def fig_direction_examples(cf, model, target, mode, n_states=3):
+    """THE side-by-side: for the SAME nudge along a direction, what moved in the limit cycle
+    and what moved in the PTC.
+
+    Pure read of `analysis/confirm.py`'s raw arrays -- `lc_profiles` and `ptc_grids` are the
+    actual integrated output, so this figure never re-integrates anything.
+
+    Each row is one direction. Left: the observable cycle profiles, base in black and the
+    +/-eps displacements dashed. Right: the base PTC, the displaced PTC, and their difference.
+    Every Delta panel shares one symmetric colour scale so the rows are comparable to each
+    other rather than each being autoscaled to its own noise -- which is the whole point, since
+    the claim is about the RATIO of movements between rows.
+    """
+    labels = [str(x) for x in cf['labels']]
+    sign = np.asarray(cf['sign'])
+    LC = np.asarray(cf['lc_profiles'])          # (n_run, n_states, m)
+    baseC = np.asarray(cf['base_profiles'])
+    # Prefer the DENSE JAX render for the surfaces: the adaptive verification grid is
+    # necessarily coarse (it is slow), and a 4x16 surface cannot be read. The two engines
+    # agree to 1.6e-05 on this model, so the picture and the verification are the same claim.
+    if 'dense_ptc_grids' in cf:
+        PT = np.asarray(cf['dense_ptc_grids'])          # (n_run, n_phase, n_dose)
+        baseP = np.asarray(cf['dense_base'])            # (n_phase, n_dose)
+        doses = np.asarray(cf['dense_doses'])
+        old = np.asarray(cf['dense_old'])
+        engine_note = f"surfaces: JAX, {len(old)}x{len(doses)}"
+    else:
+        PT = np.asarray(cf['ptc_grids']).transpose(0, 2, 1)
+        baseP = np.asarray(cf['base_new']).T
+        doses = np.asarray(cf['doses'])
+        old = np.asarray(cf['old'])
+        engine_note = f"surfaces: adaptive, {len(old)}x{len(doses)}"
+    states = [str(s) for s in cf['state_names']]
+    obs = [str(s) for s in cf['observables']][:n_states]
+    oidx = [states.index(s) for s in obs]
+    dLC, dP = np.asarray(cf['dLC']), np.asarray(cf['dPTC_rms'])
+    eps = float(cf['eps'])
+
+    uniq = []
+    for l in labels:
+        if l not in uniq:
+            uniq.append(l)
+    ph = np.arange(baseC.shape[1]) / baseC.shape[1]
+
+    dmax = 0.0
+    for r in range(PT.shape[0]):
+        d = ((PT[r] - baseP + 0.5) % 1.0) - 0.5
+        if np.isfinite(d).any():
+            dmax = max(dmax, float(np.nanmax(np.abs(d))))
+    dmax = max(dmax, 1e-3)
+
+    ncol = n_states + 3
+    fig, axes = plt.subplots(len(uniq), ncol, figsize=(2.75 * ncol, 2.65 * len(uniq)),
+                             squeeze=False)
+    for r, lab in enumerate(uniq):
+        runs = [i for i, l in enumerate(labels) if l == lab]
+        rp = runs[0]                                        # the +eps run, for the PTC panels
+        for c, (si, sn) in enumerate(zip(oidx, obs)):
+            ax = axes[r][c]
+            ax.plot(ph, baseC[si], color='k', lw=2.2, label='base', zorder=3)
+            for i in runs:
+                ax.plot(ph, LC[i][si], lw=1.3, ls='--',
+                        color=('tab:red' if sign[i] > 0 else 'tab:blue'),
+                        label=f"{'+' if sign[i] > 0 else '-'}{eps:g}")
+            if r == 0:
+                ax.set_title(f"LC: {sn}", fontsize=9)
+            if r == len(uniq) - 1:
+                ax.set_xlabel('phase')
+            if c == 0:
+                ax.set_ylabel(f"{lab}\ndLC={dLC[rp]:.4f}  dPTC={dP[rp]:.4f}", fontsize=8)
+            ax.tick_params(labelsize=7)
+        phase_map(axes[r][n_states], old, doses, baseP,
+                  title='PTC base' if r == 0 else None)
+        phase_map(axes[r][n_states + 1], old, doses, PT[rp],
+                  title=f'PTC displaced (+{eps:g})' if r == 0 else None)
+        d = ((PT[rp] - baseP + 0.5) % 1.0) - 0.5
+        im = axes[r][n_states + 2].pcolormesh(old, doses, np.ma.masked_invalid(d.T),
+                                              cmap='RdBu_r', vmin=-dmax, vmax=dmax,
+                                              shading='nearest')
+        axes[r][n_states + 2].set_yscale('log')
+        axes[r][n_states + 2].set_xlabel('old phase')
+        if r == 0:
+            axes[r][n_states + 2].set_title('$\Delta$ PTC (shared scale)', fontsize=9)
+        plt.colorbar(im, ax=axes[r][n_states + 2], fraction=0.046)
+    axes[0][0].legend(fontsize=7, loc='best')
+    fig.suptitle(f"{model} / {target} ({mode}): the SAME nudge (eps={eps:g}) seen in the limit "
+                 f"cycle and in the PTC
+"
+                 f"dLC / dPTC in the row labels are measured on the ADAPTIVE engine; "
+                 f"{engine_note}", fontsize=11)
+    fig.tight_layout()
+    return _save(fig, f"{model}_direction_examples_{target}_{mode}.png")
+
+
 # --------------------------------------------------------------------------- #
 def main(argv=None):
     ap = argparse.ArgumentParser(description='regenerate every figure from saved npz')
@@ -276,7 +370,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     from analysis.coupling import _load
     want = a.which.split(',') if a.which != 'all' else \
-        ['scrit', 'surfaces', 'tornado', 'lc_examples', 'ptc_examples', 'directions']
+        ['scrit', 'surfaces', 'tornado', 'lc_examples', 'ptc_examples', 'directions',
+         'direction_examples']
     made = []
 
     if 'scrit' in want:
@@ -307,6 +402,18 @@ def main(argv=None):
         else:
             cp = dict(np.load(fp, allow_pickle=True))
             made.append(fig_directions(cp, a.model, a.target, a.mode))
+    if 'direction_examples' in want:
+        fp = paths.out_path(a.model, 'coupling', f'confirm_{a.target}_{a.mode}.npz')
+        if not os.path.exists(fp):
+            print(f"[figures] run `python -m analysis.confirm --model {a.model} "
+                  f"--target {a.target}` first", file=sys.stderr)
+        else:
+            cf = dict(np.load(fp, allow_pickle=True))
+            if 'lc_profiles' not in cf:
+                print("[figures] the confirm npz predates raw-array saving; re-run "
+                      "analysis.confirm", file=sys.stderr)
+            else:
+                made.append(fig_direction_examples(cf, a.model, a.target, a.mode))
     print(f"[figures] {len(made)} figure(s) written to {FIGDIR}")
     return 0
 

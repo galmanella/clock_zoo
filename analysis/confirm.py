@@ -53,25 +53,27 @@ def displaced(model, names, v, eps):
 
 
 def lc_change(model, params, base_C, base_T, scale, m=64):
-    """Relative cycle-shape change + relative period change, on the orbit solver."""
+    """Relative cycle-shape change + relative period change, on the orbit solver.
+    Returns the perturbed CYCLE too -- the summary scalar is not the evidence."""
     from engine.orbit import make_orbit_finder
     find, _s = make_orbit_finder(model, m=m)
     x0, T, C, st = find(params)
     if C is None:
-        return np.nan, np.nan, st
+        return np.nan, np.nan, st, None
     d = (C - base_C) / scale[:, None]
-    return float(np.sqrt(np.mean(d ** 2))), float((T - base_T) / base_T), st
+    return float(np.sqrt(np.mean(d ** 2))), float((T - base_T) / base_T), st, C
 
 
 def ptc_change(model, params, target, doses, base_new, mode='pulse', n_phases=16):
-    """RMS circular change of the PTC, on the INDEPENDENT adaptive engine."""
+    """RMS circular change of the PTC, on the INDEPENDENT adaptive engine.
+    Returns the full perturbed PTC grid -- the surface IS the evidence, the rms is a caption."""
     from engine.reference import AdaptiveReference, ptc as ref_ptc
     ref = AdaptiveReference(model, params=params).build()
     rows = []
     for d in doses:
         _old, new = ref_ptc(model, ref, target, float(d), n_phases=n_phases, mode=mode)
         rows.append(new)
-    new = np.array(rows)
+    new = np.array(rows)                                   # (n_dose, n_phase)
     diff = np.abs(((new - base_new + 0.5) % 1.0) - 0.5)
     return (float(np.sqrt(np.nanmean(diff ** 2))), float(np.nanmax(diff)),
             int(np.sum(~np.isfinite(new))), new, ref.period)
@@ -121,21 +123,29 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
     print(f"  {'direction':32s} {'rho':>8s} {'sign':>5s} {'dLC':>9s} {'|dT|/T':>9s} "
           f"{'dPTC rms':>9s} {'dPTC max':>9s}")
     rows = []
+    # RAW INTEGRATION OUTPUT, kept per (direction, sign). Recomputing this costs minutes of
+    # adaptive integration; storing it costs a few hundred kB. Every plot and every re-analysis
+    # downstream reads these rather than re-running anything.
+    LCP, PTCG, VECS, PARAMSETS = [], [], [], []
     for label, v, r in dirs:
         v = np.asarray(v, float)
         v = v / np.linalg.norm(v)
         for sgn in (+1, -1):
             pd = displaced(model, names, sgn * v, eps)
-            dlc, dT, st = lc_change(model, pd, C0, T0, scale)
+            dlc, dT, st, C = lc_change(model, pd, C0, T0, scale)
             if not np.isfinite(dlc):
                 print(f"  {label:32s} {r:8.2f} {sgn:+5d} {'orbit ' + st:>9s}")
                 continue
-            prms, pmax, nbad, _new, per = ptc_change(model, pd, target, doses, base_new,
-                                                     mode=mode, n_phases=n_phases)
+            prms, pmax, nbad, new, per = ptc_change(model, pd, target, doses, base_new,
+                                                    mode=mode, n_phases=n_phases)
             print(f"  {label:32s} {r:8.2f} {sgn:+5d} {dlc:9.4f} {abs(dT):9.4f} "
                   f"{prms:9.4f} {pmax:9.4f}" + (f"  ({nbad} bad)" if nbad else ""))
             rows.append(dict(label=label, rho=r, sign=sgn, dLC=dlc, dT=dT,
-                             dPTC_rms=prms, dPTC_max=pmax, n_bad=nbad))
+                             dPTC_rms=prms, dPTC_max=pmax, n_bad=nbad, period=per))
+            LCP.append(C)                                   # (n_states, m) perturbed cycle
+            PTCG.append(new)                                # (n_dose, n_phase) perturbed PTC
+            VECS.append(sgn * v)                            # the displacement direction
+            PARAMSETS.append([pd[n] for n in names])        # the actual parameter values used
 
     # verdict
     dec = [r for r in rows if r['label'].startswith('decoupled')]
@@ -159,15 +169,85 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
         print(f"  The MAGNITUDE does not: the linear analysis predicts {predicted:.0f}x "
               f"(sqrt of the rho ratio)\n  against an actual {actual:.1f}x, i.e. overstated "
               f"~{predicted / max(actual, 1e-12):.0f}x. Cite the finite-displacement number.")
+    # ---- dense rendering of the same displacements, for looking at ---------------------- #
+    # The adaptive engine VERIFIES (it shares no machinery with the jacobian), but it is slow,
+    # so the verification grid above is necessarily coarse -- too coarse to actually see a
+    # surface. The JAX engine agrees with it to 1.6e-05 on this model (engine/validate.py), so
+    # it is sound to use for a dense picture of the SAME parameter sets. Numbers come from the
+    # adaptive run; pictures come from this one. Both are saved.
+    dense = dict()
+    try:
+        import jax
+        import jax.numpy as jnp
+        from engine.ptc import make_ptc, grid_points, phase_or_nan, valid_mask, recommended_skip
+        from analysis.ptc_sens import load_grid
+        dgrid, ddt = load_grid(model_name, target, mode)
+        skip_p, _mu, _r = recommended_skip(model, tol=1e-2, verbose=False)
+        nph = 32
+        fj_fn, solver = make_ptc(model, target, mode=mode, readout='raw', skip_p=skip_p,
+                                 dt=ddt or 0.02, track_min=True)
+        fj = jax.jit(fj_fn)
+        gph, gdz = grid_points(nph, dgrid)
+
+        def dense_ptc(params):
+            from engine.orbit import make_orbit_finder
+            fnd, _sv = make_orbit_finder(model)
+            x0, _T, _C, st = fnd(params)
+            if x0 is None:
+                return None
+            z, mn = fj(model.jax_params(params), x0, gph, gdz)
+            p, _a = phase_or_nan(np.asarray(z))
+            p = np.where(valid_mask(np.asarray(mn)), p, np.nan)
+            return p.reshape(len(dgrid), nph).T          # (n_phase, n_dose)
+
+        db = dense_ptc(model.get_parameters())
+        dg = [dense_ptc({n: float(val) for n, val in zip(names, pv)}) for pv in PARAMSETS]
+        dense = dict(dense_doses=np.asarray(dgrid), dense_old=np.arange(nph) / nph,
+                     dense_base=db.astype(np.float32),
+                     dense_ptc_grids=np.array([g if g is not None else
+                                               np.full_like(db, np.nan) for g in dg],
+                                              dtype=np.float32),
+                     dense_dt=float(ddt or 0.02), dense_engine='jax')
+        print(f"[confirm] dense render: {nph} phases x {len(dgrid)} doses on the JAX engine "
+              f"for {len(dg)} displacement(s)")
+    except Exception as e:                     # never let the picture break the verification
+        print(f"[confirm] dense render skipped ({type(e).__name__}: {e})", file=sys.stderr)
+
     out = paths.out_path(model_name, 'coupling', f'confirm_{target}_{mode}.npz')
-    paths.savez(out, eps=eps, doses=doses, base_new=base_new,
-                labels=np.array([r['label'] for r in rows]),
-                dLC=np.array([r['dLC'] for r in rows]),
-                dPTC_rms=np.array([r['dPTC_rms'] for r in rows]),
-                dPTC_max=np.array([r['dPTC_max'] for r in rows]),
-                sign=np.array([r['sign'] for r in rows]),
-                rho=np.array([r['rho'] for r in rows]))
+    paths.savez(
+        out,
+        # --- configuration, so the run is reconstructible ---------------------------- #
+        model=model_name, target=target, mode=mode, eps=eps, doses=doses,
+        param_names=np.array(names), state_names=np.array(list(model.state_names)),
+        observables=np.array(list(model.observable_states())),
+        n_phases=n_phases, old=np.arange(n_phases) / n_phases,
+        # --- RAW baselines ------------------------------------------------------------ #
+        base_profiles=np.asarray(C0),            # (n_states, m) the base limit cycle
+        base_period=T0, lc_scale=scale,
+        base_new=base_new,                       # (n_dose, n_phase) the base PTC, adaptive
+        base_params=np.array([model.get_parameters()[n] for n in names]),
+        # --- RAW per-displacement output ---------------------------------------------- #
+        # THE POINT OF THIS FILE. Each of these took minutes of adaptive integration to
+        # produce and a few hundred kB to keep. Every figure and every re-analysis reads
+        # them; nothing downstream ever needs to integrate again.
+        lc_profiles=np.array(LCP),               # (n_run, n_states, m)
+        ptc_grids=np.array(PTCG),                # (n_run, n_dose, n_phase)
+        directions=np.array(VECS),               # (n_run, n_param) unit displacement
+        param_values=np.array(PARAMSETS),        # (n_run, n_param) values actually used
+        # --- derived summaries (cheap to recompute, kept for convenience) -------------- #
+        labels=np.array([r['label'] for r in rows]),
+        dLC=np.array([r['dLC'] for r in rows]),
+        dT=np.array([r['dT'] for r in rows]),
+        dPTC_rms=np.array([r['dPTC_rms'] for r in rows]),
+        dPTC_max=np.array([r['dPTC_max'] for r in rows]),
+        period=np.array([r['period'] for r in rows]),
+        n_bad=np.array([r['n_bad'] for r in rows]),
+        sign=np.array([r['sign'] for r in rows]),
+        rho=np.array([r['rho'] for r in rows]))
     print(f"\n[confirm] -> {out}")
+    print(f"[confirm] saved RAW: lc_profiles {np.array(LCP).shape}, "
+          f"ptc_grids {np.array(PTCG).shape}, plus baselines and the exact parameter "
+          f"values used")
     return rows
 
 

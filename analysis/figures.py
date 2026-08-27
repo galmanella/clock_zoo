@@ -36,15 +36,14 @@ import analysis  # noqa: F401
 import paths
 from plotting import phase_map, phase_cmap, scrit_overview
 
-FIGDIR = os.path.join(paths.HERE, 'docs', 'figures')
+#: figures live in their run directory, not one flat folder -- see paths.save_figure.
+_CTX = dict(model=None, analysis='figures', tag=None, publish=False)
 
 
-def _save(fig, name):
-    os.makedirs(FIGDIR, exist_ok=True)
-    p = os.path.join(FIGDIR, name)
-    fig.savefig(p, dpi=140, bbox_inches='tight')
+def _save(fig, name, **cfg):
+    p = paths.save_figure(fig, _CTX['model'], _CTX['analysis'], name, tag=_CTX['tag'],
+                          publish=(name if _CTX['publish'] else None), **cfg)
     plt.close(fig)
-    print(f"[figures] -> {p}", flush=True)
     return p
 
 
@@ -94,7 +93,8 @@ def fig_tornado(lc, pt, model, target, mode):
     fig.suptitle(f"{model} / {target} ({mode}): parameter sensitivity, sorted by LC",
                  fontsize=12)
     fig.tight_layout()
-    return _save(fig, f"{model}_tornado_{target}_{mode}.png")
+    return _save(fig, f"tornado_{target}_{mode}.png", target=target, mode=mode,
+                 n_params=len(names))
 
 
 def fig_lc_examples(lc, model, n_show=4):
@@ -132,7 +132,8 @@ def fig_lc_examples(lc, model, n_show=4):
     fig.suptitle(f"{model}: limit cycle under a +/-26% parameter change "
                  f"(strongest / median / weakest)", fontsize=11)
     fig.tight_layout()
-    return _save(fig, f"{model}_lc_examples.png")
+    return _save(fig, "lc_examples.png", factors=[float(fac[lo]), float(fac[hi])],
+                 states=obs)
 
 
 def fig_ptc_examples(pt, model, target, mode):
@@ -175,7 +176,8 @@ def fig_ptc_examples(pt, model, target, mode):
     fig.suptitle(f"{model} / {target} ({mode}): PTC under a +26% parameter change "
                  f"(strongest / median / weakest)", fontsize=11)
     fig.tight_layout()
-    return _save(fig, f"{model}_ptc_examples_{target}_{mode}.png")
+    return _save(fig, f"ptc_examples_{target}_{mode}.png", target=target, mode=mode,
+                 factor=float(fac[hi]), n_dose=len(doses))
 
 
 def fig_directions(cp, model, target, mode):
@@ -263,7 +265,8 @@ def fig_directions(cp, model, target, mode):
 
     fig.suptitle(f"{model} / {target} ({mode}): combinatorial LC-vs-PTC decoupling",
                  fontsize=12)
-    return _save(fig, f"{model}_directions_{target}_{mode}.png")
+    return _save(fig, f"directions_{target}_{mode}.png", target=target, mode=mode,
+                 n_params=len(names))
 
 
 def fig_direction_examples(cf, model, target, mode, n_states=3):
@@ -356,7 +359,105 @@ def fig_direction_examples(cf, model, target, mode, n_states=3):
                  f"dLC / dPTC in the row labels are measured on the ADAPTIVE engine; "
                  f"{engine_note}", fontsize=11)
     fig.tight_layout()
-    return _save(fig, f"{model}_direction_examples_{target}_{mode}.png")
+    return _save(fig, f"direction_examples_{target}_{mode}.png", target=target,
+                 mode=mode, eps=eps, engine=engine_note)
+
+
+def fig_surfaces(ch, model, mode):
+    """PTC surfaces at base, each with its twist curve in a DEDICATED panel beneath it.
+
+    The twist used to be drawn as a black line over the surface; it is its own quantity and
+    gets its own axes, on a shared dose axis so a reader can carry a dose between them."""
+    from plotting import twist_panel
+    ts = [str(t) for t in ch['targets']]
+    ncol = len(ts)
+    fig, axes = plt.subplots(2, ncol, figsize=(3.5 * ncol, 6.2), squeeze=False,
+                             gridspec_kw={'height_ratios': [1.35, 1]})
+    for k, t in enumerate(ts):
+        sings = [{'phi': p, 'dose': d, 'sign': sg} for p, d, sg in
+                 zip(ch[f'sing_phi__{t}'], ch[f'sing_dose__{t}'], ch[f'sing_sign__{t}'])]
+        phase_map(axes[0][k], ch[f'old__{t}'], ch[f'doses__{t}'], ch[f'ptc__{t}'],
+                  title=f"{t}   S*={ch['S'][k]:.3g}", sings=sings, scrit=ch['S'][k])
+        twist_panel(axes[1][k], ch[f'doses__{t}'], ch[f'twist__{t}'], scrit=ch['S'][k],
+                    title=f"twist = {ch['total_twist'][k]:.3f} cyc")
+    fig.suptitle(f"{model} ({mode}): PTC surfaces at base, with the fixed-point (twist) "
+                 f"curve below each", fontsize=12)
+    fig.tight_layout()
+    return _save(fig, f"surfaces_{mode}.png", mode=mode, targets=ts)
+
+
+# --------------------------------------------------------------------------- #
+def fig_sweep(sw, model):
+    """A RANGE of displacements along one direction: what moves, and how much.
+
+    Four things on one page, all against the same eps axis:
+      * the limit cycle at every eps, coloured by eps -- how much the cycle actually deforms;
+      * the PTC surface at the extremes and at base;
+      * the twist curve at every eps, in its own panel;
+      * the PTC FEATURES (total twist, S_crit, phi*) as functions of eps, which is what makes
+        "it barely moves" or "it moves a lot" quantitative rather than an impression.
+    """
+    from plotting import twist_panel
+    eps = np.asarray(sw['eps'])
+    LC = np.asarray(sw['lc_profiles'])
+    PT = np.asarray(sw['ptc_grids'])
+    TW = np.asarray(sw['twist_curves'])
+    doses, old = np.asarray(sw['doses']), np.asarray(sw['old'])
+    states = [str(x) for x in sw['state_names']]
+    obs = [str(x) for x in sw['observables']][:3]
+    oidx = [states.index(x) for x in obs]
+    baseC, baseP = np.asarray(sw['base_profiles']), np.asarray(sw['base_ptc'])
+    label, rho = str(sw['label']), float(sw['rho'])
+    cmap = plt.cm.coolwarm
+    norm = plt.Normalize(eps.min(), eps.max())
+    ph = np.arange(baseC.shape[1]) / baseC.shape[1]
+    i0 = int(np.argmin(np.abs(eps)))
+    ends = [0, i0, len(eps) - 1]
+
+    fig = plt.figure(figsize=(16.5, 9.2))
+    gs = fig.add_gridspec(3, 6, hspace=0.42, wspace=0.38)
+
+    for c, (si, sn) in enumerate(zip(oidx, obs)):          # row 0: the limit cycle
+        ax = fig.add_subplot(gs[0, c])
+        for i in range(len(eps)):
+            if np.isfinite(LC[i]).all():
+                ax.plot(ph, LC[i][si], color=cmap(norm(eps[i])), lw=1.1)
+        ax.plot(ph, baseC[si], color='k', lw=2.0, zorder=5)
+        ax.set_title(f"LC: {sn}", fontsize=9); ax.set_xlabel('phase')
+        ax.tick_params(labelsize=7)
+    ax = fig.add_subplot(gs[0, 3])                          # the twist curve at every eps
+    for i in range(len(eps)):
+        if np.isfinite(TW[i]).any():
+            twist_panel(ax, doses, TW[i], color=cmap(norm(eps[i])))
+    twist_panel(ax, doses, np.asarray(sw['base_twist']), color='k')
+    ax.set_title('twist curve vs dose', fontsize=9)
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
+    plt.colorbar(sm, ax=ax, fraction=0.05, label='eps')
+
+    for j, i in enumerate(ends):                            # row 1: surfaces at the extremes
+        ax = fig.add_subplot(gs[1, j * 2:j * 2 + 2])
+        phase_map(ax, old, doses, PT[i], title=f"PTC at eps = {eps[i]:+.2f}")
+
+    panels = [('total twist (cyc)', sw['total_twist'], 'tab:purple'),
+              ('S_crit', sw['S_crit'], 'tab:orange'),
+              ('phi* (singularity phase)', sw['phi_sing'], 'tab:green'),
+              ('period T (h)', sw['period'], 'tab:brown'),
+              ('dLC vs base', sw['dLC'], 'tab:blue'),
+              ('dPTC vs base', sw['dPTC'], 'tab:red')]
+    for c, (ttl, y, col) in enumerate(panels):              # row 2: features vs eps
+        ax = fig.add_subplot(gs[2, c])
+        y = np.asarray(y, float)
+        ax.plot(eps, y, 'o-', color=col, ms=4)
+        ax.axvline(0, color='0.7', lw=0.8, ls=':')
+        if ttl.startswith('S_crit'):
+            ax.set_yscale('log')
+        ax.set_xlabel('eps'); ax.set_title(ttl, fontsize=9)
+        ax.tick_params(labelsize=7)
+    fig.suptitle(f"{model} / {sw['target']} ({sw['mode']}): sweep along the {label} direction "
+                 f"(rho = {rho:.3g})", fontsize=13)
+    return _save(fig, f"sweep_{sw['target']}_{sw['mode']}_{sw['direction']}.png",
+                 direction=str(sw['direction']), rho=rho,
+                 eps_range=[float(eps.min()), float(eps.max())], n_eps=len(eps))
 
 
 # --------------------------------------------------------------------------- #
@@ -366,22 +467,28 @@ def main(argv=None):
     ap.add_argument('--target', default=os.environ.get('TARGET', 'BMAL1'))
     ap.add_argument('--mode', default='pulse')
     ap.add_argument('--which', default='all')
+    ap.add_argument('--tag', default=None,
+                    help='run tag the figures are written under (default: a timestamp)')
+    ap.add_argument('--publish', action='store_true',
+                    help='also copy each figure into docs/figures/ for PROJECT_SUMMARY')
+    ap.add_argument('--direction', default='decoupled')
     a = ap.parse_args(argv)
+    _CTX.update(model=a.model, tag=paths.run_tag(a.tag), publish=a.publish)
     from analysis.coupling import _load
     want = a.which.split(',') if a.which != 'all' else \
         ['scrit', 'surfaces', 'tornado', 'lc_examples', 'ptc_examples', 'directions',
-         'direction_examples']
+         'direction_examples', 'sweep']
     made = []
 
     if 'scrit' in want:
         sc, _t = _load(a.model, 'scrit', f'scrit_{a.mode}*.npz')
         sc['model'] = str(sc['model']); sc['mode'] = str(sc['mode'])
-        made.append(_save(scrit_overview(sc), f"{a.model}_scrit_{a.mode}.png"))
+        made.append(_save(scrit_overview(sc), f"scrit_{a.mode}.png", mode=a.mode,
+                          n_targets=len(sc["targets"])))
     if 'surfaces' in want:
         ch, _t = _load(a.model, 'characterize', f'char_{a.mode}*.npz')
-        from analysis.characterize import _plot
         ch['model'] = str(ch['model']); ch['mode'] = str(ch['mode'])
-        _plot(ch, os.path.join(FIGDIR, f"{a.model}_surfaces_{a.mode}.png"))
+        made.append(fig_surfaces(ch, a.model, a.mode))
     lc = pt = None
     if {'tornado', 'lc_examples', 'ptc_examples', 'directions'} & set(want):
         lc, _t = _load(a.model, 'lc_sens', 'lc_sens*.npz')
@@ -413,7 +520,22 @@ def main(argv=None):
                       "analysis.confirm", file=sys.stderr)
             else:
                 made.append(fig_direction_examples(cf, a.model, a.target, a.mode))
-    print(f"[figures] {len(made)} figure(s) written to {FIGDIR}")
+    if 'sweep' in want:
+        import glob as _g
+        st = paths.latest_run(a.model, 'sweep')
+        hits = (_g.glob(os.path.join(paths.out_dir(a.model, 'sweep', st, create=False),
+                                     f'sweep_{a.target}_{a.mode}_{a.direction}.npz'))
+                if st else [])
+        if not hits:
+            print(f"[figures] run `python -m analysis.sweep --model {a.model} "
+                  f"--target {a.target} --direction {a.direction}` first", file=sys.stderr)
+        else:
+            sw = dict(np.load(hits[0], allow_pickle=True))
+            for k in ('model', 'target', 'mode', 'direction', 'label'):
+                sw[k] = str(sw[k])
+            made.append(fig_sweep(sw, a.model))
+    print(f"[figures] {len(made)} figure(s) -> "
+          f"{os.path.relpath(paths.out_dir(a.model, 'figures', _CTX['tag']), paths.HERE)}")
     return 0
 
 

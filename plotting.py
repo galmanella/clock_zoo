@@ -47,8 +47,14 @@ def _break_wrap(phase, y, thr=0.5):
     return p, yy
 
 
-def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None, twist=None):
-    """A PTC surface: old phase (x) vs dose (y, log), coloured by new phase."""
+def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None):
+    """A PTC surface: old phase (x) vs dose (y, log), coloured by new phase.
+
+    NO fixed-point overlay. The twist curve used to be drawn on top of the surface in black,
+    and it was a bad idea twice over: a line across a cyclic colour field is hard to read at
+    all, and it visually competes with the surface it is meant to annotate. It gets its own
+    panel now -- see `twist_panel`.
+    """
     im = ax.pcolormesh(old, doses, np.ma.masked_invalid(np.asarray(ptc).T),
                        cmap=phase_cmap(), vmin=0, vmax=1, shading='nearest')
     ax.set_yscale('log')
@@ -58,12 +64,33 @@ def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None, twist=None)
                 ms=7, mfc='white', mec='white', mew=1.6, ls='none')
     if scrit is not None and np.isfinite(scrit):
         ax.axhline(scrit, color='white', ls='--', lw=1.2)
-    if twist is not None:
-        ax.plot(*_break_wrap(np.asarray(twist, float), np.asarray(doses, float)),
-                color='black', lw=2.0)
     if title:
         ax.set_title(title, fontsize=9)
     return im
+
+
+def twist_panel(ax, doses, twist, base=None, scrit=None, label=None, color='k', title=None):
+    """The stable fixed point (attracting entrainment phase) vs dose -- the TWIST curve, in
+    its own panel.
+
+    Plotted with the dose on the SAME log y-axis as the neighbouring phase map, so a reader
+    can carry a dose across from one to the other. Circular wraps are broken with NaN rather
+    than drawn, or the line streaks across the panel at every 0/1 crossing.
+    """
+    doses = np.asarray(doses, float)
+    if base is not None:
+        ax.plot(*_break_wrap(np.asarray(base, float), doses), color='0.65', lw=2.4,
+                label='base', zorder=2)
+    ax.plot(*_break_wrap(np.asarray(twist, float), doses), color=color, lw=1.6,
+            label=label, zorder=3)
+    if scrit is not None and np.isfinite(scrit):
+        ax.axhline(scrit, color='tab:red', ls='--', lw=1.0)
+    ax.set_yscale('log')
+    ax.set_xlim(0, 1)
+    ax.set_xlabel('fixed-point phase'); ax.set_ylabel('dose')
+    if title:
+        ax.set_title(title, fontsize=9)
+    return ax
 
 
 def scrit_overview(blob, path=None):

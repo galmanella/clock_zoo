@@ -199,6 +199,55 @@ def save_pickle(obj, model, analysis, name, tag=None, meta=None):
         write_meta(model, analysis, tag, **meta)
 
 
+def save_figure(fig, model, analysis, name, tag=None, publish=None, dpi=140, stamp=True,
+                **cfg):
+    """Save a figure INTO ITS RUN DIRECTORY: out/<model>/<analysis>/<tag>/<name>.png.
+
+    Figures belong next to the data that produced them, not in one flat folder. A flat folder
+    stops being usable the moment a second model, a second target or a second parameter choice
+    appears: filenames collide, nothing records which run a picture came from, and re-running
+    an analysis silently overwrites the figure that a document is citing.
+
+    Three things make a figure self-identifying:
+      * the PATH carries model / analysis / run tag;
+      * a `<name>.png.meta.json` sidecar records the entry script, git commit, host, time and
+        whatever `cfg` the caller passes (dose grid, eps, dt, ...);
+      * `stamp=True` prints a one-line footer INTO the image -- script, commit, tag -- so a PNG
+        that has been pasted into a slide or an email is still traceable to its run.
+
+    `publish='name.png'` additionally copies it to docs/figures/ under that name; that is the
+    explicit, deliberate act of promoting a figure to one PROJECT_SUMMARY cites, rather than
+    every figure landing there by default.
+    """
+    tag = tag or run_tag()
+    name = name if name.endswith('.png') else name + '.png'
+    p = out_path(model, analysis, name, tag)
+    prov = check_provenance()
+    if stamp:
+        bits = [prov['script'], prov['git'], f"tag={tag}"]
+        bits += [f"{k}={v}" for k, v in list(cfg.items())[:4]]
+        fig.text(0.005, 0.003, "  |  ".join(str(b) for b in bits), fontsize=5.5,
+                 color='0.45', ha='left', va='bottom')
+    fig.savefig(p, dpi=dpi, bbox_inches='tight')
+    with open(p + '.meta.json', 'w') as f:
+        json.dump(dict(figure=name, model=model, analysis=analysis, tag=str(tag),
+                       timestamp=datetime.now().isoformat(timespec='seconds'),
+                       host=socket.gethostname(), **prov,
+                       config={k: (v.tolist() if hasattr(v, 'tolist') else v)
+                               for k, v in cfg.items()}), f, indent=2, default=str)
+    print(f"[fig] -> {os.path.relpath(p, HERE)}", flush=True)
+    if publish:
+        d = os.path.join(HERE, 'docs', 'figures')
+        os.makedirs(d, exist_ok=True)
+        import shutil
+        shutil.copyfile(p, os.path.join(d, publish))
+        with open(os.path.join(d, publish + '.source.txt'), 'w') as f:
+            f.write(f"copied from {os.path.relpath(p, HERE)}\n"
+                    f"script {prov['script']} @ {prov['git']}, tag {tag}\n")
+        print(f"[fig] published -> docs/figures/{publish}", flush=True)
+    return p
+
+
 def savez(path, **arrays):
     """np.savez_compressed + a sidecar '<path>.meta.json' recording provenance.
 

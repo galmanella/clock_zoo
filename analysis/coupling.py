@@ -351,11 +351,16 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
     print(f"\n   {'LC floor':>9s} {'kept':>5s} {'rho_max':>10s} {'|J_LC v|':>10s} "
           f"{'|J_PTC v|':>10s}   dominant parameters")
     for fl in (1e-10, 1e-4, 1e-3, 1e-2, 3e-2):
-        r, Vv, inf = decoupling_spectrum(J_LCq, J_PTq, ridge=fl)
-        if not len(r):
+        # NB not `r`: that name holds the per-parameter log-log correlation computed above and
+        # saved into the blob at the end. Rebinding it here left `corr` in every saved npz
+        # holding a rho spectrum instead of a correlation -- the PRINTED value was right and
+        # only the stored one was wrong, which is exactly the kind of thing that survives
+        # unnoticed until something reads the file back.
+        rr, Vv, inf = decoupling_spectrum(J_LCq, J_PTq, ridge=fl)
+        if not len(rr):
             continue
         heavy = np.argsort(-np.abs(Vv[:, 0]))[:3]
-        print(f"   {fl:9.0e} {inf['n_kept']:2d}/{inf['n_total']:<2d} {r[0]:10.2f} "
+        print(f"   {fl:9.0e} {inf['n_kept']:2d}/{inf['n_total']:<2d} {rr[0]:10.2f} "
               f"{inf['lc_resp'][0]:10.2e} {inf['ptc_resp'][0]:10.2e}   "
               f"{', '.join(f'{kept[j]}({Vv[j, 0]:+.2f})' for j in heavy)}")
     print(f"   ^ if rho_max collapses as the floor rises, the big values lived on LC "
@@ -399,7 +404,7 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
 
     blob = dict(model=model_name, target=target, mode=mode, feature=feature,
                 params=np.array(kept), lc_sens=x[keep], ptc_sens=y[keep],
-                corr=r, quadrants=np.array(list(quad.values())),
+                corr=float(r), quadrants=np.array(list(quad.values())),
                 quadrant_names=np.array(list(quad)),
                 rho=rho, V=V, axis_rho=axis_rho, cond_B=condB,
                 dir_lc_resp=info['lc_resp'], dir_ptc_resp=info['ptc_resp'],

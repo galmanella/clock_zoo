@@ -1,0 +1,2 @@
+copied from out\almeida\figures\batch1\sweep_BMAL1_pulse_stiffest.png
+script analysis/figures.py @ b75707e, tag batch1

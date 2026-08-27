@@ -546,6 +546,45 @@ def fig_direction_gallery(sweeps, model, target, mode):
                  eps_max=float(max(abs(np.asarray(sw['eps'])).max() for sw in sweeps)))
 
 
+def _load_characterize(model, mode, tag=None):
+    """Merge every per-target characterize file in a run into one blob.
+
+    characterize writes one file per target (see its `run`), so a run built up over several
+    invocations reads back as a single table instead of whichever invocation happened to go
+    last."""
+    import glob as _g
+    tag = tag or paths.latest_run(model, 'characterize')
+    if tag is None:
+        return None
+    files = sorted(_g.glob(os.path.join(paths.out_dir(model, 'characterize', tag,
+                                                      create=False),
+                                        f'char_{mode}*.npz')))
+    if not files:
+        return None
+    blob, targets = {}, []
+    per = ['S', 'phi', 'n_sing', 'total_twist', 'min_amp', 'n_unusable', 'dt']
+    acc = {k: [] for k in per}
+    for fp in files:
+        z = np.load(fp, allow_pickle=True)
+        ts = [str(x) for x in z['targets']]
+        for i, t in enumerate(ts):
+            if t in targets:                      # a later run supersedes an earlier one
+                j = targets.index(t)
+                for k in per:
+                    acc[k][j] = z[k][i]
+            else:
+                targets.append(t)
+                for k in per:
+                    acc[k].append(z[k][i])
+            for k in ('doses', 'old', 'ptc', 'amp', 'valid', 'W', 'twist',
+                      'sing_phi', 'sing_dose', 'sing_sign'):
+                if f'{k}__{t}' in z:
+                    blob[f'{k}__{t}'] = z[f'{k}__{t}']
+    blob.update(model=model, mode=mode, targets=np.array(targets),
+                **{k: np.array(v) for k, v in acc.items()})
+    return blob
+
+
 # --------------------------------------------------------------------------- #
 def main(argv=None):
     ap = argparse.ArgumentParser(description='regenerate every figure from saved npz')
@@ -575,9 +614,12 @@ def main(argv=None):
         made.append(_save(scrit_overview(sc), f"scrit_{a.mode}.png", mode=a.mode,
                           n_targets=len(sc["targets"])))
     if 'surfaces' in want:
-        ch, _t = _load(a.model, 'characterize', f'char_{a.mode}*.npz')
-        ch['model'] = str(ch['model']); ch['mode'] = str(ch['mode'])
-        made.append(fig_surfaces(ch, a.model, a.mode))
+        ch = _load_characterize(a.model, a.mode)
+        if ch is None:
+            print(f"[figures] run `python -m analysis.characterize --model {a.model}` first",
+                  file=sys.stderr)
+        else:
+            made.append(fig_surfaces(ch, a.model, a.mode))
     lc = pt = None
     if {'tornado', 'lc_examples', 'ptc_examples', 'directions'} & set(want):
         lc, _t = _load(a.model, 'lc_sens', 'lc_sens*.npz')

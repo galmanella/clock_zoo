@@ -16,14 +16,17 @@ gradient descent recovers 132/132 parameters *from the truth* and stalls at ~26/
 distance*. That "from-distance locality" blocked the actual scientific question. So: change
 the model, not the optimizer, and re-ask it on models small enough to optimise.
 
-**Status.** The stack is built and gated. Objectives (a) and (b) are answered for Almeida.
+**Status.** The stack is built and gated. Objectives (a) and (b) are answered for Almeida,
+across three perturbation targets (BMAL1, CRY, PER).
 
 **The headline scientific result so far:** for Almeida at base, there IS a parameter
 combination that the PTC constrains and the limit cycle leaves ~11x freer -- confirmed by
 finite displacement on an independent adaptive solver, with controls (§3.6). No single
 parameter shows this (best ratio 1.04); it only appears in a COMBINATION, which is why a
 per-parameter sensitivity scatter misses it entirely. This is the opposite of the Mirsky
-result, where no direction decoupled.
+result, where no direction decoupled. All three targets find the SAME direction
+(`ker`/`gamma_CP`/`ve`/`ke`), so it is a property of the model rather than of the probe --
+though they differ ~18x in how strongly they express it (CRY 1924, PER 108).
 
 The most consequential methodological findings, each of which changed a scientific answer:
 
@@ -329,6 +332,61 @@ adaptive-verified engine rather than autodiff through fixed-step RK4.
 **So, for Almeida at base: PTC data does constrain a parameter combination that the limit cycle
 leaves ~11x freer.** That is a positive answer to the project's question for this model, at this
 operating point, for this one probe — and the opposite of what Mirsky gave.
+
+### 3.7 Three targets: the decoupled direction is a property of the MODEL, not the probe
+
+The whole objective-(b) chain -- `ptc_sens`, `coupling`, `sweep` -- repeated for **CRY** and
+**PER** alongside BMAL1.
+
+| target | S_crit | phi* | twist (cyc) | best single param | best combination | gain | log-log r | angle k=1 |
+|---|---|---|---|---|---|---|---|---|
+| **BMAL1** | 4.50 | 0.521 | **0.489** | `ve` 1.64 | **122.3** | 75x | +0.660 | 79.1 deg |
+| **CRY** | 138.1 | 0.938 | **0.285** | `ker` 11.27 | **1923.5** | **171x** | +0.464 | 66.1 deg |
+| **PER** | 15.65 | 0.854 | **0.159** | `ve` 2.86 | **108.4** | 38x | +0.686 | 77.8 deg |
+
+**The top decoupled direction is essentially the SAME combination for all three probes:**
+
+```
+BMAL1   +0.65 ker  -0.53 gamma_CP  +0.49 ve  +0.20 ke
+CRY     -0.61 ker  +0.55 gamma_CP  -0.48 ve  -0.26 ke
+PER     -0.52 ker  +0.61 gamma_CP  -0.49 ve  -0.26 ke
+```
+
+Same four parameters, near-identical weights, and the overall sign of an eigenvector is
+arbitrary -- so BMAL1's `+ker` and CRY's `-ker` are the same axis. This matters: it says the
+LC-quiet / PTC-visible direction is a property of **Almeida's parameter geometry**, not an
+artifact of which species you happen to perturb. Any one of these three probes would find it.
+
+It also sharpens the design question. In Mirsky the lesson was *vary dose, not gene*, because
+single-gene PTCs were highly redundant. Here three probes agree on the direction but differ a
+lot in **how strongly** they express it -- CRY reaches rho = 1924 against PER's 108 -- so the
+probe choice sets the signal-to-noise on a shared quantity rather than revealing different
+quantities.
+
+**CRY is the outlier worth noting.** Its single-parameter ratio is already 11.3 (versus 1.6 for
+BMAL1), its log-log correlation is the weakest (+0.464), and its base twist is small (0.285)
+with a nearly flat FP-vs-dose curve -- CRY's isochrons are close to radial at base. It is the
+most promising probe of the three for identifiability, and the one whose twist has the most
+room to move in relative terms.
+
+### 3.8 Different directions change the PTC in different WAYS
+
+![Direction gallery](docs/figures/almeida_direction_gallery_BMAL1_pulse.png)
+
+Sweeping five directions spanning the rho spectrum (122 -> 24.6 -> 9.59 -> 1.07 -> 0.006) at
+eps up to +/-1.5 gives qualitatively distinct modifications, not merely different magnitudes:
+
+| direction | rho | what it does to the PTC |
+|---|---|---|
+| decoupled | 122 | a broad, smooth, single-signed offset at high dose, plus a dipole at the singularity |
+| eigendirection 1 | 24.6 | the same broad offset with the OPPOSITE sign, and a sharper dipole |
+| eigendirection 2 | 9.59 | almost purely a singularity displacement -- nearly zero change elsewhere |
+| eigendirection 6 | 1.07 | reshapes the type-0 boundary as a diagonal band |
+| coupled | 0.006 | global high-frequency reorganisation; the orbit is lost entirely for eps < -0.3 |
+
+So the eigenbasis is not just an ordering by magnitude -- it separates *kinds* of isochron
+change. Direction 2 in particular is close to a pure "move the black hole" knob, which is what
+a radialization program would want to steer with.
 
 ---
 

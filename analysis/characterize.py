@@ -136,13 +136,19 @@ def run(model_name, mode='pulse', targets=None, n_phase=32, shard=None, nshards=
         for k in ('doses', 'old', 'ptc', 'amp', 'valid', 'W', 'twist',
                   'sing_phi', 'sing_dose', 'sing_sign'):
             blob[f'{k}__{r["target"]}'] = np.asarray(r[k])
-    out = paths.out_path(model_name, 'characterize',
-                         paths.shard_filename(f'char_{mode}', idx if n > 1 else None), tag)
+    # ONE FILE PER TARGET. A single `char_<mode>.npz` per run tag silently clobbered itself
+    # whenever the driver was invoked twice with different --targets in the same tag: the
+    # BMAL1/DBP run, then CRY, then PER each overwrote the previous, and the only survivor
+    # looked like a complete result. Encoding the target in the name makes repeat invocations
+    # accumulate instead of destroy, and readers glob and merge them.
+    subset = '-'.join(str(t) for t in blob['targets'])
+    out = paths.out_path(model_name, 'characterize', f'char_{mode}__{subset}.npz', tag)
     paths.savez(out, **blob)
     print(f"[characterize] -> {out}", flush=True)
     if n == 1:
         print_table(blob)
-        _plot(blob, out.replace('.npz', '.png'))
+        print(f"[characterize] figures: python -m analysis.figures --model {model_name} "
+              f"--which surfaces --tag <tag>", flush=True)
     return blob
 
 
@@ -169,30 +175,11 @@ def print_table(blob):
               f"({np.nanmin(tw):.4f} cyc)")
 
 
-def _plot(blob, path):
-    try:
-        import matplotlib.pyplot as plt
-        from plotting import phase_map
-        ts = [str(t) for t in blob['targets']]
-        ncol = min(4, len(ts)); nrow = int(np.ceil(len(ts) / ncol))
-        fig, axes = plt.subplots(nrow, ncol, figsize=(3.6 * ncol, 3.0 * nrow), squeeze=False)
-        for k, t in enumerate(ts):
-            ax = axes[k // ncol][k % ncol]
-            sings = [{'phi': p, 'dose': d, 'sign': s} for p, d, s in
-                     zip(blob[f'sing_phi__{t}'], blob[f'sing_dose__{t}'],
-                         blob[f'sing_sign__{t}'])]
-            phase_map(ax, blob[f'old__{t}'], blob[f'doses__{t}'], blob[f'ptc__{t}'],
-                      title=f"{t}  twist={blob['total_twist'][k]:.3f}", sings=sings,
-                      scrit=blob['S'][k], twist=blob[f'twist__{t}'])
-        for k in range(len(ts), nrow * ncol):
-            axes[k // ncol][k % ncol].axis('off')
-        fig.suptitle(f"{blob['model']} ({blob['mode']}): PTC surfaces at base", fontsize=12)
-        fig.tight_layout()
-        fig.savefig(path, dpi=140, bbox_inches='tight')
-        plt.close(fig)
-        print(f"[characterize] -> {path}", flush=True)
-    except Exception as e:
-        print(f"[characterize] plot skipped ({type(e).__name__}: {e})", file=sys.stderr)
+# NOTE: this module used to carry its own `_plot`. It has been removed rather than repaired.
+# It was a second implementation of the surfaces figure, it wrote outside the
+# out/<model>/<analysis>/<tag>/ convention, and when `phase_map` dropped its `twist=` overlay
+# this copy silently broke while the canonical one in analysis/figures.py kept working. One
+# plotter per figure; `python -m analysis.figures --which surfaces` is it.
 
 
 def main(argv=None):

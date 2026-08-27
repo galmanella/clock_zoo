@@ -380,7 +380,7 @@ def fig_surfaces(ch, model, mode):
         phase_map(axes[0][k], ch[f'old__{t}'], ch[f'doses__{t}'], ch[f'ptc__{t}'],
                   title=f"{t}   S*={ch['S'][k]:.3g}", sings=sings, scrit=ch['S'][k])
         twist_panel(axes[1][k], ch[f'doses__{t}'], ch[f'twist__{t}'], scrit=ch['S'][k],
-                    title=f"twist = {ch['total_twist'][k]:.3f} cyc")
+                    is_base=True, title=f"twist = {ch['total_twist'][k]:.3f} cyc")
     fig.suptitle(f"{model} ({mode}): PTC surfaces at base, with the fixed-point (twist) "
                  f"curve below each", fontsize=12)
     fig.tight_layout()
@@ -416,7 +416,7 @@ def fig_sweep(sw, model):
     ends = [0, i0, len(eps) - 1]
 
     fig = plt.figure(figsize=(16.5, 9.2))
-    gs = fig.add_gridspec(3, 6, hspace=0.42, wspace=0.38)
+    gs = fig.add_gridspec(3, 6, hspace=0.45, wspace=0.46)
 
     for c, (si, sn) in enumerate(zip(oidx, obs)):          # row 0: the limit cycle
         ax = fig.add_subplot(gs[0, c])
@@ -429,9 +429,10 @@ def fig_sweep(sw, model):
     ax = fig.add_subplot(gs[0, 3])                          # the twist curve at every eps
     for i in range(len(eps)):
         if np.isfinite(TW[i]).any():
-            twist_panel(ax, doses, TW[i], color=cmap(norm(eps[i])))
-    twist_panel(ax, doses, np.asarray(sw['base_twist']), color='k')
-    ax.set_title('twist curve vs dose', fontsize=9)
+            twist_panel(ax, doses, TW[i], color=cmap(norm(eps[i])), guides=(i == 0))
+    twist_panel(ax, doses, np.asarray(sw['base_twist']), is_base=True,
+                scrit=float(sw['base_S']), guides=False)
+    ax.set_title('FP phase vs dose (twist), all eps', fontsize=9)
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
     plt.colorbar(sm, ax=ax, fraction=0.05, label='eps')
 
@@ -450,7 +451,10 @@ def fig_sweep(sw, model):
         y = np.asarray(y, float)
         ax.plot(eps, y, 'o-', color=col, ms=4)
         ax.axvline(0, color='0.7', lw=0.8, ls=':')
-        if ttl.startswith('S_crit'):
+        # log only when it earns its keep: a log axis over a range this narrow renders as
+        # '4.5 x 10^0' style ticks that collide with the neighbouring panel and say nothing.
+        fin = y[np.isfinite(y)]
+        if ttl.startswith('S_crit') and len(fin) and fin.max() / max(fin.min(), 1e-30) > 10:
             ax.set_yscale('log')
         ax.set_xlabel('eps'); ax.set_title(ttl, fontsize=9)
         ax.tick_params(labelsize=7)

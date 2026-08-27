@@ -438,10 +438,17 @@ Pure read of the saved npz -- no figure costs compute to rebuild.
 
 ### Reading a PTC surface
 
-The dashed white line is `S_crit`; the white dot is the phase singularity. **The fixed-point
-(twist) curve is no longer drawn over the surface** -- it is its own quantity and gets its own
-panel, on a shared dose axis. A line across a cyclic colour field is hard to read and competes
-with the surface it annotates.
+On a **PTC surface**: x is old phase, y is dose (log), colour is new phase; the dashed white
+line is `S_crit` and the white dot is the phase singularity.
+
+On a **twist panel**: x is dose (log), y is the stable fixed-point phase wrapped to [0, 1],
+with dotted guides at 0 and 1, a vertical guide at `S_crit` and a dot where the curve crosses
+it. This is the input_screen house orientation (`plot_twist_movers`), and 0/1 wraps are handled
+by breaking the line with NaN rather than by unwrapping -- keeping the phase axis literal so a
+value can be read straight off it. Note the two panel types therefore do NOT share an axis.
+
+**The fixed-point curve is no longer drawn over the surface.** A line across a cyclic colour
+field is hard to read and competes with the surface it annotates.
 
 ## 7. Glossary
 

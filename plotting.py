@@ -35,16 +35,24 @@ def phase_cmap():
     return cm
 
 
-def _break_wrap(phase, y, thr=0.5):
-    """Insert NaN wherever a circular series jumps the 0/1 wrap, so a line plot does not draw
-    a false horizontal streak across the panel. The alternative -- a dense scatter -- loses the
-    sense of a continuous curve, which for a twist curve is the thing being read."""
-    p, yy = np.asarray(phase, float).copy(), np.asarray(y, float).copy()
-    jump = np.abs(np.diff(p)) > thr
-    for i in np.where(jump)[0][::-1]:
-        p = np.insert(p, i + 1, np.nan)
-        yy = np.insert(yy, i + 1, np.nan)
-    return p, yy
+def broken(x, y, thr=0.5):
+    """Insert NaN breaks where a wrapped phase jumps the 0/1 boundary, so a line plot does not
+    draw fake verticals across the panel. Keeps the natural [0, 1] y-scale.
+
+    Same construction as input_screen/sensitivity_full.py `_broken` (commit e955873) -- the
+    alternative, unwrapping onto a continuous lift, loses the [0,1] axis that makes a phase
+    readable, and a dense scatter loses the sense of a continuous curve, which for a twist
+    curve is the thing being read.
+    """
+    xo, yo = [], []
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    for k in range(len(y)):
+        xo.append(x[k]); yo.append(y[k])
+        if (k < len(y) - 1 and np.isfinite(y[k]) and np.isfinite(y[k + 1])
+                and abs(y[k + 1] - y[k]) > thr):
+            xo.append(np.nan); yo.append(np.nan)
+    return np.array(xo), np.array(yo)
 
 
 def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None):
@@ -53,7 +61,8 @@ def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None):
     NO fixed-point overlay. The twist curve used to be drawn on top of the surface in black,
     and it was a bad idea twice over: a line across a cyclic colour field is hard to read at
     all, and it visually competes with the surface it is meant to annotate. It gets its own
-    panel now -- see `twist_panel`.
+    panel now -- see `twist_panel`, which uses the house orientation (dose on x) and so does
+    NOT share an axis with this one.
     """
     im = ax.pcolormesh(old, doses, np.ma.masked_invalid(np.asarray(ptc).T),
                        cmap=phase_cmap(), vmin=0, vmax=1, shading='nearest')
@@ -69,25 +78,41 @@ def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None):
     return im
 
 
-def twist_panel(ax, doses, twist, base=None, scrit=None, label=None, color='k', title=None):
-    """The stable fixed point (attracting entrainment phase) vs dose -- the TWIST curve, in
-    its own panel.
+def twist_panel(ax, doses, twist, base=None, scrit=None, label=None, color='k', title=None,
+                is_base=False, guides=True):
+    """The stable fixed point (attracting entrainment phase) vs dose -- the TWIST curve.
 
-    Plotted with the dose on the SAME log y-axis as the neighbouring phase map, so a reader
-    can carry a dose across from one to the other. Circular wraps are broken with NaN rather
-    than drawn, or the line streaks across the panel at every 0/1 crossing.
+    HOUSE ORIENTATION, matching input_screen (`plot_twist_movers`, `plot_screen`):
+    **dose on x (log), FP phase on y, wrapped to [0, 1]** with dotted guides at 0 and 1. The
+    phase axis stays literal rather than unwrapped, so a value can be read straight off it and
+    compared against a PTC's old/new phase; the 0/1 wraps are handled by breaking the line
+    (see `broken`) rather than by rescaling the axis.
+
+    `scrit` is marked as a dot ON the curve at the nearest sampled dose -- again the
+    input_screen convention -- plus a faint vertical guide, so the singularity dose can be
+    located without reading it off a second panel.
     """
     doses = np.asarray(doses, float)
+    if guides:
+        ax.axhline(0, color='0.7', lw=0.5, ls=':')
+        ax.axhline(1, color='0.7', lw=0.5, ls=':')
     if base is not None:
-        ax.plot(*_break_wrap(np.asarray(base, float), doses), color='0.65', lw=2.4,
-                label='base', zorder=2)
-    ax.plot(*_break_wrap(np.asarray(twist, float), doses), color=color, lw=1.6,
-            label=label, zorder=3)
+        ax.plot(*broken(doses, np.asarray(base, float)), color='k', lw=2.6, zorder=6,
+                label='base')
+    ax.plot(*broken(doses, np.asarray(twist, float)),
+            color=('k' if is_base else color), lw=(2.6 if is_base else 1.3),
+            zorder=(6 if is_base else 3), label=label)
     if scrit is not None and np.isfinite(scrit):
-        ax.axhline(scrit, color='tab:red', ls='--', lw=1.0)
-    ax.set_yscale('log')
-    ax.set_xlim(0, 1)
-    ax.set_xlabel('fixed-point phase'); ax.set_ylabel('dose')
+        ax.axvline(scrit, color='0.55', ls='--', lw=0.9, zorder=1)
+        tw = np.asarray(twist, float)
+        k = int(np.argmin(np.abs(doses - scrit)))
+        if np.isfinite(tw[k]):
+            ax.plot([doses[k]], [tw[k]], marker='o', ms=5,
+                    mfc=('white' if is_base or base is not None else color),
+                    mec='black', mew=0.8, zorder=7)
+    ax.set_xscale('log')
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel('dose'); ax.set_ylabel('stable FP phase')
     if title:
         ax.set_title(title, fontsize=9)
     return ax

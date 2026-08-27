@@ -391,12 +391,13 @@ def fig_surfaces(ch, model, mode):
 def fig_sweep(sw, model):
     """A RANGE of displacements along one direction: what moves, and how much.
 
-    Four things on one page, all against the same eps axis:
-      * the limit cycle at every eps, coloured by eps -- how much the cycle actually deforms;
-      * the PTC surface at the extremes and at base;
-      * the twist curve at every eps, in its own panel;
-      * the PTC FEATURES (total twist, S_crit, phi*) as functions of eps, which is what makes
-        "it barely moves" or "it moves a lot" quantitative rather than an impression.
+    Layout choices, each fixing something wrong on the first pass:
+      * the FP-vs-dose panel gets TWO columns and its colourbar sits OUTSIDE the axes --
+        squeezed into one column beside a colourbar it was unreadable, which defeats the
+        point of having given it a dedicated panel at all;
+      * the PTC surfaces are forced SQUARE rather than stretched to fill the grid cell;
+      * dLC and dPTC SHARE a y-axis. Auto-scaling them separately makes a 0.008 cycle change
+        and a 0.10 phase change look the same size, which inverts the actual finding.
     """
     from plotting import twist_panel
     eps = np.asarray(sw['eps'])
@@ -407,16 +408,18 @@ def fig_sweep(sw, model):
     states = [str(x) for x in sw['state_names']]
     obs = [str(x) for x in sw['observables']][:3]
     oidx = [states.index(x) for x in obs]
-    baseC, baseP = np.asarray(sw['base_profiles']), np.asarray(sw['base_ptc'])
+    baseC = np.asarray(sw['base_profiles'])
     label, rho = str(sw['label']), float(sw['rho'])
     cmap = plt.cm.coolwarm
     norm = plt.Normalize(eps.min(), eps.max())
     ph = np.arange(baseC.shape[1]) / baseC.shape[1]
     i0 = int(np.argmin(np.abs(eps)))
-    ends = [0, i0, len(eps) - 1]
+    live = [i for i in range(len(eps)) if np.isfinite(PT[i]).any()]
+    ends = sorted({live[0], i0, live[-1]}) if live else [i0]
 
-    fig = plt.figure(figsize=(16.5, 9.2))
-    gs = fig.add_gridspec(3, 6, hspace=0.45, wspace=0.46)
+    fig = plt.figure(figsize=(17.5, 10.5))
+    gs = fig.add_gridspec(3, 6, hspace=0.46, wspace=0.52,
+                          height_ratios=[1.0, 1.25, 0.95])
 
     for c, (si, sn) in enumerate(zip(oidx, obs)):          # row 0: the limit cycle
         ax = fig.add_subplot(gs[0, c])
@@ -424,45 +427,123 @@ def fig_sweep(sw, model):
             if np.isfinite(LC[i]).all():
                 ax.plot(ph, LC[i][si], color=cmap(norm(eps[i])), lw=1.1)
         ax.plot(ph, baseC[si], color='k', lw=2.0, zorder=5)
-        ax.set_title(f"LC: {sn}", fontsize=9); ax.set_xlabel('phase')
+        ax.set_title("LC: " + sn, fontsize=9)
+        ax.set_xlabel('phase')
         ax.tick_params(labelsize=7)
-    ax = fig.add_subplot(gs[0, 3])                          # the twist curve at every eps
+
+    ax = fig.add_subplot(gs[0, 3:5])                        # TWO columns wide
     for i in range(len(eps)):
         if np.isfinite(TW[i]).any():
             twist_panel(ax, doses, TW[i], color=cmap(norm(eps[i])), guides=(i == 0))
     twist_panel(ax, doses, np.asarray(sw['base_twist']), is_base=True,
                 scrit=float(sw['base_S']), guides=False)
     ax.set_title('FP phase vs dose (twist), all eps', fontsize=9)
-    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
-    plt.colorbar(sm, ax=ax, fraction=0.05, label='eps')
+    cax = fig.add_subplot(gs[0, 5])
+    pos = cax.get_position()
+    cax.set_position([pos.x0, pos.y0, pos.width * 0.16, pos.height])
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    plt.colorbar(sm, cax=cax, label='eps')
 
-    for j, i in enumerate(ends):                            # row 1: surfaces at the extremes
+    for j, i in enumerate(ends[:3]):                        # row 1: SQUARE surfaces
         ax = fig.add_subplot(gs[1, j * 2:j * 2 + 2])
-        phase_map(ax, old, doses, PT[i], title=f"PTC at eps = {eps[i]:+.2f}")
+        phase_map(ax, old, doses, PT[i], title="PTC at eps = %+.2f" % eps[i])
+        ax.set_box_aspect(1.0)
 
-    panels = [('total twist (cyc)', sw['total_twist'], 'tab:purple'),
-              ('S_crit', sw['S_crit'], 'tab:orange'),
-              ('phi* (singularity phase)', sw['phi_sing'], 'tab:green'),
-              ('period T (h)', sw['period'], 'tab:brown'),
-              ('dLC vs base', sw['dLC'], 'tab:blue'),
-              ('dPTC vs base', sw['dPTC'], 'tab:red')]
-    for c, (ttl, y, col) in enumerate(panels):              # row 2: features vs eps
+    dlc = np.asarray(sw['dLC'], float)
+    dptc = np.asarray(sw['dPTC'], float)
+    hi = float(np.nanmax(np.concatenate([dlc, dptc]))) * 1.08
+    panels = [('total twist (cyc)', sw['total_twist'], 'tab:purple', None),
+              ('S_crit', sw['S_crit'], 'tab:orange', None),
+              ('phi* (singularity phase)', sw['phi_sing'], 'tab:green', None),
+              ('period T (h)', sw['period'], 'tab:brown', None),
+              ('dLC vs base', dlc, 'tab:blue', (0, hi)),
+              ('dPTC vs base', dptc, 'tab:red', (0, hi))]
+    for c, (ttl, y, col, ylim) in enumerate(panels):        # row 2: features vs eps
         ax = fig.add_subplot(gs[2, c])
         y = np.asarray(y, float)
         ax.plot(eps, y, 'o-', color=col, ms=4)
         ax.axvline(0, color='0.7', lw=0.8, ls=':')
-        # log only when it earns its keep: a log axis over a range this narrow renders as
-        # '4.5 x 10^0' style ticks that collide with the neighbouring panel and say nothing.
         fin = y[np.isfinite(y)]
         if ttl.startswith('S_crit') and len(fin) and fin.max() / max(fin.min(), 1e-30) > 10:
             ax.set_yscale('log')
-        ax.set_xlabel('eps'); ax.set_title(ttl, fontsize=9)
+        if ylim:                                            # shared, so the sizes compare
+            ax.set_ylim(*ylim)
+            ax.set_title(ttl + '  (shared scale)', fontsize=9)
+        else:
+            ax.set_title(ttl, fontsize=9)
+        ax.set_xlabel('eps')
         ax.tick_params(labelsize=7)
-    fig.suptitle(f"{model} / {sw['target']} ({sw['mode']}): sweep along the {label} direction "
-                 f"(rho = {rho:.3g})", fontsize=13)
-    return _save(fig, f"sweep_{sw['target']}_{sw['mode']}_{sw['direction']}.png",
+    fig.suptitle("%s / %s (%s): sweep along the %s direction (rho = %.3g)"
+                 % (model, sw['target'], sw['mode'], label, rho), fontsize=13)
+    return _save(fig, "sweep_%s_%s_%s.png"
+                 % (sw['target'], sw['mode'], str(sw['direction']).replace('-', 'm')),
                  direction=str(sw['direction']), rho=rho,
                  eps_range=[float(eps.min()), float(eps.max())], n_eps=len(eps))
+
+
+def fig_direction_gallery(sweeps, model, target, mode):
+    """Several directions side by side: do different directions change the PTC in DIFFERENT
+    WAYS, or only by different amounts?
+
+    One column per direction. Top: the PTC at the most extreme surviving eps. Middle: the
+    difference against base, all on ONE shared symmetric scale so the columns are directly
+    comparable. Bottom: the FP-vs-dose curves across the whole sweep -- which is where a
+    QUALITATIVE difference shows up (the singularity sliding along dose, versus the whole
+    curve shifting in phase, versus the curve changing shape).
+    """
+    from plotting import twist_panel
+    n = len(sweeps)
+    dmax = 0.0
+    for sw in sweeps:
+        PT = np.asarray(sw['ptc_grids'])
+        base = np.asarray(sw['base_ptc'])
+        for i in range(PT.shape[0]):
+            d = ((PT[i] - base + 0.5) % 1.0) - 0.5
+            if np.isfinite(d).any():
+                dmax = max(dmax, float(np.nanmax(np.abs(d))))
+    dmax = max(dmax, 1e-3)
+
+    fig, axes = plt.subplots(3, n, figsize=(4.2 * n, 11.0), squeeze=False)
+    for c, sw in enumerate(sweeps):
+        eps = np.asarray(sw['eps'])
+        PT = np.asarray(sw['ptc_grids'])
+        TW = np.asarray(sw['twist_curves'])
+        base = np.asarray(sw['base_ptc'])
+        doses, old = np.asarray(sw['doses']), np.asarray(sw['old'])
+        live = [i for i in range(len(eps)) if np.isfinite(PT[i]).any()]
+        j = live[-1] if live else 0
+        cmap = plt.cm.coolwarm
+        norm = plt.Normalize(eps.min(), eps.max())
+
+        phase_map(axes[0][c], old, doses, PT[j],
+                  title="%s\nrho=%.3g   PTC at eps=%+.2f"
+                        % (sw['label'], float(sw['rho']), eps[j]))
+        axes[0][c].set_box_aspect(1.0)
+
+        d = ((PT[j] - base + 0.5) % 1.0) - 0.5
+        im = axes[1][c].pcolormesh(old, doses, np.ma.masked_invalid(d.T), cmap='RdBu_r',
+                                   vmin=-dmax, vmax=dmax, shading='nearest')
+        axes[1][c].set_yscale('log')
+        axes[1][c].set_box_aspect(1.0)
+        axes[1][c].set_xlabel('old phase')
+        axes[1][c].set_ylabel('dose')
+        axes[1][c].set_title('difference vs base (shared scale)', fontsize=9)
+        plt.colorbar(im, ax=axes[1][c], fraction=0.046)
+
+        for i in range(len(eps)):
+            if np.isfinite(TW[i]).any():
+                twist_panel(axes[2][c], doses, TW[i], color=cmap(norm(eps[i])),
+                            guides=(i == 0))
+        twist_panel(axes[2][c], doses, np.asarray(sw['base_twist']), is_base=True,
+                    scrit=float(sw['base_S']), guides=False)
+        axes[2][c].set_title('FP phase vs dose, all eps', fontsize=9)
+    fig.suptitle("%s / %s (%s): how the PTC changes along DIFFERENT parameter directions"
+                 % (model, target, mode), fontsize=13)
+    fig.tight_layout()
+    return _save(fig, "direction_gallery_%s_%s.png" % (target, mode), target=target,
+                 mode=mode, directions=[str(sw['direction']) for sw in sweeps],
+                 eps_max=float(max(abs(np.asarray(sw['eps'])).max() for sw in sweeps)))
 
 
 # --------------------------------------------------------------------------- #
@@ -476,13 +557,16 @@ def main(argv=None):
                     help='run tag the figures are written under (default: a timestamp)')
     ap.add_argument('--publish', action='store_true',
                     help='also copy each figure into docs/figures/ for PROJECT_SUMMARY')
-    ap.add_argument('--direction', default='decoupled')
+    ap.add_argument('--direction', default='decoupled',
+                    help='comma-separated directions to draw sweep figures for')
+    ap.add_argument('--gallery', default='decoupled,coupled,stiffest',
+                    help='comma-separated directions to put side by side in the gallery')
     a = ap.parse_args(argv)
     _CTX.update(model=a.model, tag=paths.run_tag(a.tag), publish=a.publish)
     from analysis.coupling import _load
     want = a.which.split(',') if a.which != 'all' else \
         ['scrit', 'surfaces', 'tornado', 'lc_examples', 'ptc_examples', 'directions',
-         'direction_examples', 'sweep']
+         'direction_examples', 'sweep', 'gallery']
     made = []
 
     if 'scrit' in want:
@@ -525,20 +609,37 @@ def main(argv=None):
                       "analysis.confirm", file=sys.stderr)
             else:
                 made.append(fig_direction_examples(cf, a.model, a.target, a.mode))
-    if 'sweep' in want:
-        import glob as _g
+    def _load_sweep(direction):
         st = paths.latest_run(a.model, 'sweep')
-        hits = (_g.glob(os.path.join(paths.out_dir(a.model, 'sweep', st, create=False),
-                                     f'sweep_{a.target}_{a.mode}_{a.direction}.npz'))
-                if st else [])
-        if not hits:
-            print(f"[figures] run `python -m analysis.sweep --model {a.model} "
-                  f"--target {a.target} --direction {a.direction}` first", file=sys.stderr)
+        if not st:
+            return None
+        safe = str(direction).replace('-', 'm')
+        fp = os.path.join(paths.out_dir(a.model, 'sweep', st, create=False),
+                          f'sweep_{a.target}_{a.mode}_{safe}.npz')
+        if not os.path.exists(fp):
+            return None
+        sw = dict(np.load(fp, allow_pickle=True))
+        for k in ('model', 'target', 'mode', 'direction', 'label'):
+            sw[k] = str(sw[k])
+        return sw
+
+    if 'sweep' in want:
+        for d in a.direction.split(','):
+            sw = _load_sweep(d)
+            if sw is None:
+                print(f"[figures] no sweep for direction {d!r}; run "
+                      f"`python -m analysis.sweep --model {a.model} --target {a.target} "
+                      f"--direction {d}`", file=sys.stderr)
+            else:
+                made.append(fig_sweep(sw, a.model))
+
+    if 'gallery' in want:
+        sws = [sw for d in a.gallery.split(',') if (sw := _load_sweep(d)) is not None]
+        if len(sws) < 2:
+            print(f"[figures] the gallery needs at least 2 swept directions of "
+                  f"{a.gallery!r}", file=sys.stderr)
         else:
-            sw = dict(np.load(hits[0], allow_pickle=True))
-            for k in ('model', 'target', 'mode', 'direction', 'label'):
-                sw[k] = str(sw[k])
-            made.append(fig_sweep(sw, a.model))
+            made.append(fig_direction_gallery(sws, a.model, a.target, a.mode))
     print(f"[figures] {len(made)} figure(s) -> "
           f"{os.path.relpath(paths.out_dir(a.model, 'figures', _CTX['tag']), paths.HERE)}")
     return 0

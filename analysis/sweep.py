@@ -44,7 +44,14 @@ DIRECTIONS = ('decoupled', 'coupled', 'stiffest')
 
 
 def get_direction(cp, which='decoupled'):
-    """(vector, label, rho) from a saved coupling run."""
+    """(vector, label, rho) from a saved coupling run.
+
+    `which` is one of the named directions, or an INTEGER index into the rho-sorted
+    generalized eigenvectors (0 = most PTC-favouring, -1 = most LC-favouring). The integers
+    matter because the interesting question is not just "the two extremes" -- the middle of the
+    spectrum is where a direction can move the PTC in a qualitatively different WAY rather than
+    just by a different amount.
+    """
     V, rho = np.asarray(cp['V']), np.asarray(cp['rho'])
     if which == 'decoupled':
         return V[:, 0], 'decoupled (max rho)', float(rho[0])
@@ -53,7 +60,13 @@ def get_direction(cp, which='decoupled'):
     if which == 'stiffest':
         _u, _s, vt = np.linalg.svd(np.nan_to_num(np.asarray(cp['J_LC'])), full_matrices=False)
         return vt[0], 'stiffest LC direction', float('nan')
-    raise SystemExit(f"--direction must be one of {DIRECTIONS}")
+    try:
+        i = int(which)
+    except (TypeError, ValueError):
+        raise SystemExit(f"--direction must be an integer index or one of {DIRECTIONS}")
+    if not (-V.shape[1] <= i < V.shape[1]):
+        raise SystemExit(f"direction index {i} out of range for {V.shape[1]} directions")
+    return V[:, i], f'eigendirection {i % V.shape[1]}', float(rho[i])
 
 
 def run(model_name, target, mode='pulse', which='decoupled', eps_max=0.6, n_eps=9,
@@ -180,7 +193,8 @@ def run(model_name, target, mode='pulse', which='decoupled', eps_max=0.6, n_eps=
                 # --- features ------------------------------------------------------------ #
                 dLC=dLC, dPTC=dPT, dTwist=dTW, total_twist=TT, S_crit=SC, phi_sing=PHI,
                 period=PER, n_sing=NSING, status=STAT.astype(str))
-    out = paths.out_path(model_name, 'sweep', f'sweep_{target}_{mode}_{which}.npz', tag)
+    safe = str(which).replace('-', 'm')
+    out = paths.out_path(model_name, 'sweep', f'sweep_{target}_{mode}_{safe}.npz', tag)
     paths.savez(out, **blob)
     print(f"\n[sweep] -> {out}")
     return blob
@@ -191,7 +205,8 @@ def main(argv=None):
     ap.add_argument('--model', default=os.environ.get('MODEL', 'almeida'))
     ap.add_argument('--target', default=os.environ.get('TARGET', 'BMAL1'))
     ap.add_argument('--mode', default='pulse')
-    ap.add_argument('--direction', default='decoupled', choices=DIRECTIONS)
+    ap.add_argument('--direction', default='decoupled',
+                    help='decoupled|coupled|stiffest, or an integer eigendirection index')
     ap.add_argument('--eps-max', type=float, default=0.6)
     ap.add_argument('--n-eps', type=int, default=9)
     ap.add_argument('--n-phase', type=int, default=32)

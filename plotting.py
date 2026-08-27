@@ -35,6 +35,18 @@ def phase_cmap():
     return cm
 
 
+def _break_wrap(phase, y, thr=0.5):
+    """Insert NaN wherever a circular series jumps the 0/1 wrap, so a line plot does not draw
+    a false horizontal streak across the panel. The alternative -- a dense scatter -- loses the
+    sense of a continuous curve, which for a twist curve is the thing being read."""
+    p, yy = np.asarray(phase, float).copy(), np.asarray(y, float).copy()
+    jump = np.abs(np.diff(p)) > thr
+    for i in np.where(jump)[0][::-1]:
+        p = np.insert(p, i + 1, np.nan)
+        yy = np.insert(yy, i + 1, np.nan)
+    return p, yy
+
+
 def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None, twist=None):
     """A PTC surface: old phase (x) vs dose (y, log), coloured by new phase."""
     im = ax.pcolormesh(old, doses, np.ma.masked_invalid(np.asarray(ptc).T),
@@ -47,7 +59,8 @@ def phase_map(ax, old, doses, ptc, title=None, sings=(), scrit=None, twist=None)
     if scrit is not None and np.isfinite(scrit):
         ax.axhline(scrit, color='white', ls='--', lw=1.2)
     if twist is not None:
-        ax.plot(twist, doses, color='black', lw=2.0)
+        ax.plot(*_break_wrap(np.asarray(twist, float), np.asarray(doses, float)),
+                color='black', lw=2.0)
     if title:
         ax.set_title(title, fontsize=9)
     return im

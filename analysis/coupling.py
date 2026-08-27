@@ -143,6 +143,72 @@ def build_jacobians(lc, pt, names, li, pi, ok, hi=5, lo=3):
     return (np.array(cols_lc).T, np.array(cols_pt).T, kept, np.array(keep))
 
 
+def decoupling_spectrum(J_LC, J_PT, ridge=1e-10):
+    """The maximally-decoupled parameter DIRECTIONS, by generalized eigendecomposition.
+
+    Answers directly: which unit direction `v` in log-parameter space maximises
+
+        rho(v)  =  ||J_PTC v||^2 / ||J_LC v||^2
+
+    i.e. moves the PTC as much as possible per unit of limit-cycle movement. That is the
+    stationary problem
+
+        (J_PTC^T J_PTC) v  =  rho (J_LC^T J_LC) v
+
+    whose eigenpairs give the whole spectrum at once, ordered from most PTC-favouring to most
+    LC-favouring.
+
+    WHY THIS AND NOT THE PER-PARAMETER SCATTER. A decoupled direction is generically a
+    COMBINATION of parameters, and nothing forces it to align with a coordinate axis. Ranking
+    single parameters by their sensitivity ratio can only find the decoupling that happens to
+    be axis-aligned, so it systematically UNDER-reports how much freedom there is. Scanning
+    J_LC's singular directions (the input_screen approach) is better but still indirect: those
+    directions are chosen to diagonalise the LC alone and need not be extremal for the ratio.
+
+    Both matrices are scaled to unit spectral norm first, so rho is a dimensionless ratio of
+    RELATIVE responses and rho = 1 means "equally visible to both experiments".
+
+    A RATIO IS NOT ENOUGH, AND THIS IS WHERE IT GOES WRONG. rho blows up wherever the
+    DENOMINATOR is small, so the top eigenvector will happily be a direction the LC jacobian
+    cannot resolve rather than one it genuinely does not move. Those are different claims and
+    only the second is a result. The finite-difference LC jacobian has a noise floor -- the
+    orbit is solved to |F| ~ 1e-13 but the cycle itself is accurate to ~5e-6 relative
+    (engine/orbit's 8x self-convergence on Almeida) -- so a relative LC response below roughly
+    1e-5 carries no information at all.
+
+    So the pencil is solved inside the subspace where J_LC is numerically resolvable:
+    `lc_floor` is a relative singular-value cut on J_LC, and everything below it is dropped
+    rather than inverted. Sweeping `lc_floor` and watching rho is the honest diagnostic --
+    if the top rho collapses as the floor rises, it was living on unresolvable directions.
+
+    Returns (rho[k], V[n_param, k] unit-norm, info) with `info` carrying the per-direction
+    ABSOLUTE relative responses `lc_resp` and `ptc_resp`, which is what actually has to be
+    checked before believing any of it.
+    """
+    A = np.nan_to_num(np.asarray(J_PT, float))
+    B = np.nan_to_num(np.asarray(J_LC, float))
+    A = A / max(np.linalg.norm(A, 2), 1e-300)
+    B = B / max(np.linalg.norm(B, 2), 1e-300)
+
+    # restrict to the LC-resolvable subspace
+    _u, s, vt = np.linalg.svd(B, full_matrices=False)
+    keep = s / (s.max() if s.size else 1) > ridge
+    Q = vt[keep].T                                     # (n_param, k) orthonormal
+    Ar, Br = A @ Q, B @ Q
+    GA, GB = Ar.T @ Ar, Br.T @ Br
+    from scipy.linalg import eigh
+    rho, W = eigh(GA, GB)
+    order = np.argsort(-rho)
+    rho, W = rho[order], W[:, order]
+    V = Q @ W
+    V = V / np.linalg.norm(V, axis=0, keepdims=True)
+    info = dict(lc_resp=np.linalg.norm(B @ V, axis=0),   # relative, since |B|_2 = 1
+                ptc_resp=np.linalg.norm(A @ V, axis=0),
+                n_kept=int(keep.sum()), n_total=len(s),
+                cond=float(np.linalg.cond(GB)))
+    return rho, V, info
+
+
 def top_subspace_angles(A, B, ks=(1, 2, 3, 5)):
     """{k: principal angles (deg) between the leading-k right-singular subspaces of A and B}.
 
@@ -180,7 +246,7 @@ def principal_angles(A, B, tol=1e-10):
 
 
 def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=None,
-        plot=True):
+        plot=True, lc_floor=1e-3):
     from gauge.gauge import Gauge
     from models import get_model
 
@@ -270,6 +336,49 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
               f"a rank artifact --")
         print(f"        but confirm it by finite displacement before believing it (see 3).")
 
+    # ---- 2b. the maximally-decoupled DIRECTIONS ---------------------------------------- #
+    # the per-parameter best ratio, on the SAME normalisation, so the two are comparable
+    An = np.nan_to_num(J_PTq) / max(np.linalg.norm(np.nan_to_num(J_PTq), 2), 1e-300)
+    Bn = np.nan_to_num(J_LCq) / max(np.linalg.norm(np.nan_to_num(J_LCq), 2), 1e-300)
+    axis_rho = (np.sum(An ** 2, axis=0) / np.maximum(np.sum(Bn ** 2, axis=0), 1e-300))
+    best_axis = int(np.argmax(axis_rho))
+    print(f"\n2b. MAXIMALLY-DECOUPLED DIRECTIONS (generalized eigenproblem)")
+    print(f"   rho = ||J_PTC v||^2 / ||J_LC v||^2, both jacobians normalised to unit spectral "
+          f"norm.")
+    print(f"   A per-parameter scatter can only find AXIS-ALIGNED decoupling; a decoupled "
+          f"direction\n   is generically a combination, so this is the question that scatter "
+          f"cannot answer.")
+    print(f"\n   {'LC floor':>9s} {'kept':>5s} {'rho_max':>10s} {'|J_LC v|':>10s} "
+          f"{'|J_PTC v|':>10s}   dominant parameters")
+    for fl in (1e-10, 1e-4, 1e-3, 1e-2, 3e-2):
+        r, Vv, inf = decoupling_spectrum(J_LCq, J_PTq, ridge=fl)
+        if not len(r):
+            continue
+        heavy = np.argsort(-np.abs(Vv[:, 0]))[:3]
+        print(f"   {fl:9.0e} {inf['n_kept']:2d}/{inf['n_total']:<2d} {r[0]:10.2f} "
+              f"{inf['lc_resp'][0]:10.2e} {inf['ptc_resp'][0]:10.2e}   "
+              f"{', '.join(f'{kept[j]}({Vv[j, 0]:+.2f})' for j in heavy)}")
+    print(f"   ^ if rho_max collapses as the floor rises, the big values lived on LC "
+          f"directions the\n     finite-difference jacobian cannot resolve (its noise floor "
+          f"is ~1e-5 relative), not on\n     directions the limit cycle genuinely does not "
+          f"move.")
+
+    rho, V, info = decoupling_spectrum(J_LCq, J_PTq, ridge=lc_floor)
+    print(f"\n   AT lc_floor = {lc_floor:.0e}  ({info['n_kept']}/{info['n_total']} LC "
+          f"directions resolvable)")
+    print(f"   spectrum: {np.array2string(np.round(rho, 2), max_line_width=72)}")
+    print(f"   best single PARAMETER : rho = {axis_rho[best_axis]:.3f}  ({kept[best_axis]})")
+    print(f"   best COMBINATION      : rho = {rho[0]:.3f}   "
+          f"-- {rho[0] / max(axis_rho[best_axis], 1e-30):.1f}x the best single parameter")
+    for i in range(min(3, V.shape[1])):
+        heavy = np.argsort(-np.abs(V[:, i]))[:5]
+        print(f"   dir {i}: rho = {rho[i]:8.2f}  LC {info['lc_resp'][i]:.2e}  "
+              f"PTC {info['ptc_resp'][i]:.2e}  "
+              f"{', '.join(f'{kept[j]}({V[j, i]:+.2f})' for j in heavy)}")
+    print(f"   most LC-favouring (rho = {rho[-1]:.3g}): "
+          f"{', '.join(f'{kept[j]}({V[j, -1]:+.2f})' for j in np.argsort(-np.abs(V[:, -1]))[:4])}")
+    condB = info['cond']
+
     # ---- 3. what to confirm ----------------------------------------------------------- #
     cand = [i for i in np.argsort(-r_n) if (s_n[i] < 0.1 and s_n[i] > 1e-12)][:3]
     print(f"\n3. TO CONFIRM (candidates only -- a linear summary is not a result)")
@@ -292,6 +401,9 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
                 params=np.array(kept), lc_sens=x[keep], ptc_sens=y[keep],
                 corr=r, quadrants=np.array(list(quad.values())),
                 quadrant_names=np.array(list(quad)),
+                rho=rho, V=V, axis_rho=axis_rho, cond_B=condB,
+                dir_lc_resp=info['lc_resp'], dir_ptc_resp=info['ptc_resp'],
+                lc_floor=lc_floor, n_kept_lc=info['n_kept'],
                 top_angles=np.array([np.mean(a) for a in ang.values()]),
                 top_angle_ks=np.array(list(ang)), sigma_lc=s_lc, ptc_response=resp,
                 sloppy_ptc_fraction=frac, J_LC=J_LCq, J_PTC=J_PTq)
@@ -319,10 +431,13 @@ def main(argv=None):
     ap.add_argument('--lc-tag', default=None)
     ap.add_argument('--pt-tag', default=None)
     ap.add_argument('--no-plot', action='store_true')
+    ap.add_argument('--lc-floor', type=float, default=1e-3,
+                    help='relative singular-value cut on J_LC for the decoupling pencil')
     a = ap.parse_args(argv)
     if not a.target:
         raise SystemExit('--target is required')
-    run(a.model, a.target, a.mode, a.feature, a.lc_tag, a.pt_tag, plot=not a.no_plot)
+    run(a.model, a.target, a.mode, a.feature, a.lc_tag, a.pt_tag, plot=not a.no_plot,
+        lc_floor=a.lc_floor)
     return 0
 
 

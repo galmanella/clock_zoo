@@ -1,0 +1,315 @@
+"""
+analysis/figures.py
+===================
+Every figure, regenerated from saved npz. PURE READ -- nothing here integrates, so a figure
+can always be rebuilt without re-running a sweep, and a change to how something is drawn never
+costs compute.
+
+    python -m analysis.figures --model almeida --target BMAL1 [--which all]
+
+Figures produced (into docs/figures/):
+
+  scrit        winding vs dose for every target, with the validity ceiling shaded.
+  surfaces     the base PTC surfaces, with singularities, S_crit and the twist curve.
+  tornado      LC and PTC sensitivity per parameter, side by side on a shared ordering.
+  lc_examples  what an LC sensitivity NUMBER actually looks like: base vs perturbed cycle
+               profiles for the strongest, a middling and the weakest parameter.
+  ptc_examples the same for the PTC, with a Delta new-phase panel. The Delta panel is the
+               point: raw before/after surfaces make a small isochron change nearly impossible
+               to see, while the difference localises it immediately (in input_screen this is
+               what showed a stiff direction moving the singularity as a red/blue dipole while
+               a sloppy one was provably flat).
+  directions   the COMBINATORIAL analysis: per-direction LC vs PTC response from the
+               generalized eigenproblem, next to the per-parameter scatter, plus the
+               decoupling spectrum and the loadings of the top directions.
+"""
+import argparse
+import os
+import sys
+
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+import analysis  # noqa: F401
+import paths
+from plotting import phase_map, phase_cmap, scrit_overview
+
+FIGDIR = os.path.join(paths.HERE, 'docs', 'figures')
+
+
+def _save(fig, name):
+    os.makedirs(FIGDIR, exist_ok=True)
+    p = os.path.join(FIGDIR, name)
+    fig.savefig(p, dpi=140, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[figures] -> {p}", flush=True)
+    return p
+
+
+def _pick_examples(names, values, n=3, valid=None):
+    """Strongest, median and weakest by `values` -- so a figure shows the whole range rather
+    than only the headline case.
+
+    `valid` restricts the choice to parameters that actually HAVE data at the factor being
+    displayed. Without it the picker happily chooses a setting whose orbit was rejected and
+    the panel comes out blank, which reads as "this parameter does nothing" when it means
+    "this parameter was not measured here"."""
+    v = np.nan_to_num(np.asarray(values, float))
+    idx = np.arange(len(v)) if valid is None else np.where(np.asarray(valid))[0]
+    if len(idx) == 0:
+        idx = np.arange(len(v))
+    order = idx[np.argsort(-v[idx])]
+    return [int(order[0]), int(order[len(order) // 2]), int(order[-1])][:n]
+
+
+# --------------------------------------------------------------------------- #
+def fig_tornado(lc, pt, model, target, mode):
+    """LC and PTC sensitivity per parameter, on ONE shared ordering so the two can be read
+    against each other. Sorting each panel independently would hide exactly the thing of
+    interest: a parameter high in one and low in the other."""
+    lp = [str(x) for x in lc['params']]
+    pp = [str(x) for x in pt['params']]
+    common = [p for p in lp if p in set(pp)]
+    x = np.array([lc['lc_sens'][lp.index(p)] for p in common])
+    y = np.array([pt['twist_span'][pp.index(p)] for p in common])
+    order = np.argsort(x)
+    names = [common[i] for i in order]
+
+    fig, axes = plt.subplots(1, 3, figsize=(12.5, max(4, 0.32 * len(names))),
+                             gridspec_kw={'width_ratios': [1, 1, 0.9]}, sharey=True)
+    ypos = np.arange(len(names))
+    axes[0].barh(ypos, x[order], color='steelblue')
+    axes[0].set_yticks(ypos); axes[0].set_yticklabels(names, fontsize=7)
+    axes[0].set_xlabel('LC sensitivity'); axes[0].set_title('limit cycle', fontsize=10)
+    axes[1].barh(ypos, y[order], color='indianred')
+    axes[1].set_xlabel('PTC sensitivity (twist)'); axes[1].set_title('PTC', fontsize=10)
+    ratio = y[order] / np.maximum(x[order], 1e-12)
+    axes[2].barh(ypos, ratio, color='0.45')
+    axes[2].axvline(np.median(ratio), color='k', ls=':', lw=0.9)
+    axes[2].set_xlabel('PTC / LC'); axes[2].set_title('ratio (per parameter)', fontsize=10)
+    for a in axes:
+        a.tick_params(labelsize=7)
+    fig.suptitle(f"{model} / {target} ({mode}): parameter sensitivity, sorted by LC",
+                 fontsize=12)
+    fig.tight_layout()
+    return _save(fig, f"{model}_tornado_{target}_{mode}.png")
+
+
+def fig_lc_examples(lc, model, n_show=4):
+    """Base vs perturbed cycle profiles -- what an LC sensitivity number means concretely."""
+    prof = np.asarray(lc['profiles'])            # (n_param, n_fac, n_states, m)
+    base = np.asarray(lc['base_profiles'])       # (n_states, m)
+    fac = np.asarray(lc['factors'], float)
+    names = [str(p) for p in lc['params']]
+    obs = [str(s) for s in lc['observables']][:n_show]
+    obs_idx = np.asarray(lc['obs_idx'])[:n_show]
+    lo, hi = 3, 5                                # x0.79 and x1.26, symmetric in log
+    have = [np.isfinite(prof[i, lo]).all() and np.isfinite(prof[i, hi]).all()
+            for i in range(prof.shape[0])]
+    ex = _pick_examples(names, lc['lc_sens'], valid=have)
+    ph = np.arange(base.shape[1]) / base.shape[1]
+
+    fig, axes = plt.subplots(len(ex), len(obs_idx),
+                             figsize=(2.9 * len(obs_idx), 2.4 * len(ex)), squeeze=False)
+    for r, i in enumerate(ex):
+        for c, (si, sn) in enumerate(zip(obs_idx, obs)):
+            ax = axes[r][c]
+            ax.plot(ph, base[si], color='k', lw=2.0, label='base')
+            for k, col, ls in ((lo, 'tab:blue', '--'), (hi, 'tab:red', '--')):
+                if np.isfinite(prof[i, k, si]).all():
+                    ax.plot(ph, prof[i, k, si], color=col, lw=1.3, ls=ls,
+                            label=f'x{fac[k]:g}')
+            if c == 0:
+                ax.set_ylabel(f"{names[i]}\nlc_sens={lc['lc_sens'][i]:.3f}", fontsize=8)
+            if r == 0:
+                ax.set_title(sn, fontsize=9)
+            if r == len(ex) - 1:
+                ax.set_xlabel('phase')
+            ax.tick_params(labelsize=7)
+    axes[0][-1].legend(fontsize=7, loc='best')
+    fig.suptitle(f"{model}: limit cycle under a +/-26% parameter change "
+                 f"(strongest / median / weakest)", fontsize=11)
+    fig.tight_layout()
+    return _save(fig, f"{model}_lc_examples.png")
+
+
+def fig_ptc_examples(pt, model, target, mode):
+    """Base, perturbed, and the DELTA panel -- the last one is why this figure exists."""
+    grids = np.asarray(pt['ptc_grids'])          # (n_param, n_fac, n_phase, n_dose)
+    base = np.asarray(pt['base_ptc'])
+    doses = np.asarray(pt['doses'])
+    old = np.asarray(pt['old'])
+    fac = np.asarray(pt['factors'], float)
+    names = [str(p) for p in pt['params']]
+    tw_base = np.asarray(pt['base_twist'])
+    hi = 5                                       # x1.26
+    have = [np.isfinite(grids[i, hi]).any() for i in range(grids.shape[0])]
+    ex = _pick_examples(names, pt['twist_span'], valid=have)
+
+    fig, axes = plt.subplots(len(ex), 3, figsize=(11.0, 3.0 * len(ex)), squeeze=False)
+    # a SHARED symmetric scale across every Delta panel, so panels are comparable to each
+    # other rather than each being autoscaled to its own noise
+    dmax = 0.0
+    for i in ex:
+        d = ((grids[i, hi] - base + 0.5) % 1.0) - 0.5
+        if np.isfinite(d).any():
+            dmax = max(dmax, float(np.nanmax(np.abs(d))))
+    dmax = max(dmax, 1e-3)
+
+    for r, i in enumerate(ex):
+        g = grids[i, hi]
+        phase_map(axes[r][0], old, doses, base, title='base' if r == 0 else None,
+                  twist=tw_base)
+        phase_map(axes[r][1], old, doses, g,
+                  title=f'x{fac[hi]:g}' if r == 0 else None)
+        d = ((g - base + 0.5) % 1.0) - 0.5
+        im = axes[r][2].pcolormesh(old, doses, np.ma.masked_invalid(d.T), cmap='RdBu_r',
+                                   vmin=-dmax, vmax=dmax, shading='nearest')
+        axes[r][2].set_yscale('log'); axes[r][2].set_xlabel('old phase')
+        if r == 0:
+            axes[r][2].set_title('$\\Delta$ new phase (shared scale)', fontsize=9)
+        plt.colorbar(im, ax=axes[r][2], fraction=0.046)
+        axes[r][0].set_ylabel(f"{names[i]}\ntwist resp={pt['twist_span'][i]:.3f}", fontsize=8)
+    fig.suptitle(f"{model} / {target} ({mode}): PTC under a +26% parameter change "
+                 f"(strongest / median / weakest)", fontsize=11)
+    fig.tight_layout()
+    return _save(fig, f"{model}_ptc_examples_{target}_{mode}.png")
+
+
+def fig_directions(cp, model, target, mode):
+    """The COMBINATORIAL picture, which the per-parameter scatter cannot show."""
+    rho = np.asarray(cp['rho'])
+    V = np.asarray(cp['V'])
+    axis_rho = np.asarray(cp['axis_rho'])
+    names = [str(p) for p in cp['params']]
+    lcs, pts = np.asarray(cp['lc_sens']), np.asarray(cp['ptc_sens'])
+
+    fig = plt.figure(figsize=(13.5, 8.2))
+    gs = fig.add_gridspec(2, 3, height_ratios=[1, 1], hspace=0.34, wspace=0.28)
+
+    # (a) the decoupling spectrum
+    ax = fig.add_subplot(gs[0, 0])
+    ax.semilogy(np.arange(len(rho)), np.maximum(rho, 1e-6), 'o-', color='tab:purple')
+    ax.axhline(np.nanmax(axis_rho), color='tab:orange', ls='--', lw=1.4,
+               label=f'best single parameter ({np.nanmax(axis_rho):.2f})')
+    ax.axhline(1.0, color='0.6', ls=':', lw=1.0)
+    ax.set_xlabel('direction (sorted)'); ax.set_ylabel(r'$\rho=\|J_{PTC}v\|^2/\|J_{LC}v\|^2$')
+    ax.set_title('decoupling spectrum', fontsize=10)
+    ax.legend(fontsize=7)
+
+    # (b) per-parameter vs per-direction, on the same axes
+    ax = fig.add_subplot(gs[0, 1])
+    ax.scatter(lcs / np.nanmax(lcs), pts / np.nanmax(pts), s=34, c='tab:blue',
+               edgecolors='k', linewidths=0.4, label='parameters (axis-aligned)', zorder=3)
+    lr, pr = np.asarray(cp['dir_lc_resp']), np.asarray(cp['dir_ptc_resp'])
+    ax.scatter(lr / np.nanmax(lr), pr / np.nanmax(pr), s=44, marker='D', c='tab:purple',
+               edgecolors='k', linewidths=0.4, label='directions (combinations)', zorder=4)
+    ax.set_xscale('log'); ax.set_yscale('log')
+    ax.set_xlabel('LC response (normalised)'); ax.set_ylabel('PTC response (normalised)')
+    ax.set_title('why combinations matter', fontsize=10)
+    ax.legend(fontsize=7, loc='lower right')
+
+    # (c) loadings of the top decoupled directions
+    ax = fig.add_subplot(gs[0, 2])
+    k = min(3, V.shape[1])
+    w = 0.8 / k
+    ypos = np.arange(len(names))
+    for i in range(k):
+        ax.barh(ypos + (i - (k - 1) / 2) * w, V[:, i], height=w,
+                label=f'dir {i} ($\\rho$={rho[i]:.1f})')
+    ax.set_yticks(ypos); ax.set_yticklabels(names, fontsize=6.5)
+    ax.axvline(0, color='k', lw=0.7)
+    ax.set_xlabel('loading'); ax.set_title('composition of the top directions', fontsize=10)
+    ax.legend(fontsize=7)
+
+    # (d) sigma_LC vs PTC response, the input_screen-style sloppy-tail view
+    ax = fig.add_subplot(gs[1, 0])
+    s_lc = np.asarray(cp['sigma_lc']); resp = np.asarray(cp['ptc_response'])
+    m = s_lc / s_lc.max() > 1e-12
+    ax.loglog(s_lc[m] / s_lc.max(), resp[m] / resp.max(), 'o', color='tab:green')
+    ax.set_xlabel(r'$\sigma_{LC}/\sigma_{max}$ (LC singular direction)')
+    ax.set_ylabel(r'$\|J_{PTC}v\|$ (normalised)')
+    ax.set_title('sloppy-tail view', fontsize=10)
+
+    # (e) top-k subspace angles
+    ax = fig.add_subplot(gs[1, 1])
+    ks, angs = np.asarray(cp['top_angle_ks']), np.asarray(cp['top_angles'])
+    ax.bar(ks.astype(str), angs, color='tab:red')
+    ax.axhline(90, color='0.6', ls=':')
+    ax.set_ylim(0, 95)
+    ax.set_xlabel('k (leading subspace size)'); ax.set_ylabel('mean principal angle (deg)')
+    ax.set_title('do the two pin the same combinations?', fontsize=10)
+
+    # (f) the headline numbers, as text
+    ax = fig.add_subplot(gs[1, 2]); ax.axis('off')
+    top = np.argsort(-np.abs(V[:, 0]))[:6]
+    lines = [
+        f"model      {model} / {target} ({mode})",
+        f"parameters {len(names)} (gauge quotiented)",
+        "",
+        f"best single parameter   rho = {np.nanmax(axis_rho):.2f}",
+        f"best combination        rho = {rho[0]:.1f}",
+        f"                        = {rho[0] / max(np.nanmax(axis_rho), 1e-9):.0f}x better",
+        "",
+        f"top direction moves the LC by {float(cp['dir_lc_resp'][0]):.1e}",
+        f"and the PTC by                {float(cp['dir_ptc_resp'][0]):.1e}",
+        "(both relative to that jacobian's norm)",
+        "",
+        "composition:",
+    ] + [f"   {names[j]:>12s}  {V[j, 0]:+.3f}" for j in top]
+    ax.text(0.0, 1.0, "\n".join(lines), va='top', ha='left', family='monospace', fontsize=8.5)
+
+    fig.suptitle(f"{model} / {target} ({mode}): combinatorial LC-vs-PTC decoupling",
+                 fontsize=12)
+    return _save(fig, f"{model}_directions_{target}_{mode}.png")
+
+
+# --------------------------------------------------------------------------- #
+def main(argv=None):
+    ap = argparse.ArgumentParser(description='regenerate every figure from saved npz')
+    ap.add_argument('--model', default=os.environ.get('MODEL', 'almeida'))
+    ap.add_argument('--target', default=os.environ.get('TARGET', 'BMAL1'))
+    ap.add_argument('--mode', default='pulse')
+    ap.add_argument('--which', default='all')
+    a = ap.parse_args(argv)
+    from analysis.coupling import _load
+    want = a.which.split(',') if a.which != 'all' else \
+        ['scrit', 'surfaces', 'tornado', 'lc_examples', 'ptc_examples', 'directions']
+    made = []
+
+    if 'scrit' in want:
+        sc, _t = _load(a.model, 'scrit', f'scrit_{a.mode}*.npz')
+        sc['model'] = str(sc['model']); sc['mode'] = str(sc['mode'])
+        made.append(_save(scrit_overview(sc), f"{a.model}_scrit_{a.mode}.png"))
+    if 'surfaces' in want:
+        ch, _t = _load(a.model, 'characterize', f'char_{a.mode}*.npz')
+        from analysis.characterize import _plot
+        ch['model'] = str(ch['model']); ch['mode'] = str(ch['mode'])
+        _plot(ch, os.path.join(FIGDIR, f"{a.model}_surfaces_{a.mode}.png"))
+    lc = pt = None
+    if {'tornado', 'lc_examples', 'ptc_examples', 'directions'} & set(want):
+        lc, _t = _load(a.model, 'lc_sens', 'lc_sens*.npz')
+        pt, _t = _load(a.model, 'ptc_sens', f'ptc_sens_{a.target}_{a.mode}*.npz')
+    if 'tornado' in want:
+        made.append(fig_tornado(lc, pt, a.model, a.target, a.mode))
+    if 'lc_examples' in want:
+        made.append(fig_lc_examples(lc, a.model))
+    if 'ptc_examples' in want:
+        made.append(fig_ptc_examples(pt, a.model, a.target, a.mode))
+    if 'directions' in want:
+        fp = paths.out_path(a.model, 'coupling',
+                            f'coupling_{a.target}_{a.mode}_twist.npz')
+        if not os.path.exists(fp):
+            print(f"[figures] run `python -m analysis.coupling --model {a.model} "
+                  f"--target {a.target}` first", file=sys.stderr)
+        else:
+            cp = dict(np.load(fp, allow_pickle=True))
+            made.append(fig_directions(cp, a.model, a.target, a.mode))
+    print(f"[figures] {len(made)} figure(s) written to {FIGDIR}")
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -69,7 +69,7 @@ def check_mode(mode):
 # --------------------------------------------------------------------------- #
 #  JAX: forced RK4 flow
 # --------------------------------------------------------------------------- #
-def make_forced_flow(model, target_idx):
+def make_forced_flow(model, target_idx, track_min=False):
     """Return `flow(y0, n_steps, dt, P, drive)` -- fixed-step RK4 on
 
         dy/dt = f(y; P) + drive * e_target
@@ -79,6 +79,22 @@ def make_forced_flow(model, target_idx):
     requires. The step body is checkpointed so reverse-mode recomputes each RK4 step instead
     of storing its internals -- O(n_steps * state) gradient memory rather than
     O(n_steps * n_ops). It is a no-op in the forward pass.
+
+    track_min=True also returns the most negative value any state reached along the
+    trajectory, as `(y_final, y_min)`.
+
+    WHY THE MINIMUM IS WORTH CARRYING. Every state here is a concentration, so the exact
+    solution is non-negative; a negative value can only be integration error. And at high dose
+    the problem is STIFFNESS, not accuracy in general: a large pulse into Goldbeter's MP
+    raises PC enough that CC's mass-action removal k3*PC*CC exceeds fixed-step RK4's stability
+    limit, and CC rings negative. MEASURED (Goldbeter, MP pulse, 8 h): nothing negative at
+    dose <= 5; at dose 20, min state -2.8e-1 at dt=0.02 and -9.7e-3 at dt=0.005 -- shrinking
+    ~30x for a 4x smaller step, which is the signature of a step-size instability rather than
+    a property of the model.
+
+    So `y_min < 0` marks a point where this integrator is outside its stability region and its
+    PTC value must not be believed. Detecting that is the difference between capping the dose
+    grid honestly and reading confident numbers out of numerical noise.
     """
     rhs = model.jax_rhs
     n = int(model.n_states)
@@ -87,15 +103,19 @@ def make_forced_flow(model, target_idx):
     def f(y, P, drive):
         return rhs(y, P) + drive * e
 
-    def flow(y0, n_steps, dt, P, drive):
-        def step(y, _):
+    def flow(y0, n_steps, dt, P, drive, ymin0=None):
+        def step(carry, _):
+            y, mn = carry
             k1 = f(y, P, drive)
             k2 = f(y + 0.5 * dt * k1, P, drive)
             k3 = f(y + 0.5 * dt * k2, P, drive)
             k4 = f(y + dt * k3, P, drive)
-            return y + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4), None
-        yf, _ = jax.lax.scan(jax.checkpoint(step), y0, None, length=n_steps)
-        return yf
+            y2 = y + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            return (y2, jnp.minimum(mn, jnp.min(y2))), None
+
+        m0 = jnp.min(y0) if ymin0 is None else ymin0
+        (yf, mn), _ = jax.lax.scan(jax.checkpoint(step), (y0, m0), None, length=n_steps)
+        return (yf, mn) if track_min else yf
 
     return flow
 

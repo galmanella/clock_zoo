@@ -92,7 +92,7 @@ def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=1024, verbose=Tru
 
 def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pulse=8.0,
              settle_p=1, skip_p=None, ev_p=3, readout='phase', eps=1e-6, newton_iters=8,
-             gp=None, skip_tol=1e-2, verbose=False):
+             gp=None, skip_tol=1e-2, verbose=False, track_min=False):
     # skip_p=None means "derive it from the Floquet multiplier" (see recommended_skip). Pass an
     # integer to override. ev_p=3, not 2: it must be >= 2 for exactness (below), and 3 leaves
     # margin. MEASURED on Almeida at dose 2.0 against the adaptive reference engine: skip_p=3
@@ -104,6 +104,11 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
         f(P, x0, old_phases, doses) -> new_phase[k]      (or a complex readout)
 
     evaluated AT the given points (both arrays the same length; use `grid_points` for a grid).
+
+    track_min=True makes `f` return `(value, y_min)`, where `y_min` is the most negative state
+    reached along each trajectory. Any point with `y_min < 0` is outside the fixed-step
+    integrator's stability region and its value must be discarded -- see
+    engine.perturb.make_forced_flow, and `valid_mask` below.
 
     readout:
       'phase'    new_phase in [0, 1)
@@ -150,7 +155,7 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
                                                verbose=verbose)
     ti = resolve_target(model, target)
     solver = OrbitSolver(model, n_steps=n_steps, newton_iters=newton_iters)
-    flow = make_forced_flow(model, ti)
+    flow = make_forced_flow(model, ti, track_min=True)
     rhs = model.jax_rhs
     ref_idx = solver.ref_idx
     gp = float(gp or getattr(model, 'approx_period', None) or 24.0)
@@ -199,16 +204,18 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
         def one(oldph, dose):
             base = _sample_uniform(cyc, oldph)
             if mode == 'instant':
-                y2 = flow(displace(base, ti, dose), n_settle, hT, P, 0.0)
+                y2, mn = flow(displace(base, ti, dose), n_settle, hT, P, 0.0)
             else:
-                y1 = flow(base, n_pulse, dt_p, P, dose)        # drive on
-                y2 = flow(y1, n_settle, hT, P, 0.0)            # drive off, relax
+                y1, m1 = flow(base, n_pulse, dt_p, P, dose)        # drive on
+                y2, mn = flow(y1, n_settle, hT, P, 0.0, m1)        # drive off, relax
             cc = _four_vec(y2, P, w, hT)
             if readout == 'complex':
-                return (cc / (jnp.abs(cc) + eps)) * rot
-            if readout == 'raw':
-                return cc * rot / amp_ref              # |.| = amplitude relative to intact
-            return (jnp.angle(cc) / (2 * jnp.pi) - elapsed - phi_ref) % 1.0
+                out = (cc / (jnp.abs(cc) + eps)) * rot
+            elif readout == 'raw':
+                out = cc * rot / amp_ref           # |.| = amplitude relative to intact
+            else:
+                out = (jnp.angle(cc) / (2 * jnp.pi) - elapsed - phi_ref) % 1.0
+            return (out, mn) if track_min else out
 
         return vmap(one)(old_phases, doses)
 
@@ -240,6 +247,17 @@ def phase_or_nan(z, thr=DEAD_AMP):
     ph = ph.astype(float).copy()
     ph[dead_mask(amp, thr)] = np.nan
     return ph, amp
+
+
+#: A state may dip this far below zero before a point is called invalid. Not exactly 0: the
+#: cycle itself brushes zero for some models (Goldbeter's smallest phospho-form runs at ~4e-3),
+#: so round-off alone can produce a -1e-12 without anything being wrong.
+NEG_TOL = -1e-8
+
+
+def valid_mask(y_min, tol=NEG_TOL):
+    """True where the trajectory stayed physical, i.e. the integrator was stable there."""
+    return np.asarray(y_min) >= tol
 
 
 def grid_points(n_phase, doses):

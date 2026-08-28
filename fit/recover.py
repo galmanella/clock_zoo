@@ -57,7 +57,8 @@ def displaced_truth(cost, eps, seed=0, direction=None):
 
 def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=16,
         n_dose=10, max_factor=6.0, backend='diffrax', dt=0.02, seed=0, n_starts=1,
-        maxiter=300, bound=3.0, w_osc=0.2, w_amp=1.0, tag=None):
+        maxiter=300, bound=3.0, w_osc=0.2, w_amp=1.0, tag=None, optimizer='lbfgs',
+        maxfev=3000):
     from models import get_model
     from fit.doses import fit_dose_grid
 
@@ -67,8 +68,9 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
 
     from parallel import announce
     announce(analysis='fit.recover', model=model_name, target=target, mode=mode, eps=eps,
-             backend=backend, n_phase=n_phase, n_dose=len(doses), S_crit=f'{s_crit:.3g}',
-             dose_max=f'{doses.max():.3g}', maxiter=maxiter, starts=n_starts, tag=tag)
+             backend=backend, optimizer=optimizer, n_phase=n_phase, n_dose=len(doses),
+             S_crit=f'{s_crit:.3g}', dose_max=f'{doses.max():.3g}', maxiter=maxiter,
+             starts=n_starts, tag=tag)
 
     # 1. a throwaway cost only to RENDER the truth surface
     C0 = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
@@ -101,11 +103,16 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
               f"(amp_frac / w_osc) before believing this control.")
 
     t0 = time.time()
-    if n_starts > 1:
+    if optimizer == 'cma':
+        # Gradient-free. The right tool when the cost VALUES are sound but the derivatives are
+        # not -- which is the situation on the wide dose grid, where the informative doses are
+        # exactly the ones whose gradient explodes (fit/doses.py, REPO_MAP hazard 11).
+        runs = [search.cma(C, bound=bound, seed=seed, maxfev=maxfev)]
+    elif n_starts > 1:
         runs = search.multistart(C, n_starts=n_starts, bound=bound, maxiter=maxiter, seed=seed)
     else:
         runs = [search.lbfgs(C, C['v0'], bound=bound, maxiter=maxiter, label='nominal')]
-    best = runs[0]
+    best = min(runs, key=lambda r: r['f'])
     dt_all = time.time() - t0
 
     # 3. did it recover the PARAMETERS, not just the cost?
@@ -122,7 +129,8 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     print(f"  parameter RMS log-distance to truth: {rms_log:.4f} "
           f"(started at {rms_log0:.4f}, so {1 - rms_log / max(rms_log0, 1e-12):+.1%} closer)")
     print(f"  {within}/{len(C['names'])} parameters recovered to within 10%")
-    print(f"  {best['nit']} iterations, {best['nev']} evaluations, {dt_all:.0f}s total")
+    print(f"  {best.get('nit', -1)} iterations, {best.get('nev', -1)} evaluations, "
+          f"{dt_all:.0f}s total ({optimizer})")
     print(f"\n  {'param':12s} {'true':>12s} {'fitted':>12s} {'log err':>9s}")
     for nm, a, b in zip(C['names'], th_true, th_fit):
         print(f"  {nm:12s} {a:12.5g} {b:12.5g} {np.log(b / a):+9.3f}")
@@ -139,20 +147,25 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
                 z_base=C['z_base'], theta_true=th_true, theta_fit=th_fit,
                 target_surface_re=np.real(zt), target_surface_im=np.imag(zt),
                 target_alive=alive_t, target_amp=amp_t,
-                trace_f=best['trace_f'], trace_v=best['trace_v'],
+                trace_f=best.get('trace_f'), trace_v=best.get('trace_v'),
+                optimizer=optimizer,
                 all_f=np.array([r['f'] for r in runs]),
                 all_v=np.array([r['v'] for r in runs]),
                 all_v0=np.array([r.get('v0', C['v0']) for r in runs]),
                 # --- features ---------------------------------------------------------- #
                 cost_truth=p_true['total'], cost_nominal=p_nom['total'], cost_fit=best['f'],
                 rms_log=rms_log, rms_log0=rms_log0, n_within_10pct=within,
+                nit=best.get('nit', -1), nev=best.get('nev', -1),
+                n_grad_clipped=best.get('n_grad_clipped', 0),
+                n_grad_dead=best.get('n_grad_dead', 0),
+                grad_max=best.get('grad_max', float('nan')),
                 recovered=bool(verdict), seconds=dt_all, n_starts=n_starts)
     for k, v in p_true.items():
         blob[f'parts_truth__{k}'] = np.asarray(v)
     for k, v in best['parts'].items():
         blob[f'parts_fit__{k}'] = np.asarray(v)
     out = paths.out_path(model_name, 'fit_recover',
-                         f'recover_{target}_{mode}_eps{eps:g}_s{seed}.npz', tag)
+                         f'recover_{target}_{mode}_eps{eps:g}_{optimizer}_s{seed}.npz', tag)
     paths.savez(out, **blob)
     print(f"\n[recover] -> {out}")
     return blob
@@ -172,10 +185,13 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--starts', type=int, default=1)
     ap.add_argument('--maxiter', type=int, default=300)
+    ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma'))
+    ap.add_argument('--maxfev', type=int, default=3000)
     ap.add_argument('--tag', default=None)
     a = ap.parse_args(argv)
     run(a.model, a.target, a.mode, a.eps, a.n_phase, a.n_dose, a.max_factor, a.backend,
-        a.dt, a.seed, a.starts, a.maxiter, tag=a.tag)
+        a.dt, a.seed, a.starts, a.maxiter, tag=a.tag, optimizer=a.optimizer,
+        maxfev=a.maxfev)
     return 0
 
 

@@ -478,41 +478,59 @@ RE-FITTED at all -- something that never worked for Mirsky.
 **BMAL1**, `instant` mode -- the cleanest surface in the project (`plaq 1 -> 1`, i.e. one raw
 winding plaquette and nothing for the dipole filter to do).
 
-### 5.1 A RETRACTED feasibility argument, and what actually holds
+### 5.1 Identifiability is SCALE-DEPENDENT (a claim corrected twice)
 
-**What was claimed here.** That Almeida is "not a sloppy model": `J_PTC` of rank 13 of 13,
-singular values 1.000 down to 0.056, condition number ~18, therefore a single gene's PTC
-constrains every physically meaningful parameter combination. That was offered as the main
+**First claim.** That Almeida is "not a sloppy model": `J_PTC` rank 13 of 13, condition ~18, so
+a single gene's PTC constrains every physically meaningful combination. Offered as the main
 reason to expect the fit to work.
 
-**It does not apply to the fit.** Those numbers come from the batch-1 `coupling` jacobians:
-**pulse** mode, the **wide** characterization dose grid, and **15** parameters. The fit runs
-**instant** mode on the **capped** window over the **16** gauge-quotient directions. That is a
-different linear map, and its conditioning has to be measured rather than inherited. Measured:
+**First correction, itself an over-correction.** Those numbers are from the batch-1 `coupling`
+jacobians -- pulse mode, wide dose grid, 15 parameters -- while the fit runs instant mode on the
+capped window over 16 quotient directions. Measured there: rank **7/16**, condition **2.0e3**.
+That prompted "it IS sloppy", which is also not right.
 
-| configuration | rank @1e-2 | rank @1e-3 | condition |
+**What is actually true.** The two measurements differ in the FINITE-DIFFERENCE STEP, and the
+answer depends on it. `analysis/coupling.py` differences on the factor grid (x1.26 / x0.79, i.e.
+h = log 1.26 = 0.231 in log-parameters); the conditioning study used h = 1e-4. Sweeping h on one
+fixed configuration (pulse, 12 phases x 8 doses, cap 6 S_crit):
+
+| h | parameter change | rank @1e-2 | condition |
 |---|---|---|---|
-| batch-1 pulse, wide grid, 15 params *(what was quoted)* | 13/13 | 13/13 | **~18** |
-| the actual fit (instant, 12x8, cap 6 S_crit), at nominal | **7/16** | 14/16 | **2.0e3** |
-| the actual fit, at the T1 ground truth | **5/16** | 10/16 | **1.7e4** |
+| 1e-4 | 1.000x | 8/16 | 2.00e3 |
+| 1e-3 | 1.001x | 8/16 | 2.00e3 |
+| 1e-2 | 1.010x | 8/16 | 1.17e3 |
+| 0.05 | 1.051x | 10/16 | 4.33e2 |
+| **0.231** | **1.26x** | **16/16** | **6.46e1** |
 
-So in the configuration the fit actually uses, the single-gene PTC spans three to four orders of
-magnitude in sensitivity: five to seven directions are determined and nine to eleven are close
-to invisible. **It is sloppy there.** The claim above is withdrawn as stated; what survives is
-the narrower and still useful fact that a *pulse-mode* PTC on the *wide* dose grid is
-well-conditioned.
+h = 1e-4 and 1e-3 agree exactly, so the small-step values are the converged local derivative, not
+a differencing artifact.
 
-**This explains T1 rather than excusing it.** The self-recovery control drove the cost down 10x
-(0.592 -> 0.061) while the parameter distance to the truth GREW from 0.283 to 0.685 and 0 of 18
-parameters landed within 10%. With ~10 of 16 directions nearly flat, an optimizer is free to
-wander along them at almost no cost -- which is exactly what the numbers show. That is
-non-identifiability of the configuration, not a failure of the optimizer.
+**So both numbers are right and they answer different questions.**
 
-**The methodological point, which has now cost four separate errors.** Constants and grids
-carried over from a different setup fail silently and look authoritative: the Mirsky dose grid,
-the amplitude floor, the Hopf barrier scale, and now a conditioning number reused across
-perturbation modes. Each was caught only by checking against a case whose answer was already
-known. Nothing scale-bearing should be inherited when Korencic and Goldbeter are set up.
+- **At the +-26% scale the model IS identifiable from one gene's PTC**: all 16 directions
+  produce a distinguishable change, condition ~65. A 26%-different Almeida is tellable from
+  nominal.
+- **Locally it is not**: rank 8 of 16, condition 2000. About eight directions are flat at the
+  bottom.
+
+That is a broad, well-shaped basin with a flat floor -- and it predicts exactly what T1 did:
+the cost fell 10x (the basin is real and findable) while the parameters drifted further away
+(the floor carries no information).
+
+**The consequence for fitting.** A PTC fit can place Almeida within roughly tens of percent and
+cannot pin it further. Any recovered parameter set must be reported as a basin, not a point, and
+"the cost went down" is not evidence that the parameters are right -- T1 is the counterexample.
+
+**And what does NOT explain it.** Four factors were varied one at a time and none moved the local
+rank: phase/dose resolution (4x more cells: 7/16 -> 7/16), dose ceiling (6 -> 18 x S_crit:
+7/16 -> 7/16), perturbation mode (instant 7/16 vs pulse 8/16), and step size within the
+small-step regime. The flat directions are a property of the single-gene PTC map itself.
+
+**Methodological note, now four errors deep.** Mirsky's dose grid, the amplitude floor, the Hopf
+barrier scale, and this conditioning number were all inherited across a change of setup, and all
+four were wrong in the new one while looking authoritative. Each was caught only by testing
+against a case with a known answer. Nothing scale-bearing should be carried into Korencic or
+Goldbeter without re-measuring it.
 
 ### 5.2 The failure this is designed against
 

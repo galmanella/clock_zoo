@@ -64,21 +64,39 @@ import paths
 
 
 def load_scrit(model_name, target, mode='instant', tag=None):
-    """(S_crit, full_dose_grid, dt) for one target from the newest scrit run."""
-    tag = tag or paths.latest_run(model_name, 'scrit')
-    if tag is None:
+    """(S_crit, full_dose_grid, dt) for one target, from the newest scrit run THAT HAS IT.
+
+    Searches tags newest-first rather than taking `latest_run` and hoping. scrit runs are
+    per-mode: a `--mode instant` run writes only `scrit_instant*.npz`, so asking the newest tag
+    for a pulse entry finds nothing even though a perfectly good pulse run exists under an older
+    tag. That silently skipped every pulse configuration in a conditioning sweep, which read as
+    "pulse is unavailable" rather than "look one directory over".
+    """
+    if tag is not None:
+        tags = [tag]
+    else:
+        d = paths.model_dir(model_name, 'scrit') if hasattr(paths, 'model_dir') else None
+        root = d or os.path.join(paths.OUT, model_name, 'scrit')
+        tags = sorted((t for t in os.listdir(root)
+                       if os.path.isdir(os.path.join(root, t))), reverse=True) \
+            if os.path.isdir(root) else []
+    if not tags:
         raise SystemExit(f"run `python -m analysis.scrit --model {model_name} "
                          f"--mode {mode}` first")
-    d = paths.out_dir(model_name, 'scrit', tag, create=False)
-    for fp in sorted(glob.glob(os.path.join(d, f'scrit_{mode}*.npz'))):
-        z = np.load(fp, allow_pickle=True)
-        names = [str(t) for t in z['targets']]
-        if target in names:
-            i = names.index(target)
-            grid = np.asarray(z[f'grid__{target}']) if f'grid__{target}' in z else None
-            dt = float(z['dt_used'][i]) if 'dt_used' in z.files else 0.02
-            return float(z['S_crit'][i]), grid, dt
-    raise SystemExit(f"no scrit entry for {target} ({mode}) in {d}")
+    seen = []
+    for tg in tags:
+        d = paths.out_dir(model_name, 'scrit', tg, create=False)
+        for fp in sorted(glob.glob(os.path.join(d, f'scrit_{mode}*.npz'))):
+            z = np.load(fp, allow_pickle=True)
+            names = [str(t) for t in z['targets']]
+            if target in names:
+                i = names.index(target)
+                grid = np.asarray(z[f'grid__{target}']) if f'grid__{target}' in z else None
+                dt = float(z['dt_used'][i]) if 'dt_used' in z.files else 0.02
+                return float(z['S_crit'][i]), grid, dt
+        seen.append(tg)
+    raise SystemExit(f"no scrit entry for {target} ({mode}) in any of {seen} -- "
+                     f"run `python -m analysis.scrit --model {model_name} --mode {mode}`")
 
 
 def fit_dose_grid(model_name, target, mode='instant', max_factor=6.0, n=10, tag=None,

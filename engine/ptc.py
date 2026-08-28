@@ -48,6 +48,7 @@ import numpy as np
 from jax import lax, vmap
 
 from engine.orbit import OrbitSolver
+from engine.flow import check_backend, make_flow, make_window_sampler
 from engine.perturb import make_forced_flow, displace, resolve_target, check_mode
 
 
@@ -92,7 +93,7 @@ def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=1024, verbose=Tru
 
 def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pulse=8.0,
              settle_p=1, skip_p=None, ev_p=3, readout='phase', eps=1e-6, newton_iters=8,
-             gp=None, skip_tol=1e-2, verbose=False, track_min=False):
+             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='rk4'):
     # skip_p=None means "derive it from the Floquet multiplier" (see recommended_skip). Pass an
     # integer to override. ev_p=3, not 2: it must be >= 2 for exactness (below), and 3 leaves
     # margin. MEASURED on Almeida at dose 2.0 against the adaptive reference engine: skip_p=3
@@ -154,8 +155,9 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
         skip_p, _mu, _resid = recommended_skip(model, tol=skip_tol, n_steps=n_steps,
                                                verbose=verbose)
     ti = resolve_target(model, target)
+    check_backend(backend)
     solver = OrbitSolver(model, n_steps=n_steps, newton_iters=newton_iters)
-    flow = make_forced_flow(model, ti, track_min=True)
+    flow = make_flow(model, ti, backend=backend, track_min=True)
     rhs = model.jax_rhs
     ref_idx = solver.ref_idx
     gp = float(gp or getattr(model, 'approx_period', None) or 24.0)
@@ -166,10 +168,14 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
     n_skip = int(skip_p * n_pp)
     n_ev = int(ev_p * n_pp)
 
-    def _four_vec(state, P, w, hT):
+    def _four_vec_rk4(state, P, w, hT):
         """Hann-windowed fundamental Fourier coefficient of the reference oscillation,
         accumulated inside the scan. arg -> asymptotic phase; |.| -> post-perturbation
-        amplitude (-> 0 at a phase singularity). `hT` = T/n_pp is the traced step size."""
+        amplitude (-> 0 at a phase singularity). `hT` = T/n_pp is the traced step size.
+
+        Skip and readout are FUSED into one checkpointed scan so no trajectory is ever
+        materialized -- gradient memory is O(n_steps * state), not O(n_steps * n_ops), and the
+        forward pass under vmap holds only the running carry."""
         def step(carry, i):
             y, c, sw = carry
             k1 = rhs(y, P); k2 = rhs(y + 0.5 * hT * k1, P)
@@ -183,6 +189,24 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
         (_y, c, sw), _ = lax.scan(jax.checkpoint(step), (state, 0j, 0.0),
                                   jnp.arange(n_skip + n_ev))
         return c / sw
+
+    def _four_vec_dfx(state, P, w, hT):
+        """The same quantity on the adaptive backend, with the IDENTICAL Hann formula and the
+        identical sample grid -- so an A/B difference is attributable to the integrator alone.
+
+        The skip is integrated as its own solve and discarded rather than being fused into the
+        sampled window, so only n_ev states are materialized instead of n_skip + n_ev. For
+        Almeida that is ~3.7k states per cell rather than ~19k, which is the difference between
+        a vmapped gradient fit fitting in memory and not."""
+        y = flow(state, n_skip, hT, P, 0.0)[0]
+        ys = _sampler(y, n_ev, hT, P)
+        li = jnp.arange(n_ev)
+        wgt = 0.5 - 0.5 * jnp.cos(2 * jnp.pi * li / (n_ev - 1))
+        c = jnp.sum(ys[:, ref_idx] * wgt * jnp.exp(-1j * w * (li * hT)))
+        return c / jnp.sum(wgt)
+
+    _sampler = make_window_sampler(model, backend) if backend != 'rk4' else None
+    _four_vec = _four_vec_rk4 if backend == 'rk4' else _four_vec_dfx
 
     def f(P, x0, old_phases, doses):
         y0, T, _res = solver.solve(P, x0)

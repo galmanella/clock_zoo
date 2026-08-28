@@ -17,7 +17,7 @@ Everything runs as a module from the repo root: `python -m engine.orbit`,
 | `gauge/` | the exact unit-rescaling symmetry, derived per model. **Read before comparing any two parameter sets.** |
 | `slurm/` | cluster templates. Thin: the drivers already shard. |
 | `out/` | results, `out/<model>/<analysis>/<tag>/`. Git-ignored; each npz carries a `.meta.json` provenance sidecar. |
-| `docs/figures/` | figures cited by PROJECT_SUMMARY, copied out of `out/` so they travel with the document. |
+| `docs/figures/` | ONLY figures explicitly cited by PROJECT_SUMMARY. Not a gallery, not a dumping ground -- see the figure rule under Hazards. |
 
 ## "What do I run for…?"
 
@@ -159,6 +159,30 @@ tracking.
     dipole filter -- designed to clean up fast phase changes -- silently reduced 13 spurious
     plaquettes to one arbitrary survivor. Nothing downstream could tell. Gate every surface
     with `analysis/quality.py` BEFORE quoting any feature from it.
+
+13. **A FIGURE IS A RESULT. IT BELONGS IN `out/`, NOT IN `docs/figures/`.**
+
+    Every figure is written to `out/<model>/<analysis>/<tag>/` by `paths.save_figure`, beside
+    the `.npz` that produced it, with a `.png.meta.json` sidecar recording the script, git
+    commit, host, time and configuration, and a provenance line stamped inside the image. That
+    is what makes a figure re-findable and re-derivable a month later.
+
+    `docs/figures/` is NOT a second home for figures. It holds only the curated copies that
+    PROJECT_SUMMARY actually cites, so the document travels with its illustrations. A figure
+    that no text references does not belong there.
+
+    **Publish only via `paths.save_figure(..., publish=...)`, never with `cp`.** The publish
+    path writes a `.source.txt` next to the copy naming the run it came from; `cp` writes an
+    orphan with no way back to its data. The test is one line:
+
+        for f in docs/figures/*.png; do [ -f "$f.source.txt" ] || echo "ORPHAN: $f"; done
+
+    Two orphans were found by exactly that check, both `cp`-ed there by hand while writing up
+    results nobody had asked to publish. Removed; the originals were already in `out/` with
+    their sidecars, so nothing was lost -- which is the point.
+
+    The same check in reverse catches the other failure: a figure PROJECT_SUMMARY references
+    that was never published at all (`almeida_coupling_BMAL1.png` is currently a broken link).
 
 ## Open
 

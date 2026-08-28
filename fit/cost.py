@@ -360,8 +360,12 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         d = _parts_j(jnp.asarray(v, jnp.float64))
         return {k: float(np.asarray(x)) for k, x in d.items()}
 
+    # Jitted: a conditioning study finite-differences this 2*n_free times, and in eager mode
+    # each call re-dispatches the whole vmapped solve one primitive at a time.
+    _surface_j = jax.jit(_surface)
+
     def surface(v):
-        P, zu, alive, amp, amp_lc, T = _surface(jnp.asarray(v, jnp.float64))
+        P, zu, alive, amp, amp_lc, T = _surface_j(jnp.asarray(v, jnp.float64))
         return np.asarray(zu), np.asarray(alive), np.asarray(amp)
 
     return dict(names=names, z_base=z_base, B=B, gauge=g, n_free=n_free,

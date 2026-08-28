@@ -478,18 +478,41 @@ RE-FITTED at all -- something that never worked for Mirsky.
 **BMAL1**, `instant` mode -- the cleanest surface in the project (`plaq 1 -> 1`, i.e. one raw
 winding plaquette and nothing for the dipole filter to do).
 
-### 5.1 Why it looked feasible before running it
+### 5.1 A RETRACTED feasibility argument, and what actually holds
 
-| | |
-|---|---|
-| search dimension | **16** free directions of 18 parameters (the gauge quotient) |
-| conditioning | `J_PTC` has rank **13 of 13**, singular values 1.000 down to 0.056 |
-| condition number | **~18** |
+**What was claimed here.** That Almeida is "not a sloppy model": `J_PTC` of rank 13 of 13,
+singular values 1.000 down to 0.056, condition number ~18, therefore a single gene's PTC
+constrains every physically meaningful parameter combination. That was offered as the main
+reason to expect the fit to work.
 
-Sloppy models span five or six orders of magnitude in their sensitivity spectrum; Almeida spans
-less than two. **It is not a sloppy model**, and a single gene's PTC constrains every physically
-meaningful parameter combination. That is the sharpest available contrast with Mirsky, where 132
-parameters left ~100 directions flat.
+**It does not apply to the fit.** Those numbers come from the batch-1 `coupling` jacobians:
+**pulse** mode, the **wide** characterization dose grid, and **15** parameters. The fit runs
+**instant** mode on the **capped** window over the **16** gauge-quotient directions. That is a
+different linear map, and its conditioning has to be measured rather than inherited. Measured:
+
+| configuration | rank @1e-2 | rank @1e-3 | condition |
+|---|---|---|---|
+| batch-1 pulse, wide grid, 15 params *(what was quoted)* | 13/13 | 13/13 | **~18** |
+| the actual fit (instant, 12x8, cap 6 S_crit), at nominal | **7/16** | 14/16 | **2.0e3** |
+| the actual fit, at the T1 ground truth | **5/16** | 10/16 | **1.7e4** |
+
+So in the configuration the fit actually uses, the single-gene PTC spans three to four orders of
+magnitude in sensitivity: five to seven directions are determined and nine to eleven are close
+to invisible. **It is sloppy there.** The claim above is withdrawn as stated; what survives is
+the narrower and still useful fact that a *pulse-mode* PTC on the *wide* dose grid is
+well-conditioned.
+
+**This explains T1 rather than excusing it.** The self-recovery control drove the cost down 10x
+(0.592 -> 0.061) while the parameter distance to the truth GREW from 0.283 to 0.685 and 0 of 18
+parameters landed within 10%. With ~10 of 16 directions nearly flat, an optimizer is free to
+wander along them at almost no cost -- which is exactly what the numbers show. That is
+non-identifiability of the configuration, not a failure of the optimizer.
+
+**The methodological point, which has now cost four separate errors.** Constants and grids
+carried over from a different setup fail silently and look authoritative: the Mirsky dose grid,
+the amplitude floor, the Hopf barrier scale, and now a conditioning number reused across
+perturbation modes. Each was caught only by checking against a case whose answer was already
+known. Nothing scale-bearing should be inherited when Korencic and Goldbeter are set up.
 
 ### 5.2 The failure this is designed against
 
@@ -543,8 +566,16 @@ Korencic and Goldbeter.
 `fit/` is built and self-tested: `target.py` (analytic Winfree surface, dose scale and kick
 direction profiled out at zero ODE cost), `cost.py`, `search.py` (L-BFGS primary, multistart for
 basins, CMA-ES as an opt-in cross-check), `doses.py`, `recover.py` (T1), `radial.py` (T3),
-`figures.py`. T0 and T0.5 pass. **T1, the self-recovery control, is the go/no-go and is
-running.**
+`figures.py`. T0 and T0.5 pass.
+
+**T1 does NOT pass.** Two runs, the first invalidated by a gradient bug (a defective leading
+eigenvalue returned inf, the search wrapper zeroed the whole gradient, and L-BFGS read that as
+convergence at 58 of 150 iterations). With that fixed: cost 0.592 -> 0.061 against a floor of
+0.000392, 109 iterations, parameter distance to truth 0.283 -> **0.685**, **0/18** parameters
+within 10%. The residual corresponds to a typical phase error of ~0.079 cyc, so the surface was
+not matched either -- the optimizer is stuck short, on a landscape that is both flat in most
+directions (5.1) and spiked in a few (`max |g|` reached 1.98e25 mid-run, the basin-boundary
+pathology of hazard 11 recurring at displaced parameters).
 
 ---
 

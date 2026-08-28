@@ -299,17 +299,56 @@ class FixedTarget:
 
 
 class RadialTarget:
-    """The analytic radial-isochron surface, with (k, psi) profiled out per evaluation.
+    """The analytic radial-isochron surface.
 
-    Profiled, not fitted, because neither is a property of the model -- see fit/target.py. The
-    profile costs no ODE solves, so this is as cheap as FixedTarget."""
+    (k, psi) place the target: k sets its critical dose (S_crit = 1/k) and psi its singular
+    phase (phi* = psi + 0.5). They are NOT properties of the model -- the target's dose axis has
+    no natural units and a Poincare oscillator has no distinguished phase -- so they have to
+    come from somewhere.
+
+    PINNED IS THE DEFAULT, AND PROFILING IS THE OPTION.
+        Pass k and psi (see `from_singularity`) and the target is a FIXED picture for the whole
+        fit. Pass neither and they are re-profiled at every evaluation to whatever best matches
+        the surface being scored.
+
+        Profiling looks attractive -- it asks "is the field radial, wherever the defect sits"
+        rather than the stricter "is it radial AND is the defect exactly here" -- but it makes
+        the target a function of the model, and that is a feedback loop on top of the ordinary
+        one:
+
+        1. `min` over a family is NOT smooth. The profiled cost has kinks wherever the argmin
+           jumps to another (k, psi) branch, so the effective target moves discontinuously as
+           the parameters move. On a landscape already rugged from the spiral geometry
+           (PROJECT_SUMMARY 5.4c) that is the last thing to add.
+        2. Costs at different parameter sets are then measured against DIFFERENT targets, so
+           they are not strictly comparable, and the singularity is free to drift anywhere --
+           a "radialized" model could end up with an S_crit nowhere near the seed's, a large
+           physical change that nothing in the objective would flag.
+
+        input_screen/radialize.py pinned it: `make_radial_target(S_crit, phi_sing, ...)` built
+        the target at the BASE run's singularity and asked the model to flatten the twist while
+        holding the defect where it already was. That is the well-posed question, and it is what
+        this class now does by default.
+    """
     name = 'radial'
 
-    def __init__(self, n_k=48, n_psi=48, refine=2):
+    def __init__(self, k=None, psi=None, n_k=48, n_psi=48, refine=2):
+        self.k, self.psi = k, psi
         self.n_k, self.n_psi, self.refine = n_k, n_psi, refine
+        self.name = 'radial' if (k is None) else 'radial-pinned'
+
+    @staticmethod
+    def from_singularity(s_crit, phi_sing):
+        """Target pinned to a measured singularity: k = 1/S_crit, psi = phi* - 0.5."""
+        return RadialTarget(k=1.0 / float(s_crit), psi=(float(phi_sing) - 0.5) % 1.0)
 
     def __call__(self, zm, alive, old, doses):
-        k, psi, _c = profile(zm, alive, old, doses, self.n_k, self.n_psi, refine=self.refine)
+        if self.k is not None:
+            k = jnp.asarray(self.k)
+            psi = jnp.asarray(self.psi if self.psi is not None else 0.0)
+        else:
+            k, psi, _c = profile(zm, alive, old, doses, self.n_k, self.n_psi,
+                                 refine=self.refine)
         return radial_z(old, doses, k, psi), {'k': k, 'psi': psi}
 
 

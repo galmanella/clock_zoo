@@ -99,17 +99,31 @@ def load_scrit(model_name, target, mode='instant', tag=None):
                      f"run `python -m analysis.scrit --model {model_name} --mode {mode}`")
 
 
-def fit_dose_grid(model_name, target, mode='instant', max_factor=6.0, n=10, tag=None,
-                  lo_factor=0.15):
+def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10, tag=None,
+                  lo_factor=0.5):
     """(doses, S_crit) -- a log-spaced fit window from lo_factor*S_crit to max_factor*S_crit.
 
     Log-spaced rather than a subset of the scrit grid so the sampling is under this module's
     control and reproducible from (S_crit, max_factor, n) alone, without depending on which
     adaptive grid happened to be saved.
 
-    The low end matters as much as the high end: the type-1 region is where the map is closest
-    to smooth, and it is what pins the target's dose scale `k`. Starting at 0.15*S_crit gives
-    roughly a decade below the transition.
+    THE PLACEMENT OF S_crit IN THE RANGE IS THE POINT, NOT THE ENDPOINTS.
+        TWIST LIVES ABOVE S_crit. PROJECT_SUMMARY 3.4 sets the convention -- put S_crit at
+        roughly the 30th log-percentile so the type-0 side spans ~70% of the sampled range --
+        precisely so the isochron twist is resolved rather than crammed into the top of the
+        grid.
+
+        The first version of this function used 0.15 * S_crit to 6 * S_crit, which puts S_crit
+        at the 51st percentile: barely half the range is type-0, and the radial fit is entirely
+        about twist in that half. 0.5 to 8.0 puts it at the 25th percentile, so type-0 spans
+        75%.
+
+            lo=0.15 hi=6    S_crit at 51.4 pct   type-0  48.6%   <- was
+            lo=0.5  hi=8    S_crit at 25.0 pct   type-0  75.0%   <- now
+            lo=0.4  hi=10   S_crit at 28.5 pct   type-0  71.5%
+
+        8 * S_crit is still well inside the smooth regime: the gradient pathology sets in around
+        18 * S_crit, and 3-5 * S_crit measured |grad| = 2.4 against 0.7 near S_crit.
     """
     S, _grid, dt = load_scrit(model_name, target, mode, tag)
     if not np.isfinite(S):

@@ -65,94 +65,113 @@ def _cycles(model_name, names, theta_base, theta_fit, m=256):
 
 
 def fig_radial(z):
-    """PTC before/after, the twist, and -- decisively -- the limit cycle in real time."""
+    """Target, base and fitted PTCs; both limit cycles on their OWN axes; the numbers.
+
+    FOUR THINGS THIS LAYOUT FIXES, ALL OF WHICH THE PREVIOUS VERSION GOT WRONG:
+
+    1. THE TARGET IS SHOWN. The earlier figure plotted base, fitted and their difference but
+       never the radial surface being fitted TO -- the one panel that says what "success" would
+       even look like. RadialTarget profiles (k, psi) per evaluation, so the target is not a
+       fixed picture; radial.py now stores the registration that actually scored each surface.
+
+    2. EACH LIMIT CYCLE GETS ITS OWN AXES. Plotting a 24.8 h cycle and a 0.159 h cycle on shared
+       axes rendered the second as a dot at the origin -- the failure was visible but its SHAPE
+       was not, and the shape is what says whether the thing still oscillates.
+
+    3. NO NORMALIZATION BY MEAN. The old "level / mean" panel divided by a mean near zero, put
+       everything on a 1e11 scale, and flattened both curves to lines. Absolute concentration
+       against real time, per panel, is what can actually be read.
+
+    4. SEVERAL SPECIES, not just the reference. One trace cannot distinguish "the clock stopped"
+       from "this particular species stopped".
+    """
     old, doses = np.asarray(z['old']), np.asarray(z['doses'])
-    names = [str(s) for s in z['names']]
-    (tb, cb, Tb), (tf, cf, Tf) = _cycles(str(z['model']), names,
-                                         z['theta_base'], z['theta_fit'])
+    names = [str(s_) for s_ in z['names']]
+    obs = [str(s_) for s_ in z['obs']] if 'obs' in z else None
 
-    fig = plt.figure(figsize=(16.5, 8.6))
-    gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.9], hspace=0.42, wspace=0.32)
+    panels = [('radial target', np.asarray(z['ptc_target_fit'])),
+              ('base', np.asarray(z['ptc_base'])),
+              ('fitted', np.asarray(z['ptc_fit']))]
+    diffs = [('|base - target|', np.asarray(z['ptc_base']), np.asarray(z['ptc_target_base'])),
+             ('|fitted - target|', np.asarray(z['ptc_fit']), np.asarray(z['ptc_target_fit']))]
 
-    for i, (key, lab) in enumerate((('ptc_base', 'base'), ('ptc_fit', 'fitted'))):
+    # dedicated colorbar columns so no panel is narrower than its neighbours
+    fig = plt.figure(figsize=(19.5, 9.0))
+    gs = fig.add_gridspec(2, 7, height_ratios=[1.05, 0.95],
+                          width_ratios=[1, 1, 1, 0.07, 1, 1, 0.07],
+                          hspace=0.40, wspace=0.34)
+
+    for i, (lab, ptc) in enumerate(panels):
         ax = fig.add_subplot(gs[0, i])
-        m = ax.pcolormesh(old, doses, np.asarray(z[key]).T, cmap=phase_cmap(), vmin=0, vmax=1,
+        m = ax.pcolormesh(old, doses, ptc.T, cmap=phase_cmap(), vmin=0, vmax=1,
                           shading='nearest')
         ax.set_yscale('log'); ax.set_xlabel('old phase (cyc)')
         if i == 0:
             ax.set_ylabel('dose')
-        S = float(z[f"{'base' if i == 0 else 'fit'}__S_crit"])
-        if np.isfinite(S):
-            ax.axhline(S, color='w', ls='--', lw=1.1, alpha=0.85)
-        pref = 'base' if i == 0 else 'fit'
-        ax.set_title(f"{lab}   c_ptc={float(z[pref + '__parts_c_ptc']):.4f}", fontsize=9)
-        if i == 1:
-            fig.colorbar(m, ax=ax, label='new phase (cyc)')
+        ax.axhline(float(z['s_crit']), color='w', ls=':', lw=1.0, alpha=0.7)
+        ax.set_title(lab, fontsize=9.5)
+    fig.colorbar(m, cax=fig.add_subplot(gs[0, 3]), label='new phase (cyc)')
 
-    ax = fig.add_subplot(gs[0, 2])
-    d = _circd(z['ptc_fit'], z['ptc_base'])
-    mm = ax.pcolormesh(old, doses, d.T, cmap='magma', shading='nearest')
-    ax.set_yscale('log'); ax.set_xlabel('old phase (cyc)')
-    ax.set_title(f'|fitted - base|   rms {np.sqrt(np.nanmean(d ** 2)):.4f} cyc', fontsize=9)
-    fig.colorbar(mm, ax=ax, label='|d phase| (cyc)')
+    for j, (lab, A, B) in enumerate(diffs):
+        ax = fig.add_subplot(gs[0, 4 + j])
+        d = np.abs(A - B) % 1.0
+        d = np.minimum(d, 1 - d)
+        mm = ax.pcolormesh(old, doses, d.T, cmap='magma', vmin=0, vmax=0.5, shading='nearest')
+        ax.set_yscale('log'); ax.set_xlabel('old phase (cyc)')
+        ax.set_title(f'{lab}   rms {np.sqrt(np.nanmean(d ** 2)):.4f} cyc', fontsize=9.5)
+    fig.colorbar(mm, cax=fig.add_subplot(gs[0, 6]), label='|d phase| (cyc)')
 
-    ax = fig.add_subplot(gs[0, 3])
+    # --- limit cycles, one panel each, own axes, several species ------------------- #
+    for j, (key, per_key, lab) in enumerate((('cyc_base', 'base__period', 'base'),
+                                             ('cyc_fit', 'fit__period', 'fitted'))):
+        ax = fig.add_subplot(gs[1, 2 * j:2 * j + 2])
+        if key in z:
+            cyc = np.asarray(z[key])
+            T = float(z[per_key])
+            t = np.linspace(0, T, cyc.shape[0])
+            for k in range(cyc.shape[1]):
+                ax.plot(t, cyc[:, k], lw=1.5,
+                        label=(obs[k] if obs and k < len(obs) else f'y{k}'))
+            ax.set_xlabel('time (h)'); ax.set_ylabel('concentration')
+            ax.set_title(f'{lab} limit cycle -- T = {T:.3f} h  (own axes)', fontsize=9.5)
+            ax.legend(fontsize=6.5, ncol=2)
+        else:
+            ax.axis('off')
+            ax.text(0.5, 0.5, lab + ' cycle not stored\n(re-run fit.radial)', ha='center')
+
+    ax = fig.add_subplot(gs[1, 4])
     twist_panel(ax, doses, np.asarray(z['twist_fit']), base=np.asarray(z['twist_base']),
-                label='fitted', title='isochron twist (flat = radial)')
+                label='fitted', scrit=float(z['s_crit']),
+                title='isochron twist (flat = radial)')
 
-    # --- the panels that expose the failure -------------------------------------- #
-    ax = fig.add_subplot(gs[1, 0])
-    ax.plot(tb, cb, lw=1.8, label=f'base (T={Tb:.2f} h)')
-    ax.plot(tf, cf, lw=1.8, label=f'fitted (T={Tf:.3f} h)')
-    ax.set_xlabel('time (h)'); ax.set_ylabel(f'{"reference species"}')
-    ax.set_title('limit cycle in REAL TIME -- period and amplitude', fontsize=9)
-    ax.legend(fontsize=8)
-
-    ax = fig.add_subplot(gs[1, 1])
-    ax.plot(np.linspace(0, 1, len(cb)), cb / max(np.mean(cb), 1e-12), lw=1.8, label='base')
-    ax.plot(np.linspace(0, 1, len(cf)), cf / max(np.mean(cf), 1e-12), lw=1.8, label='fitted')
-    ax.set_xlabel('phase (cyc)'); ax.set_ylabel('level / mean')
-    ax.set_title('same cycles, normalized -- waveform only', fontsize=9)
-    ax.legend(fontsize=8)
-
-    ax = fig.add_subplot(gs[1, 2])
-    tr = np.asarray(z['trace_f']) if z.get('trace_f') is not None \
-        and np.asarray(z['trace_f']).size else None
-    if tr is not None:
-        ax.plot(tr, lw=1.2, color='#333')
-        ax.set_yscale('log' if np.all(tr > 0) else 'linear')
-    ax.set_xlabel('evaluation'); ax.set_ylabel('cost')
-    ax.set_title('search trace', fontsize=9)
-
-    ax = fig.add_subplot(gs[1, 3]); ax.axis('off')
+    ax = fig.add_subplot(gs[1, 5:]); ax.axis('off')
+    Tb, Tf = float(z['base__period']), float(z['fit__period'])
     ar = float(z['fit__amp_lc']) / max(float(z['base__amp_lc']), 1e-12)
     pr = Tf / max(Tb, 1e-12)
     bad = (ar < 0.5 or ar > 2.0 or pr < 0.5 or pr > 2.0
            or not (0.0 < float(z['fit__mu']) < 0.99))
-    lines = [f"{'':14s}{'base':>12s}{'fitted':>12s}",
-             '-' * 38,
-             f"{'c_ptc':14s}{float(z['base__parts_c_ptc']):12.4f}"
-             f"{float(z['fit__parts_c_ptc']):12.4f}",
-             f"{'twist':14s}{float(z['base__total_twist']):12.4f}"
-             f"{float(z['fit__total_twist']):12.4f}",
-             f"{'period (h)':14s}{Tb:12.3f}{Tf:12.3f}",
-             f"{'amp_lc':14s}{float(z['base__amp_lc']):12.3f}"
-             f"{float(z['fit__amp_lc']):12.3f}",
-             f"{'Floquet mu':14s}{float(z['base__mu']):12.4f}{float(z['fit__mu']):12.4f}",
-             '',
-             f"amplitude x{ar:.3g}   period x{pr:.3g}"]
+    lines = [f"{'':12s}{'base':>11s}{'fitted':>11s}", '-' * 34,
+             f"{'c_ptc':12s}{float(z['base__parts_c_ptc']):11.4f}"
+             f"{float(z['fit__parts_c_ptc']):11.4f}",
+             f"{'twist':12s}{float(z['base__total_twist']):11.4f}"
+             f"{float(z['fit__total_twist']):11.4f}",
+             f"{'S_crit':12s}{float(z['base__S_crit']):11.4g}"
+             f"{float(z['fit__S_crit']):11.4g}",
+             f"{'period (h)':12s}{Tb:11.3f}{Tf:11.3f}",
+             f"{'amp_lc':12s}{float(z['base__amp_lc']):11.3f}"
+             f"{float(z['fit__amp_lc']):11.3f}",
+             f"{'Floquet mu':12s}{float(z['base__mu']):11.4f}{float(z['fit__mu']):11.4f}",
+             '', f"amplitude x{ar:.3g}   period x{pr:.3g}",
+             f"target k={float(z['k_target_fit']):.4g} psi={float(z['psi_target_fit']):.3f}"]
     if bad:
-        lines += ['', 'DEGENERATE: the fitted object is not a',
-                  'circadian oscillator. Residual and twist',
-                  '"improvements" are artefacts of fitting a',
-                  'different dynamical object.']
-    ax.text(0.0, 1.0, '\n'.join(lines), family='monospace', fontsize=9.5, va='top',
+        lines += ['', 'DEGENERATE -- not a circadian', 'oscillator; residual and twist',
+                  '"gains" are artefacts.']
+    ax.text(0.0, 1.0, "\n".join(lines), family='monospace', fontsize=9, va='top',
             color=('#b31d28' if bad else '#1a7f37'), transform=ax.transAxes)
 
-    tag = 'DEGENERATE' if bad else ('radialized' if bool(z['improved']) else 'no progress')
+    lab = 'DEGENERATE' if bad else ('radialized' if bool(z['improved']) else 'no progress')
     fig.suptitle(f"{z['model']}/{z['target']} ({z['mode']}) radial fit [{z['optimizer']}] "
-                 f"-- {tag}", fontsize=12,
-                 color=('#b31d28' if bad else 'black'))
+                 f"-- {lab}", fontsize=12, color=('#b31d28' if bad else 'black'))
     return _save(fig, f"radial_{z['target']}_{z['mode']}_{z['optimizer']}",
                  target=str(z['target']), degenerate=bool(bad))
 

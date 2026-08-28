@@ -66,12 +66,28 @@ def _diagnose(model, C, v, label):
 
     # leading Floquet multiplier: how close the cycle is to losing stability
     import jax
+    import jax.numpy as jnp
     P = model.jax_apply(C['theta'](v), C['names'])
     solver = C['solver']
     y0, T, _r = jax.jit(solver.solve)(P, solver.guess(P))
     mu, _ev = solver.floquet(P, y0, T)
 
+    # The TARGET this surface was scored against. RadialTarget profiles (k, psi) per evaluation,
+    # so the target is not fixed -- it is whatever registration best matched THIS surface, and
+    # without storing it a figure cannot show what was actually being fitted.
+    from fit.target import profile as _profile, radial_z as _radial_z
+    kk, pp, _cc = _profile(jnp.asarray(z), jnp.asarray(alive), old, doses)
+    zt = np.asarray(_radial_z(old, doses, kk, pp))
+    ptc_target = (np.angle(zt) / (2 * np.pi)) % 1.0
+
+    # every observable species over one period, in REAL time
+    obs = list(model.observable_states())
+    oidx = [int(model.var_index(sname)) for sname in obs]
+    cyc_all = np.asarray(solver.cycle(P, y0, T, 256))[:, oidx]
+
     return dict(label=label, ptc=ptc, alive=alive, amp=amp, twist=tw,
+                ptc_target=ptc_target, k_target=float(kk), psi_target=float(pp),
+                cyc=cyc_all, obs=obs,
                 total_twist=W.total_twist(tw), S_crit=S, phi_sing=phi, n_sing=nsing,
                 amp_lc=p['amp_lc'], period=float(T), mu=float(np.asarray(mu)),
                 quality_pass=q['passed'], scramble=q['scramble'],
@@ -91,7 +107,8 @@ def _report(d, amp_base):
 
 def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose=10,
         max_factor=6.0, backend='diffrax', dt=0.02, seed=0, n_starts=1, maxiter=300,
-        bound=3.0, w_osc=0.2, w_amp=1.0, optimizer='lbfgs', tag=None):
+        bound=3.0, w_osc=0.2, w_amp=1.0, optimizer='lbfgs', tag=None,
+        pin_target=True):
     from models import get_model
     model = get_model(model_name)
     doses, s_crit = fit_dose_grid(model_name, target, mode, max_factor, n_dose)
@@ -103,7 +120,36 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
              S_crit=f'{s_crit:.3g}', dose_max=f'{doses.max():.3g}', starts=n_starts,
              maxiter=maxiter, tag=tag)
 
-    C = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
+    # PIN THE TARGET TO THE SEED'S SINGULARITY, by default.
+    #
+    # The target's (k, psi) -- its critical dose and singular phase -- are not properties of the
+    # model, so they have to come from somewhere. Re-profiling them at every evaluation makes
+    # the target a function of the current parameters: `min` over a family is not smooth, so the
+    # effective target jumps whenever the argmin changes branch, and costs at different
+    # parameter sets are measured against different targets. On a landscape already rugged from
+    # the spiral geometry that is a feedback loop worth avoiding.
+    #
+    # Pinning to the base run's own singularity asks the well-posed question -- flatten the
+    # twist while holding the defect where it already is -- and is what input_screen's
+    # radialize.py did (`make_radial_target(S_crit, phi_sing, ...)`).
+    C_probe = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
+                        backend=backend, dt=dt, w_osc=0.0, w_amp=0.0)
+    _zb, _ab, _amb = C_probe['surface'](C_probe['v0'])
+    from analysis import winding as _W
+    _ptc_b = np.where(_ab, (np.angle(_zb) / (2 * np.pi)) % 1.0, np.nan)
+    S_seed, phi_seed, _ns = _W.detect_grid(np.asarray(C_probe['old']), doses, _ptc_b)
+    if pin_target and np.isfinite(S_seed) and np.isfinite(phi_seed):
+        tgt = RadialTarget.from_singularity(S_seed, phi_seed)
+        print(f"[radial] target PINNED to the seed singularity: "
+              f"S_crit={S_seed:.4g}, phi*={phi_seed:.3f}  "
+              f"(k={tgt.k:.5g}, psi={tgt.psi:.3f})", flush=True)
+    else:
+        tgt = RadialTarget()
+        why = 'requested' if not pin_target else 'the seed has no detectable singularity'
+        print(f"[radial] target PROFILED per evaluation ({why}) -- the target moves with the "
+              f"model; read the fit accordingly", flush=True)
+
+    C = make_cost(model, target, doses, tgt, n_phase=n_phase, mode=mode,
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp)
     before = _diagnose(model, C, C['v0'], 'base')
     # The BASE surface has to be usable or nothing downstream means anything. A run was allowed
@@ -191,6 +237,11 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
                 # --- RAW ------------------------------------------------------------- #
                 v_fit=best['v'], theta_base=C['theta'](C['v0']), theta_fit=C['theta'](best['v']),
                 ptc_base=before['ptc'], ptc_fit=after['ptc'],
+                ptc_target_base=before['ptc_target'], ptc_target_fit=after['ptc_target'],
+                k_target_base=before['k_target'], k_target_fit=after['k_target'],
+                psi_target_base=before['psi_target'], psi_target_fit=after['psi_target'],
+                cyc_base=before['cyc'], cyc_fit=after['cyc'],
+                obs=np.array(before['obs']),
                 alive_base=before['alive'], alive_fit=after['alive'],
                 amp_base_grid=before['amp'], amp_fit_grid=after['amp'],
                 twist_base=before['twist'], twist_fit=after['twist'],
@@ -229,10 +280,13 @@ def main(argv=None):
     ap.add_argument('--maxiter', type=int, default=300)
     ap.add_argument('--optimizer', default='lbfgs',
                     choices=('lbfgs', 'cma', 'str', 'lm'))
+    ap.add_argument('--profile-target', action='store_true',
+                    help='re-profile the target (k, psi) at every evaluation instead of pinning them to the seed singularity. The target then moves with the model -- see fit.cost.RadialTarget.')
     ap.add_argument('--tag', default=None)
     a = ap.parse_args(argv)
     run(a.model, a.target, a.mode, a.n_phase, a.n_dose, a.max_factor, a.backend, a.dt,
-        a.seed, a.starts, a.maxiter, optimizer=a.optimizer, tag=a.tag)
+        a.seed, a.starts, a.maxiter, optimizer=a.optimizer, tag=a.tag,
+        pin_target=not a.profile_target)
     return 0
 
 

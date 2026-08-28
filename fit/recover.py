@@ -58,7 +58,7 @@ def displaced_truth(cost, eps, seed=0, direction=None):
 def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=16,
         n_dose=10, max_factor=6.0, backend='diffrax', dt=0.02, seed=0, n_starts=1,
         maxiter=300, bound=3.0, w_osc=0.2, w_amp=1.0, tag=None, optimizer='lbfgs',
-        maxfev=3000):
+        maxfev=3000, start='nominal'):
     from models import get_model
     from fit.doses import fit_dose_grid
 
@@ -102,16 +102,21 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
               f"(osc {p_true['osc']:.4f}, amp {p_true['amp_pen']:.4f}). Loosen it "
               f"(amp_frac / w_osc) before believing this control.")
 
+    # `start='truth'` is the control Mirsky ran: begin AT the answer and see whether the
+    # optimizer stays. If it drifts away and the cost drops, the truth is not a minimum of this
+    # cost and the fault is the objective, not the search. If it stays, the truth IS a minimum
+    # and the failure from nominal is genuinely about reaching it.
+    v_start = v_true.copy() if start == 'truth' else C['v0']
     t0 = time.time()
     if optimizer == 'cma':
         # Gradient-free. The right tool when the cost VALUES are sound but the derivatives are
         # not -- which is the situation on the wide dose grid, where the informative doses are
         # exactly the ones whose gradient explodes (fit/doses.py, REPO_MAP hazard 11).
-        runs = [search.cma(C, bound=bound, seed=seed, maxfev=maxfev)]
+        runs = [search.cma(C, v0=v_start, bound=bound, seed=seed, maxfev=maxfev)]
     elif n_starts > 1:
         runs = search.multistart(C, n_starts=n_starts, bound=bound, maxiter=maxiter, seed=seed)
     else:
-        runs = [search.lbfgs(C, C['v0'], bound=bound, maxiter=maxiter, label='nominal')]
+        runs = [search.lbfgs(C, v_start, bound=bound, maxiter=maxiter, label=start)]
     best = min(runs, key=lambda r: r['f'])
     dt_all = time.time() - t0
 
@@ -135,9 +140,24 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     for nm, a, b in zip(C['names'], th_true, th_fit):
         print(f"  {nm:12s} {a:12.5g} {b:12.5g} {np.log(b / a):+9.3f}")
 
-    verdict = (rms_log < 0.25 * rms_log0) and (best['f'] < 0.25 * p_nom['total'])
-    print(f"\n  VERDICT: {'RECOVERED' if verdict else 'NOT RECOVERED'} "
-          f"-- {'T3 (radial fit) is worth running' if verdict else 'the landscape is the problem, not the model class'}")
+    if start == 'truth':
+        # Starting AT the answer is a sanity check on the OBJECTIVE, not a recovery test --
+        # reporting "RECOVERED" there would be vacuous. What it establishes is whether the truth
+        # is a minimum at all, which is the precondition for reading anything into a failure
+        # from nominal.
+        stayed = rms_log < 0.02 and best['f'] <= p_true['total'] * 1.5
+        msg = ("STAYED -- the truth IS a minimum, so the cost is sound and a failure from "
+               "nominal is about REACHING it" if stayed else
+               "DRIFTED -- the truth is NOT a minimum of this cost; the objective is at "
+               "fault, not the search")
+        print(f"\n  CONTROL (started at the truth): {msg}")
+        verdict = stayed
+    else:
+        verdict = (rms_log < 0.25 * rms_log0) and (best['f'] < 0.25 * p_nom['total'])
+        msg = ("T3 (radial fit) is worth running" if verdict else
+               "from-distance locality -- the truth is a minimum (see --start truth) but the "
+               "optimizer cannot reach it from here")
+        print(f"\n  VERDICT: {'RECOVERED' if verdict else 'NOT RECOVERED'} -- {msg}")
 
     blob = dict(model=model_name, target=target, mode=mode, backend=backend, eps=eps,
                 seed=seed, n_phase=n_phase, dt=dt, s_crit=s_crit, max_factor=max_factor,
@@ -148,7 +168,7 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
                 target_surface_re=np.real(zt), target_surface_im=np.imag(zt),
                 target_alive=alive_t, target_amp=amp_t,
                 trace_f=best.get('trace_f'), trace_v=best.get('trace_v'),
-                optimizer=optimizer,
+                optimizer=optimizer, start=start,
                 all_f=np.array([r['f'] for r in runs]),
                 all_v=np.array([r['v'] for r in runs]),
                 all_v0=np.array([r.get('v0', C['v0']) for r in runs]),
@@ -165,7 +185,7 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     for k, v in best['parts'].items():
         blob[f'parts_fit__{k}'] = np.asarray(v)
     out = paths.out_path(model_name, 'fit_recover',
-                         f'recover_{target}_{mode}_eps{eps:g}_{optimizer}_s{seed}.npz', tag)
+                         f'recover_{target}_{mode}_eps{eps:g}_{optimizer}_{start}_s{seed}.npz', tag)
     paths.savez(out, **blob)
     print(f"\n[recover] -> {out}")
     return blob
@@ -187,11 +207,12 @@ def main(argv=None):
     ap.add_argument('--maxiter', type=int, default=300)
     ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma'))
     ap.add_argument('--maxfev', type=int, default=3000)
+    ap.add_argument('--start', default='nominal', choices=('nominal', 'truth'))
     ap.add_argument('--tag', default=None)
     a = ap.parse_args(argv)
     run(a.model, a.target, a.mode, a.eps, a.n_phase, a.n_dose, a.max_factor, a.backend,
         a.dt, a.seed, a.starts, a.maxiter, tag=a.tag, optimizer=a.optimizer,
-        maxfev=a.maxfev)
+        maxfev=a.maxfev, start=a.start)
     return 0
 
 

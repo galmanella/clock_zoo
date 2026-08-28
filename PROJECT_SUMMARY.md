@@ -579,33 +579,76 @@ The general lesson, now three times over: **constants and grids inherited from t
 are not transferable to a smaller model**, and they fail silently. Expect the same moving to
 Korencic and Goldbeter.
 
-### 5.4 Status
+### 5.4 THE RESULT: from-distance locality is not a large-model artifact
 
-`fit/` is built and self-tested: `target.py` (analytic Winfree surface, dose scale and kick
-direction profiled out at zero ODE cost), `cost.py`, `search.py` (L-BFGS primary, multistart for
-basins, CMA-ES as an opt-in cross-check), `doses.py`, `recover.py` (T1), `radial.py` (T3),
-`figures.py`. T0 and T0.5 pass.
+This is what the model switch was made to find out, and it is a negative answer.
 
-**T1 does NOT pass.** Two runs, the first invalidated by a gradient bug (a defective leading
-eigenvalue returned inf, the search wrapper zeroed the whole gradient, and L-BFGS read that as
-convergence at 58 of 150 iterations). With that fixed: cost 0.592 -> 0.061 against a floor of
-0.000392, 109 iterations, parameter distance to truth 0.283 -> **0.685**, **0/18** parameters
-within 10%. The residual corresponds to a typical phase error of ~0.079 cyc, so the surface was
-not matched either -- the optimizer is stuck short, on a landscape that is both flat in most
-directions (5.1) and spiked in a few (`max |g|` reached 1.98e25 mid-run, the basin-boundary
-pathology of hazard 11 recurring at displaced parameters).
+`input_screen` PROJECT_SUMMARY names "from-distance locality" as the framework's central
+weakness: on Mirsky, L-BFGS recovered **132/132** parameters when started AT the truth and
+stalled near **26/132** when started away from it. The natural hypothesis -- the one that
+justified moving to smaller models -- was that this is a symptom of 132 parameters with ~100
+flat directions, and would go away at 16.
 
----
+**It does not.** The self-recovery control on Almeida, in-class target, truth reachable by
+construction:
+
+| start | optimizer | cost (floor 3.9e-4) | RMS log-distance to truth | params within 10% |
+|---|---|---|---|---|
+| **at the truth** | L-BFGS | 0.000392 -> **0.000392** | 0.283 -> **0.0000** | **18/18** |
+| from nominal (26% away) | L-BFGS | 0.592 -> 0.0607 | 0.283 -> 0.685 | **0/18** |
+| from nominal (26% away) | CMA-ES | 0.592 -> **0.0286** | 0.283 -> 0.597 | **2/18** |
+
+The from-truth run settles the objective: started at the answer, L-BFGS stays there in two
+iterations and returns all 18 parameters exactly. **So the truth is a genuine isolated minimum
+and the cost is sound** -- the failure from nominal is about REACHING it, not about what is
+being minimized. That is the same signature as Mirsky, reproduced at 16 dimensions on an
+unrelated model with a well-conditioned coarse structure.
+
+Two optimizers, one gradient-based and one gradient-free, land 0.6 away in parameters from a
+start 0.28 away. Neither reaches the floor: CMA's best is 0.0286, still **73x** above the
+truth's cost, so this is not a wide flat plateau being wandered -- the search never gets down
+to the floor at all.
+
+**Why the landscape is so hostile.** Gradient norms during these runs reached **1.98e25** from
+nominal and **1.58e42** starting at the truth (39 of 49 evaluations clipped). The cause is
+identified: Almeida has a stable equilibrium coexisting with its cycle, and a perturbed
+trajectory that passes near that basin boundary returns to the cycle at a phase that depends on
+which side it passed. The forward value stays bounded and healthy -- relative amplitude in
+[0.999, 1.0005], every cell alive -- so the cost looks perfectly well behaved while its
+derivative does not exist in any useful sense. `fit/doses.py` keeps the worst doses out of the
+window and `fit/search.GRAD_MAX` rescales what is left, but the spikes are intrinsic to the map.
+
+**What this means for the programme.** The model switch was the right experiment and it
+answered its question: the obstacle to fitting PTCs is not model size and not
+gauge-degeneracy. It is a property of PTC landscapes -- a well-defined minimum surrounded by a
+region in which no local method can navigate. Going to still smaller models will not help.
+The productive directions are (a) better targets: more probes, if genes are non-redundant
+(5.5), and (b) accepting basin-level answers, since 5.1 shows the model IS identifiable to
+within tens of percent even where it cannot be pinned.
+
+**T3 (the radial fit) is therefore NOT worth running yet**, and has not been run. Fitting an
+out-of-class target through a map that cannot recover an in-class one would produce a number
+with no interpretation.
+
+### 5.5 Status
+
+`fit/` is built and self-tested: `target.py`, `cost.py`, `search.py` (L-BFGS, multistart,
+CMA-ES), `doses.py`, `recover.py` (T1, with `--start truth` and `--optimizer`), `radial.py`
+(T3, unrun), `figures.py`. T0 and T0.5 pass; T1 fails from a distance and passes from the truth.
 
 ## 5b. Next
 
-1. **Finish T1** (recover a known displaced parameter set from its own PTC) and, either way,
-   map recovery against displacement -- the distance at which it breaks is the quantitative
-   version of Mirsky's "from-distance locality", which was never measured there.
-2. **T2, basin structure**: multistart from random box points, clustered in gauge-quotient
-   coordinates. This is the global identifiability question the model switch was made to reach.
-3. **T3, the radial fit** -- only after T1 passes, and reported with LC amplitude and Floquet
-   multiplier before/after so a twist improvement bought by a dying clock is called a failure.
+1. **Map recovery against displacement.** T1 is done at eps = 0.3 (fails) and eps = 0 (passes).
+   The distance at which it breaks is the quantitative version of "from-distance locality",
+   which was never measured on Mirsky, and `fit/recover.py --eps` sweeps it directly.
+2. **Do genes carry independent information?** Rank of stacked multi-gene PTC jacobians. On
+   Mirsky the lesson was "vary dose, not gene", but dose variation is already ruled out here
+   (5.1), so if Almeida's genes are non-redundant the two models differ in a way that changes
+   experimental design.
+3. **T2, basin structure** -- multistart clustered in quotient coordinates. Note the from-truth
+   control means any cluster found is about reachability, not about the cost having many
+   minima.
+4. **T3 (radial fit) stays parked** until something above changes the picture.
 4. **Run (a) and (b) for Korencic and Goldbeter.** The complexity ladder 11 -> 18 -> 34 -> 52 ->
    (132) makes "identifiability vs model size" measurable rather than anecdotal. Re-derive, do
    not inherit, every scale-bearing constant.

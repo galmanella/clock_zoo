@@ -161,7 +161,8 @@ def multistart(cost, n_starts=8, bound=3.0, sigma=0.8, maxiter=300, seed=0,
 
 
 def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
-        restarts=2, popsize_factor=2.0, gens_per_run=None, verbose=True):
+        restarts=2, popsize_factor=2.0, gens_per_run=None, verbose=True, log_every=10,
+        mode='ipop', sigma_factor=0.45):
     """CMA-ES with IPOP-style restarts. The cross-check, not the default.
 
     Ported in structure from input_screen/fit_jax.py:run_cma_points -- growing-popsize restarts
@@ -177,31 +178,61 @@ def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
     rng = np.random.default_rng(seed + 7)
     f, _g, trace = _harden(cost)
 
+    # mode='ipop'    restarts from RANDOM points with a growing population -- the standard
+    #                cure for a multimodal landscape, and what to use when distinct basins are
+    #                the problem.
+    # mode='anneal'  restarts from the BEST-SO-FAR with a shrinking sigma -- graduated
+    #                optimization. CMA's population is already a smoothing kernel of width
+    #                sigma, so a large sigma sees only the smooth envelope of a rugged landscape
+    #                and successive contractions resolve finer structure.
+    #
+    #                That is the right mode HERE. The ruggedness in this problem is the spiral
+    #                cross-correlation effect (PROJECT_SUMMARY 5.4c): the surface is smooth at
+    #                large scale and rugged at small, and the conditioning of the map improves
+    #                30x when probed at radius 0.23 rather than 1e-3. IPOP does the opposite of
+    #                what that calls for -- it grows the population while resetting sigma, which
+    #                spends evaluations re-exploring rather than sharpening.
     best_v, best_f, used, ps, runs = None, np.inf, 0, popsize, []
+    sig = sigma0
     for r in range(restarts + 1):
         if r == 0:
             u0 = v0
+        elif mode == 'anneal':
+            u0 = best_v if best_v is not None else v0
+            sig = sig * sigma_factor
         else:
             u0 = np.clip(rng.uniform(-bound, bound, n), -bound, bound)
         es = _cma.CMAEvolutionStrategy(
-            list(u0), sigma0,
+            list(u0), sig,
             {'bounds': [[-bound] * n, [bound] * n], 'popsize': int(ps),
              'maxfevals': int(maxfev - used), 'verbose': -9, 'seed': seed + 1 + r * 997})
         gen = 0
+        t_gen = time.time()
         while not es.stop():
             U = es.ask()
             vals = [f(u) for u in U]
             es.tell(U, vals)
             used += len(U); gen += 1
+            # Progress EVERY `log_every` generations. Without this a CMA run is silent until its
+            # restart ends, and since the first restart gets the whole budget that can be hours.
+            # A long job with no output is indistinguishable from a wedged one -- this cost real
+            # time twice in this project before it was added.
+            if verbose and log_every and gen % log_every == 0:
+                now = time.time()
+                print(f"      [restart {r} pop {int(ps)}] gen {gen:4d}  "
+                      f"{used}/{maxfev} evals  best {es.result.fbest:.6f}  "
+                      f"{(now - t_gen) / log_every:.2f}s/gen", flush=True)
+                t_gen = now
             if gens_per_run and gen >= gens_per_run:
                 break
         if es.result.fbest < best_f:
             best_f, best_v = float(es.result.fbest), np.asarray(es.result.xbest)
         runs.append(dict(restart=r, popsize=int(ps), gens=gen, fbest=float(es.result.fbest)))
         if verbose:
-            print(f"    [restart {r} pop {int(ps)}] {gen} gens, best {es.result.fbest:.4f} "
-                  f"(overall {best_f:.4f})", flush=True)
-        ps *= popsize_factor
+            print(f"    [restart {r} pop {int(ps)} sigma {sig:.3f}] {gen} gens, "
+                  f"best {es.result.fbest:.6f} (overall {best_f:.6f})", flush=True)
+        if mode == 'ipop':
+            ps *= popsize_factor
         if used >= maxfev:
             break
     return dict(v=best_v, f=best_f, runs=runs, nev=len(trace['f']),
@@ -432,3 +463,118 @@ def basin_hopping(cost, v0, bound=3.0, n_hops=20, T=0.02, step=1.0, maxiter=60,
                 hops_accepted=np.array([h['accepted'] for h in hops]),
                 trace_v=np.array([h['v'] for h in hops]),
                 trace_f=np.array([h['f'] for h in hops]), parts=p)
+
+
+def smoothed_trust_region(cost, v0, bound=3.0, delta0=0.25, delta_min=5e-3, n_dir=None,
+                          maxiter=80, eta=0.05, shrink=0.6, grow=1.5, seed=0,
+                          verbose=True, log_every=1, label='str'):
+    """Trust-region descent on a SMOOTHED gradient, with the smoothing radius annealed.
+
+    THE PROBLEM THIS SOLVES
+        This landscape is smooth at large scale and rugged at small scale. Around a phase
+        singularity the PTC is a spiral, so matching two surfaces is a cross-correlation of two
+        spirals: every half-turn of relative rotation is a local minimum, and the ruggedness gets
+        DENSER as resolution improves (PROJECT_SUMMARY 5.4c). A true gradient resolves every
+        ripple, which is why L-BFGS stalls; a random-jump method ignores that the minima are
+        regularly spaced.
+
+    THE METHOD
+        Replace f by its local average over a ball of radius delta. Convolving with a kernel
+        wider than the spiral pitch erases the half-turn minima and leaves the basin structure,
+        then delta is annealed down. This is graduated optimization / randomized smoothing, and
+        it needs nothing from the cost function.
+
+        A central difference with a LARGE step IS that smoothed gradient -- no separate
+        averaging pass is required. And on this problem the effect is measured, not assumed:
+
+            step h      rank of d(surface)/dv     condition
+            1e-4              8/16                  2.0e3
+            1e-3              8/16                  2.0e3
+            0.05             10/16                  4.3e2
+            0.231            16/16                  6.5e1
+
+        At h = 0.231 the map is full rank and 30x better conditioned than the true local
+        derivative. The ruggedness is what destroys the conditioning, and averaging over a ball
+        removes it.
+
+    delta0 = 0.25 starts just under that measured scale. Standard trust-region bookkeeping from
+    there: accept if the actual decrease is a fraction `eta` of the predicted one and grow the
+    radius, otherwise shrink. Terminating at delta_min rather than at a gradient tolerance is
+    deliberate -- below the ruggedness scale the gradient stops meaning anything.
+
+    n_dir=None uses full coordinate differences (2n evaluations per step, n = 16 here).
+    n_dir=k uses k random directions instead (2k evaluations), which is the randomized-smoothing
+    estimator: cheaper per step, noisier, and the right trade when evaluations dominate.
+    """
+    rng = np.random.default_rng(seed)
+    f, _g, trace = _harden(cost)
+    v = np.clip(np.asarray(v0, float), -bound, bound)
+    n = len(v)
+    delta = float(delta0)
+    fv = f(v)
+    hist = [dict(it=0, f=fv, delta=delta, accepted=True, v=v.copy())]
+    t0 = time.time()
+    n_acc = 0
+    if verbose:
+        print(f"    {label}: start f={fv:.6f}, delta={delta:.4f}", flush=True)
+
+    for it in range(1, maxiter + 1):
+        if delta < delta_min:
+            break
+        # smoothed gradient at scale `delta`
+        if n_dir is None:
+            g = np.zeros(n)
+            for i in range(n):
+                ep = np.zeros(n); ep[i] = delta
+                g[i] = (f(np.clip(v + ep, -bound, bound))
+                        - f(np.clip(v - ep, -bound, bound))) / (2 * delta)
+        else:
+            g = np.zeros(n)
+            for _ in range(int(n_dir)):
+                u = rng.normal(size=n); u /= np.linalg.norm(u)
+                d = (f(np.clip(v + delta * u, -bound, bound))
+                     - f(np.clip(v - delta * u, -bound, bound))) / (2 * delta)
+                g += d * u
+            g *= n / float(n_dir)
+        gn = float(np.linalg.norm(g))
+        if not np.isfinite(gn) or gn == 0.0:
+            delta *= shrink
+            continue
+
+        # trust-region step: steepest descent, length delta
+        s = -(delta / gn) * g
+        v_new = np.clip(v + s, -bound, bound)
+        f_new = f(v_new)
+        predicted = gn * delta                       # linear model's predicted decrease
+        actual = fv - f_new
+        rho = actual / max(predicted, 1e-300)
+
+        if np.isfinite(f_new) and actual > 0 and rho > eta:
+            v, fv = v_new, f_new
+            delta = min(delta * grow, delta0)
+            n_acc += 1
+            ok = True
+        else:
+            delta *= shrink
+            ok = False
+        hist.append(dict(it=it, f=fv, delta=delta, accepted=ok, v=v.copy()))
+        if verbose and log_every and it % log_every == 0:
+            print(f"    {label}: it {it:3d}  f={fv:.6f}  delta={delta:.4f}  "
+                  f"rho={rho:+.2f}  {'accept' if ok else 'shrink'}  "
+                  f"({len(trace['f'])} evals, {time.time() - t0:.0f}s)", flush=True)
+
+    dt = time.time() - t0
+    p = cost['parts'](v)
+    if verbose:
+        print(f"    {label:14s} f {hist[0]['f']:.6f} -> {fv:.6f} in {len(hist) - 1} its "
+              f"({len(trace['f'])} evals, {dt:.0f}s, {n_acc} accepted, delta {delta:.4f})  "
+              f"c_ptc={p['c_ptc']:.4f}", flush=True)
+    return dict(v=v, f=float(fv), f0=float(hist[0]['f']), nit=len(hist) - 1,
+                nev=len(trace['f']), seconds=dt, success=True,
+                message=f'smoothed TR, {n_acc} accepted, final delta {delta:.4g}',
+                n_grad_clipped=0, n_grad_bad=0, n_grad_dead=0, grad_max=float('nan'),
+                delta_final=delta,
+                hist_delta=np.array([h['delta'] for h in hist]),
+                hist_accepted=np.array([h['accepted'] for h in hist]),
+                trace_v=np.array([h['v'] for h in hist]),
+                trace_f=np.array([h['f'] for h in hist]), parts=p)

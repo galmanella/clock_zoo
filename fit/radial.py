@@ -109,8 +109,13 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
 
     t0 = time.time()
     if optimizer == 'cma':
-        r = search.cma(C, bound=bound, seed=seed)
-        runs = [r]
+        # anneal, not ipop -- see fit/search.cma. The obstacle here is small-scale ruggedness,
+        # not distinct basins, so a contracting sigma is what is called for.
+        runs = [search.cma(C, bound=bound, seed=seed, mode='anneal')]
+    elif optimizer == 'str':
+        runs = [search.smoothed_trust_region(C, C['v0'], bound=bound, seed=seed)]
+    elif optimizer == 'lm':
+        runs = [search.levenberg_marquardt(C, C['v0'], bound=bound, maxiter=maxiter)]
     elif n_starts > 1:
         runs = search.multistart(C, n_starts=n_starts, bound=bound, maxiter=maxiter, seed=seed)
     else:
@@ -187,7 +192,8 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--starts', type=int, default=1)
     ap.add_argument('--maxiter', type=int, default=300)
-    ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma'))
+    ap.add_argument('--optimizer', default='lbfgs',
+                    choices=('lbfgs', 'cma', 'str', 'lm'))
     ap.add_argument('--tag', default=None)
     a = ap.parse_args(argv)
     run(a.model, a.target, a.mode, a.n_phase, a.n_dose, a.max_factor, a.backend, a.dt,

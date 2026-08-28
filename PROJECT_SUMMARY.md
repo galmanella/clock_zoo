@@ -467,23 +467,103 @@ the live phases.
 
 ---
 
-## 5. Next
+## 5. Fitting: can a single-gene PTC identify the model?
 
-1. **Confirm the Almeida coupling candidates** (�3.4, directions 9/10/12) by finite
-   displacement on `engine/reference.py`. This is the single highest-value next step: it turns
-   a suggestive 79 deg into either a real result or a retracted one.
-2. **Run (a) and (b) for Korencic and Goldbeter.** The framework needs no changes; the
-   complexity ladder 11 → 18 → 34 → 52 → (132) makes "identifiability vs model size" a
-   measurable axis rather than an anecdote.
-3. **Confirm any decoupled direction by finite displacement** on the adaptive engine before
-   citing it. This is not optional: in `input_screen` the autodiff version of exactly this
-   claim was wrong by ~80 orders of magnitude, and only the finite-displacement evidence
-   survived.
-4. **Reduce the 34 non-converged LC settings** — better orbit continuation, or a
-   predictor–corrector along the factor grid.
-6. **Then batch 2: optimisation.** Are there multiple distinct basins? Can PTC data constrain
-   globally what LC data cannot? That is the question the model switch was made to reach, and
-   it is now approachable because these models are 18–52 parameters rather than 132.
+This is the deviation from the batch-1 plan, taken because the CRY/PER surfaces turned out to
+be unusable (3.7) and the more interesting question is whether a model this small can be
+RE-FITTED at all -- something that never worked for Mirsky.
+
+**The experiment.** Fit Almeida so that its single-gene PTC matches a perfect radial-isochron
+(Poincare) target, with no constraint on limit-cycle shape beyond "it still oscillates". Probe:
+**BMAL1**, `instant` mode -- the cleanest surface in the project (`plaq 1 -> 1`, i.e. one raw
+winding plaquette and nothing for the dipole filter to do).
+
+### 5.1 Why it looked feasible before running it
+
+| | |
+|---|---|
+| search dimension | **16** free directions of 18 parameters (the gauge quotient) |
+| conditioning | `J_PTC` has rank **13 of 13**, singular values 1.000 down to 0.056 |
+| condition number | **~18** |
+
+Sloppy models span five or six orders of magnitude in their sensitivity spectrum; Almeida spans
+less than two. **It is not a sloppy model**, and a single gene's PTC constrains every physically
+meaningful parameter combination. That is the sharpest available contrast with Mirsky, where 132
+parameters left ~100 directions flat.
+
+### 5.2 The failure this is designed against
+
+`input_screen/radialize.py` already ran this experiment on Mirsky and **converged to a
+degenerate optimum**: cost 0.89 -> 0.159 in 11 L-BFGS iterations, achieved by annihilating the
+singularity and collapsing the limit-cycle amplitude. The optimizer walked the clock to a Hopf
+bifurcation; the twist "improved" because the oscillation was dying. Parameters moved less than
+4%.
+
+Both terms of that cost (twist span, singularity position) are *minimized* by a dying
+oscillator. The cost here inverts that: it is a **pointwise match over the whole surface**, and
+an unusable cell scores the **maximum** rather than being dropped. A dead oscillator therefore
+becomes the worst point in the space instead of the best. Asserted by
+`python -m fit.cost --selftest`: base **0.292**, Hopf-collapsed **2.748**.
+
+### 5.3 Four things the plan got wrong, each caught by a measurement
+
+Recorded because each was a plausible assumption that a check refuted.
+
+1. **"Hazard 1 is about RK4, so the adaptive backend fixes the gradient."** Half right. The
+   blow-up (|grad| = 2.0e75) *survived* the switch to Tsit5. Three further hypotheses were
+   refuted too -- not the penalty terms (the Hopf barrier's own gradient is 1.4e-03), not
+   amplitude collapse or runaway (relative amplitude stays in [0.999, 1.000475] with every cell
+   alive), and not reverse-mode instability over the transient skip (shortening `skip_p` 8 -> 2
+   -> 1 leaves it at 1.2e73, flat). What remains is genuine non-smoothness in PARAMETERS: a
+   +454 kick into a species whose cycle spans ~4 lands near the basin boundary of the
+   equilibrium that coexists with the cycle. The trajectory still returns -- hence a healthy
+   amplitude and a bounded cost -- but *where* in phase it returns depends on which side it
+   passed. Fix: `fit/doses.py` caps the fit window at `6 * S_crit`; |grad| 2.0e75 -> **1.13**,
+   and autodiff then matches finite differences to 1e-4.
+2. **The characterization dose grid is not the fit dose grid.** They differ by design and now
+   have separate code paths.
+3. **Two constants inherited from input_screen were charging a healthy ground truth.** The
+   amplitude floor (0.5 of nominal) charged 0.153 to a displaced-but-healthy truth whose PTC
+   residual was 1e-12; the Hopf barrier (margin 0.015, k 200 -- Mirsky's scale) charged 0.766
+   to a truth at `Re(lambda) = 0.0143`, which is POSITIVE and therefore genuinely
+   self-sustained. Either would have moved the global minimum off the truth and made the
+   control measure the penalty rather than the landscape. Both are now derived from the model
+   (`amp_frac = 0.05`, `margin = 0.02 * re_nominal`, `k = 30 / re_nominal`).
+4. **RK4 at dt=0.02 is the wrong answer on this dose range, not merely the slower one.** It
+   disagrees with the adaptive backend by 8.2e-03 cyc and *converges to it* on refinement
+   (5.97e-04 at dt=0.01, 7.65e-05 at dt=0.005) -- which is independently what `analysis/scrit`
+   concluded when it chose dt=0.00125 for BMAL1/instant.
+
+The general lesson, now three times over: **constants and grids inherited from the Mirsky work
+are not transferable to a smaller model**, and they fail silently. Expect the same moving to
+Korencic and Goldbeter.
+
+### 5.4 Status
+
+`fit/` is built and self-tested: `target.py` (analytic Winfree surface, dose scale and kick
+direction profiled out at zero ODE cost), `cost.py`, `search.py` (L-BFGS primary, multistart for
+basins, CMA-ES as an opt-in cross-check), `doses.py`, `recover.py` (T1), `radial.py` (T3),
+`figures.py`. T0 and T0.5 pass. **T1, the self-recovery control, is the go/no-go and is
+running.**
+
+---
+
+## 5b. Next
+
+1. **Finish T1** (recover a known displaced parameter set from its own PTC) and, either way,
+   map recovery against displacement -- the distance at which it breaks is the quantitative
+   version of Mirsky's "from-distance locality", which was never measured there.
+2. **T2, basin structure**: multistart from random box points, clustered in gauge-quotient
+   coordinates. This is the global identifiability question the model switch was made to reach.
+3. **T3, the radial fit** -- only after T1 passes, and reported with LC amplitude and Floquet
+   multiplier before/after so a twist improvement bought by a dying clock is called a failure.
+4. **Run (a) and (b) for Korencic and Goldbeter.** The complexity ladder 11 -> 18 -> 34 -> 52 ->
+   (132) makes "identifiability vs model size" measurable rather than anecdotal. Re-derive, do
+   not inherit, every scale-bearing constant.
+5. **Re-test the "same decoupled direction" claim** (3.7) now that it rests on two clean probes
+   rather than four.
+6. **Reduce the 34 non-converged LC settings** -- better orbit continuation, or a
+   predictor-corrector along the factor grid.
 
 ---
 

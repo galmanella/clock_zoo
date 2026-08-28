@@ -99,9 +99,30 @@ def _maxre_val_np(A):
     return np.asarray(np.max(np.linalg.eigvals(A).real), A.dtype)
 
 
+#: |y^H x| below which the leading eigenvalue is treated as DEFECTIVE and its derivative as
+#: undefined. See _leading_np.
+_DEFECTIVE_TOL = 1e-10
+
+
 def _leading_np(J):
     """Value and exact gradient of Re(lambda_max): d(Re lam)/dJ_ab = Re(conj(y_a) x_b/(y^H x)),
-    with x, y the right and left eigenvectors of the leading eigenvalue."""
+    with x, y the right and left eigenvectors of the leading eigenvalue.
+
+    THE DENOMINATOR CAN VANISH, AND IT DOES. `y^H x` -> 0 exactly when the leading eigenvalue
+    becomes defective -- two eigenvalues colliding, so the left and right eigenvectors become
+    orthogonal and the simple-eigenvalue derivative formula stops existing. That is a
+    singularity of the FORMULA, not of the cost: Re(lambda_max) itself is perfectly finite
+    there, it merely stops being differentiable.
+
+    Left unguarded this returns inf/NaN, and in a fit that is worse than it sounds. MEASURED in
+    the first T1 run: 7 of 108 gradient evaluations came back non-finite, the search wrapper
+    substituted ZEROS, and L-BFGS read that as convergence and stopped at 58 of 150 iterations.
+    The run then reported "NOT RECOVERED" -- a landscape verdict that was really this bug.
+
+    So a defective point returns the correct VALUE and a ZERO gradient, which is the honest
+    answer (the derivative does not exist) and is safe because the caller reports how often it
+    happens rather than silently averaging it in.
+    """
     J = np.asarray(J)
     if not np.isfinite(J).all():
         return np.asarray(np.nan, J.dtype), np.zeros_like(J)
@@ -109,8 +130,14 @@ def _leading_np(J):
     i = int(np.argmax(w.real)); lam = w[i]; x = X[:, i]
     wl, Y = np.linalg.eig(J.T)               # right eigvecs of J^T = left eigvecs of J
     j = int(np.argmin(np.abs(wl - lam.conjugate()))); y = Y[:, j]
-    G = np.real(np.outer(np.conjugate(y), x) / np.vdot(y, x))
-    return np.asarray(np.real(lam), J.dtype), np.asarray(G, J.dtype)
+    denom = np.vdot(y, x)
+    val = np.asarray(np.real(lam), J.dtype)
+    if not np.isfinite(denom) or abs(denom) < _DEFECTIVE_TOL:
+        return val, np.zeros_like(J)
+    G = np.real(np.outer(np.conjugate(y), x) / denom)
+    if not np.isfinite(G).all():
+        return val, np.zeros_like(J)
+    return val, np.asarray(G, J.dtype)
 
 
 @jax.custom_vjp

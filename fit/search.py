@@ -54,7 +54,7 @@ GRAD_MAX = 1e3
 
 def _harden(cost):
     """(f, g) wrappers that never return NaN/inf, and that record every evaluation."""
-    trace = {'v': [], 'f': [], 'gclip': 0, 'gbad': 0, 'gmax': 0.0}
+    trace = {'v': [], 'f': [], 'gclip': 0, 'gbad': 0, 'gdead': 0, 'gmax': 0.0}
 
     def f(v):
         try:
@@ -71,10 +71,23 @@ def _harden(cost):
             gr = cost['grad'](v)
         except Exception:
             gr = None
-        if gr is None or not np.all(np.isfinite(gr)):
-            trace['gbad'] += 1
+        if gr is None:
+            trace['gdead'] += 1
             return np.zeros(len(v))
         gr = np.asarray(gr, float)
+        bad = ~np.isfinite(gr)
+        if bad.any():
+            # COMPONENT-WISE, not all-or-nothing. An all-zero gradient is not a neutral
+            # fallback -- it is the convergence signal, and L-BFGS stops on it. In the first T1
+            # run 7 of 108 evaluations had a non-finite component (a defective eigenvalue in
+            # the Hopf barrier, since fixed at source in fit/cost._leading_np), the whole vector
+            # was zeroed, and the search halted at 58 of 150 iterations and reported a landscape
+            # verdict that was really this substitution. Keeping the finite components loses
+            # only the directions that are genuinely undefined.
+            trace['gbad'] += 1
+            gr = np.where(bad, 0.0, gr)
+            if not gr.any():
+                trace['gdead'] += 1
         nrm = float(np.linalg.norm(gr))
         trace['gmax'] = max(trace['gmax'], nrm)
         if nrm > GRAD_MAX:
@@ -87,10 +100,15 @@ def _harden(cost):
 
 def _grad_health(trace, n_eval):
     """One line on how trustworthy the gradients were, or '' if they were clean."""
-    if not (trace['gclip'] or trace['gbad']):
+    if not (trace['gclip'] or trace['gbad'] or trace['gdead']):
         return ''
-    return (f"  [grad] {trace['gclip']} clipped (>{GRAD_MAX:g}), {trace['gbad']} non-finite, "
-            f"max |g| = {trace['gmax']:.3e} over {n_eval} evals")
+    msg = (f"  [grad] {trace['gclip']} clipped (>{GRAD_MAX:g}), {trace['gbad']} had a "
+           f"non-finite component, {trace['gdead']} were fully zero, "
+           f"max |g| = {trace['gmax']:.3e} over {n_eval} evals")
+    if trace['gdead']:
+        msg += ("\n  [grad] a FULLY ZERO gradient reads as convergence to L-BFGS -- treat any"
+                " early stop in this run as suspect")
+    return msg
 
 
 def lbfgs(cost, v0, bound=3.0, maxiter=300, verbose=True, label=''):
@@ -115,6 +133,7 @@ def lbfgs(cost, v0, bound=3.0, maxiter=300, verbose=True, label=''):
                 nit=int(res.nit), nev=len(trace['f']), seconds=dt,
                 success=bool(res.success), message=str(res.message),
                 n_grad_clipped=trace['gclip'], n_grad_bad=trace['gbad'],
+                n_grad_dead=trace['gdead'],
                 grad_max=trace['gmax'],
                 trace_v=np.array(trace['v']), trace_f=np.array(trace['f']), parts=p)
 

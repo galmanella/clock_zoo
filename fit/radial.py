@@ -106,6 +106,15 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     C = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp)
     before = _diagnose(model, C, C['v0'], 'base')
+    # The BASE surface has to be usable or nothing downstream means anything. A run was allowed
+    # to proceed from a base that failed the gate (scramble 0.0563 at 16x10) and its "before"
+    # twist and S_crit were therefore not measurements.
+    if not before['quality_pass']:
+        print(f"\n  WARNING: the BASE surface FAILS the PTC quality gate "
+              f"(scramble {before['scramble']:.4f}). Its twist and S_crit are not "
+              f"measurements, so any before/after comparison built on them is meaningless. "
+              f"Raise --n-phase / --n-dose until the base passes before trusting this run.",
+              flush=True)
 
     t0 = time.time()
     if optimizer == 'cma':
@@ -128,16 +137,42 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     _report(before, C['amp_base'])
     _report(after, C['amp_base'])
 
-    # the verdict, with the degeneracy check FIRST
-    collapsed = after['amp_lc'] < 0.5 * before['amp_lc']
+    # THE DEGENERACY CHECK, AND IT MUST BE TWO-SIDED.
+    #
+    # The first version tested only `amp_lc < 0.5 * base`, because it was written against the
+    # Mirsky failure -- the clock DYING. A CMA run then returned "RADIALIZED" on this:
+    #
+    #     period   24.83 h -> 0.159 h      (nine minutes)
+    #     amp_lc    4.337  -> 195.680      (4512% of base)
+    #     mu        0.546  -> 1.0000       (not an attracting cycle at all)
+    #
+    # Residual 0.258 -> 0.011 and twist 0.459 -> 0.213, both "improved", on a surface that is no
+    # longer a circadian PTC. Escaping UPWARD is just as degenerate as collapsing, and mu -> 1
+    # means the orbit solver is not returning a stable limit cycle in the first place. So every
+    # bound is now two-sided and stability is checked explicitly.
+    amp_ratio = after['amp_lc'] / max(before['amp_lc'], 1e-12)
+    per_ratio = after['period'] / max(before['period'], 1e-12)
+    collapsed = (amp_ratio < 0.5 or amp_ratio > 2.0
+                 or per_ratio < 0.5 or per_ratio > 2.0
+                 or not (0.0 < after['mu'] < 0.99))
+    if collapsed:
+        why = []
+        if amp_ratio < 0.5 or amp_ratio > 2.0:
+            why.append(f"amplitude x{amp_ratio:.3g}")
+        if per_ratio < 0.5 or per_ratio > 2.0:
+            why.append(f"period x{per_ratio:.3g} ({after['period']:.3f} h)")
+        if not (0.0 < after['mu'] < 0.99):
+            why.append(f"Floquet mu = {after['mu']:.4f} (not an attracting cycle)")
+        print("\n  DEGENERACY: " + "; ".join(why))
     improved = after['parts']['c_ptc'] < 0.9 * before['parts']['c_ptc']
     less_twist = after['total_twist'] < before['total_twist']
     print(f"\n  residual {before['parts']['c_ptc']:.4f} -> {after['parts']['c_ptc']:.4f}"
           f"   twist {before['total_twist']:.4f} -> {after['total_twist']:.4f}"
           f"   amplitude {before['amp_lc']:.3f} -> {after['amp_lc']:.3f}")
     if collapsed:
-        print("  VERDICT: DEGENERATE -- the limit cycle collapsed. Any twist or residual "
-              "improvement here is the Mirsky failure repeating, not radialization.")
+        print("  VERDICT: DEGENERATE -- the oscillator left the circadian regime (see above). "
+              "Any twist or residual improvement is an artefact of fitting a different "
+              "dynamical object, not radialization.")
     elif not after['quality_pass']:
         print("  VERDICT: UNUSABLE -- the fitted surface fails the PTC quality gate, so its "
               "twist and S_crit are not measurements.")

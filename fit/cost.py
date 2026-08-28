@@ -367,16 +367,38 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     def _surface(v):
         P = model.jax_apply(_theta(v), names)
         x0 = guess(P, y_seed)
-        y0, T, _res = solver.solve(P, x0)
-        cyc = solver.cycle(P, y0, T, m_amp)[:, ref_idx]
+        y0, T, res = solver.solve(P, x0)
+        full = solver.cycle(P, y0, T, m_amp)
+        cyc = full[:, ref_idx]
         amp_lc = (jnp.max(cyc) - jnp.min(cyc)) / jnp.maximum(jnp.abs(jnp.mean(cyc)), 1e-12)
+
+        # IS THIS EVEN A LIMIT CYCLE?
+        #
+        # REPO_MAP hazard 2: "a small BVP residual does not mean you have a limit cycle...
+        # make_orbit_finder tests amplitude, positivity and period band as well; do not bypass
+        # it." This function bypassed it, and a radial CMA fit walked straight through the gap:
+        # it returned a "cycle" with period 0.159 h, concentrations of order 1e11 AND NEGATIVE,
+        # and Floquet mu = 1.0 -- then scored c_ptc = 0.011 on it, better than anything legitimate,
+        # and the driver reported RADIALIZED.
+        #
+        # An unphysical orbit must cost the MAXIMUM, for the same reason a dead cell does (see
+        # fit/target.circ_cost): anything else makes running away from the model class the
+        # cheapest move available.
+        T_nom = float(getattr(model, 'approx_period', None) or 24.0)
+        ok_orbit = ((res < 1e-4)
+                    & jnp.isfinite(T) & (T > 0.25 * T_nom) & (T < 4.0 * T_nom)
+                    & (jnp.min(full) >= NEG_TOL)          # concentrations stay non-negative
+                    & jnp.all(jnp.isfinite(full))
+                    & (amp_lc > 1e-3))                    # not an equilibrium
+
         z, ymin = f(P, jnp.concatenate([y0, T[None]]), ph, dz)
         z = z.reshape(nd, npz).T
         ymin = ymin.reshape(nd, npz).T
         fin = jnp.isfinite(z.real) & jnp.isfinite(z.imag) & jnp.isfinite(ymin)
         zs = jnp.where(fin, z, 1.0 + 0j)
         amp = jnp.abs(zs)
-        alive = fin & (amp > DEAD_AMP) & (ymin >= NEG_TOL)
+        # a bad orbit kills every cell, so the whole surface scores the maximum
+        alive = fin & (amp > DEAD_AMP) & (ymin >= NEG_TOL) & ok_orbit
         zu = zs / (amp + eps)
         return P, zu, alive, amp, amp_lc, T
 

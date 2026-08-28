@@ -192,7 +192,14 @@ def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
     #                30x when probed at radius 0.23 rather than 1e-3. IPOP does the opposite of
     #                what that calls for -- it grows the population while resetting sigma, which
     #                spends evaluations re-exploring rather than sharpening.
-    best_v, best_f, used, ps, runs = None, np.inf, 0, popsize, []
+    t_start = time.time()
+    # EVALUATE THE START. CMA samples a population around v0 but never evaluates v0 itself, so
+    # without this the routine can return a point WORSE than the one it was given -- and it did:
+    # in a warm-started multi-resolution run, stage 1 went 0.157 -> 0.219, discarding the
+    # previous stage's progress. An optimizer that can move backwards is unusable as a
+    # continuation step.
+    best_v, best_f = np.asarray(v0, float).copy(), f(np.asarray(v0, float))
+    used, ps, runs = 1, popsize, []
     sig = sigma0
     for r in range(restarts + 1):
         if r == 0:
@@ -236,6 +243,7 @@ def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
         if used >= maxfev:
             break
     return dict(v=best_v, f=best_f, runs=runs, nev=len(trace['f']),
+                seconds=time.time() - t_start,
                 trace_v=np.array(trace['v']), trace_f=np.array(trace['f']),
                 parts=cost['parts'](best_v))
 
@@ -578,3 +586,51 @@ def smoothed_trust_region(cost, v0, bound=3.0, delta0=0.25, delta_min=5e-3, n_di
                 hist_accepted=np.array([h['accepted'] for h in hist]),
                 trace_v=np.array([h['v'] for h in hist]),
                 trace_f=np.array([h['f'] for h in hist]), parts=p)
+
+
+def bobyqa(cost, v0, bound=3.0, maxfev=1500, rhobeg=0.25, rhoend=1e-3, seek_global=False,
+           npt=None, verbose=True, label='bobyqa'):
+    """Py-BOBYQA: model-based derivative-free trust region. The purpose-built "last push".
+
+    WHY THIS RATHER THAN THE HAND-ROLLED VERSION
+        `smoothed_trust_region` implements the right principle -- average the objective over a
+        ball and anneal the radius -- with the wrong step. It uses steepest descent inside the
+        trust region, and on a landscape whose smoothed conditioning is ~65 that zigzags:
+        MEASURED on the benchmark, two rejected steps for every accepted one and f = 0.348 after
+        859 evaluations, against CMA's 0.0198 in 1512.
+
+        BOBYQA does what that was reaching for. It maintains an interpolation set spread over
+        the trust radius and fits a QUADRATIC model to it, so it gets curvature (which fixes the
+        zigzag) and the model is a least-squares fit over a region of radius rho (which is the
+        smoothing). Then rho contracts. Same principle, correct step.
+
+    rhobeg = 0.25 is the initial trust radius, chosen from the same measurement that motivates
+    all the smoothing here: the map is rank 16/16 with condition 65 when probed at radius ~0.23,
+    against rank 8/16 and condition 2000 at 1e-3. Starting inside the well-conditioned regime
+    and contracting is the whole idea.
+
+    `seek_global=True` enables Py-BOBYQA's own multiple-restart heuristic for noisy/rugged
+    objectives -- appropriate here, since the ruggedness is exactly what it is designed for.
+    """
+    import pybobyqa
+    f, _g, trace = _harden(cost)
+    v = np.clip(np.asarray(v0, float), -bound, bound)
+    n = len(v)
+    lo = np.full(n, -bound)
+    hi = np.full(n, bound)
+    t0 = time.time()
+    soln = pybobyqa.solve(f, v, bounds=(lo, hi), maxfun=int(maxfev), rhobeg=rhobeg,
+                          rhoend=rhoend, npt=npt, seek_global_minimum=bool(seek_global),
+                          objfun_has_noise=True, print_progress=False)
+    dt = time.time() - t0
+    v_best = np.clip(np.asarray(soln.x, float), -bound, bound)
+    p = cost['parts'](v_best)
+    if verbose:
+        print(f"    {label:14s} f {trace['f'][0]:.6f} -> {float(soln.f):.6f} "
+              f"({len(trace['f'])} evals, {dt:.0f}s)  c_ptc={p['c_ptc']:.4f}  "
+              f"flag={soln.flag} ({soln.msg})", flush=True)
+    return dict(v=v_best, f=float(soln.f), f0=float(trace['f'][0]),
+                nit=int(getattr(soln, 'nruns', 1)), nev=len(trace['f']), seconds=dt,
+                success=soln.flag == soln.EXIT_SUCCESS, message=str(soln.msg),
+                n_grad_clipped=0, n_grad_bad=0, n_grad_dead=0, grad_max=float('nan'),
+                trace_v=np.array(trace['v']), trace_f=np.array(trace['f']), parts=p)

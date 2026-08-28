@@ -630,6 +630,54 @@ within tens of percent even where it cannot be pinned.
 out-of-class target through a map that cannot recover an in-class one would produce a number
 with no interpretation.
 
+### 5.4b THE ANSWER TO OBJECTIVE (b): a PTC is worth ~3-4 trajectories, per gene
+
+Non-uniqueness was always the premise, so the quantity of interest is not "can we recover the
+parameters" -- it is the DIMENSION of the family of parameter sets consistent with the data:
+
+    dim(solution set) = n_free - rank(J)
+
+measured LOCALLY. (`analysis/coupling.py` compares LC and PTC only at the +-26% factor step,
+where both saturate at 16/16 and the comparison cannot discriminate. See 5.1.)
+
+`analysis/identifiability.py`, Almeida, instant mode, 16 gauge-quotient directions, h = 1e-3:
+
+| observable | rank @1e-2 | dim(solution set) | condition |
+|---|---|---|---|
+| **matched, one gene (BMAL1)** | | | |
+| LC -- BMAL1 trajectory alone | **3/16** | 13 | 6.81e5 |
+| PTC -- BMAL1 alone | **7/16** | 9 | 2.02e3 |
+| LC + PTC, same gene | 8/16 | 8 | 1.75e3 |
+| **unmatched, for reference** | | | |
+| LC -- all 8 species x 64 phases | 13/16 | 3 | 1.65e3 |
+| LC (8 species) + PTC (1 gene) | 13/16 | 3 | 4.64e2 |
+
+**Matched per observable, the PTC wins decisively.** One gene's PTC determines 7 directions
+against 3 for that same gene's time course, and adds **5** directions the trajectory cannot see,
+while the trajectory adds only **1** beyond the PTC. Conditioning differs by two orders of
+magnitude. Scale it: 8 species of trajectory buy 13 directions and one species buys 3, so a
+single-gene PTC (7) is worth roughly three to four full trajectories.
+
+**That is objective (b) answered in the affirmative** -- PTC data constrains this model in ways
+LC data cannot, and by a large factor per unit of experiment.
+
+**The unmatched rows are a trap and are kept only as a warning.** Taken alone they say "PTC adds
+0 directions beyond LC", which is true and nearly vacuous: eight species of trajectory against
+one perturbation experiment measures data VOLUME, not information content. Any design claim has
+to come from the matched rows.
+
+**Where the complementarity lives.** Principal angles between the top-7 determined subspaces of
+the 8-species LC and the PTC are 0.2, 0.9, 9.1, 19.2, 36.7, 57.1, 77.6 degrees: the strongest
+directions the two share almost exactly, and they diverge only in the weaker ones. Consistently,
+LC(8 species) + PTC reaches **16/16 at the 1e-3 threshold** where neither alone does (15 and 14),
+and conditioning improves 3.5x. So even against a rich trajectory dataset the PTC contributes --
+just weakly, and in the directions that were already marginal.
+
+**Relation to the batch-1 rho = 122 "decoupled direction" (3.7).** No contradiction: rho measures
+RELATIVE SENSITIVITY (the PTC responds more strongly along that direction), not rank
+complementarity (the PTC sees something the LC cannot). Both statements hold at once, and they
+are different claims about the same geometry.
+
 ### 5.5 Genes are NOT redundant -- the opposite of the Mirsky prescription
 
 Since dose variation was ruled out (5.1: widening the window 3x moves nothing), the remaining

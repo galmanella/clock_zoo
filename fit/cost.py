@@ -277,7 +277,7 @@ class RadialTarget:
 # --------------------------------------------------------------------------- #
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
-              param_names=None, eps=1e-12, grad_mode='rev'):
+              param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0):
     """Build the objective.
 
     Returns a dict with
@@ -344,6 +344,51 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
                     alive_frac=jnp.mean(alive.astype(jnp.float64)), re_lambda=re,
                     fp_res=res, **aux)
 
+    def _residual(v):
+        """The cost as a RESIDUAL VECTOR r with |r|^2 == total.
+
+        WHY THIS EXISTS. The objective is a sum of squares wearing a scalar's clothing:
+        (1 - cos 2*pi*d)/2 = sin^2(pi*d), so `total` is mean(r_i^2) over ~100 cells. Handing
+        optimizers only the scalar throws away the per-cell structure, and that structure is
+        exactly what Gauss-Newton methods use to SEE the anisotropy of a sloppy landscape
+        instead of having to infer it.
+
+        It matters here specifically. L-BFGS builds curvature by accumulating gradient
+        differences, so a single pathological evaluation contaminates its Hessian estimate for
+        the rest of the run -- and gradients in this landscape spike to 1e25 where a trajectory
+        grazes the coexisting equilibrium's basin boundary. Levenberg-Marquardt rebuilds J^T J
+        from scratch at every step, so one bad point costs one rejected step and nothing more.
+
+        Layout, with |r|^2 reproducing `total` exactly:
+            cells    (zu - zt) / (2 sqrt(N)), real and imaginary parts. |zu - zt|^2 =
+                     2(1 - cos d), so summing gives mean(1 - cos d)/2 = c_ptc.
+            dead     magnitude 2 (antipodal, the maximum), so a dead cell contributes 1/N --
+                     the same maximum penalty the scalar form assigns.
+            osc/amp  sqrt(w * term), one entry each.
+            ridge    sqrt(ridge) * v, one entry per free direction (see `ridge` below).
+        """
+        P, zu, alive, amp, amp_lc, T = _surface(v)
+        zt, aux = tgt(zu, alive, old, doses)
+        fin = jnp.isfinite(zu.real) & jnp.isfinite(zu.imag)
+        zs = jnp.where(fin, zu, 1.0 + 0j)
+        d = zs - zt
+        # dead cells: the maximally-wrong unit-phase difference, magnitude 2
+        d = jnp.where(alive, d, 2.0 + 0j)
+        N = d.size
+        scale = 1.0 / (2.0 * jnp.sqrt(N))
+        r = jnp.concatenate([jnp.real(d).ravel() * scale, jnp.imag(d).ravel() * scale])
+
+        a = jnp.maximum(0.0, 1.0 - amp_lc / amp_floor) ** 2
+        if osc is not None:
+            b, _re, _res = osc(P, y_seed)
+        else:
+            b = jnp.array(0.0)
+        extra = [jnp.sqrt(jnp.maximum(w_osc * b, 0.0))[None],
+                 jnp.sqrt(jnp.maximum(w_amp * a, 0.0))[None]]
+        if ridge:
+            extra.append(jnp.sqrt(ridge) * v)
+        return jnp.concatenate([r] + extra)
+
     # TWO compiles, not three. `total` is just a field of `parts`, and this graph is expensive
     # to trace -- compiling a separate scalar version of it cost about a third of the startup
     # time for nothing. The dict lookup is free next to a 160-cell ODE solve.
@@ -352,6 +397,10 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     _grad = jax.jit((jax.jacfwd if grad_mode == 'fwd' else jax.grad)(
         lambda v: _parts(v)['total']))
     _parts_j = jax.jit(_parts)
+    _resid_j = jax.jit(_residual)
+    # forward-mode: the residual has many outputs and only n_free inputs, so jacfwd costs
+    # n_free JVPs -- about one reverse-mode gradient, for the whole Jacobian.
+    _jac_j = jax.jit(jax.jacfwd(_residual))
 
     def _total(v):
         return _parts_j(v)['total']
@@ -368,8 +417,15 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         P, zu, alive, amp, amp_lc, T = _surface_j(jnp.asarray(v, jnp.float64))
         return np.asarray(zu), np.asarray(alive), np.asarray(amp)
 
+    def residual(v):
+        return np.asarray(_resid_j(jnp.asarray(v, jnp.float64)))
+
+    def jac(v):
+        return np.asarray(_jac_j(jnp.asarray(v, jnp.float64)))
+
     return dict(names=names, z_base=z_base, B=B, gauge=g, n_free=n_free,
-                grad_mode=grad_mode, backend=backend, re_nominal=re_nom,
+                grad_mode=grad_mode, backend=backend, re_nominal=re_nom, ridge=ridge,
+                residual=residual, jac=jac,
                 v0=np.zeros(n_free), doses=np.asarray(doses), old=np.asarray(old),
                 amp_base=amp_base, amp_floor=amp_floor, target=tgt.name,
                 theta=lambda v: np.asarray(_theta(jnp.asarray(v, jnp.float64))),

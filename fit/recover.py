@@ -58,7 +58,7 @@ def displaced_truth(cost, eps, seed=0, direction=None):
 def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=16,
         n_dose=10, max_factor=6.0, backend='diffrax', dt=0.02, seed=0, n_starts=1,
         maxiter=300, bound=3.0, w_osc=0.2, w_amp=1.0, tag=None, optimizer='lbfgs',
-        maxfev=3000, start='nominal'):
+        maxfev=3000, start='nominal', ridge=0.0):
     from models import get_model
     from fit.doses import fit_dose_grid
 
@@ -86,8 +86,14 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
               f"no longer clean. Reduce --eps or --max-factor.")
 
     # 2. the real cost, fitting that fixed surface
+    # LM needs the residual JACOBIAN, and jacfwd cannot differentiate through diffrax's default
+    # RecursiveCheckpointAdjoint (a custom_vjp, reverse-mode only). ForwardMode is the right
+    # choice here anyway: the residual has ~200 outputs and only 16 inputs, so forward mode costs
+    # 16 JVPs against reverse mode's 200 VJPs.
+    gmode = 'fwd' if optimizer == 'lm' else 'rev'
     C = make_cost(model, target, doses, FixedTarget(zt), n_phase=n_phase, mode=mode,
-                  backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp)
+                  backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp, ridge=ridge,
+                  grad_mode=gmode)
     p_true = C['parts'](v_true)
     p_nom = C['parts'](C['v0'])
     for lbl, p in (('TRUTH  ', p_true), ('NOMINAL', p_nom)):
@@ -108,7 +114,12 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     # and the failure from nominal is genuinely about reaching it.
     v_start = v_true.copy() if start == 'truth' else C['v0']
     t0 = time.time()
-    if optimizer == 'cma':
+    if optimizer == 'nm':
+        runs = [search.nelder_mead(C, v_start, bound=bound, maxiter=maxiter, label=start)]
+    elif optimizer == 'lm':
+        runs = [search.levenberg_marquardt(C, v_start, bound=bound, maxiter=maxiter,
+                                           label=start)]
+    elif optimizer == 'cma':
         # Gradient-free. The right tool when the cost VALUES are sound but the derivatives are
         # not -- which is the situation on the wide dose grid, where the informative doses are
         # exactly the ones whose gradient explodes (fit/doses.py, REPO_MAP hazard 11).
@@ -134,6 +145,41 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     print(f"  parameter RMS log-distance to truth: {rms_log:.4f} "
           f"(started at {rms_log0:.4f}, so {1 - rms_log / max(rms_log0, 1e-12):+.1%} closer)")
     print(f"  {within}/{len(C['names'])} parameters recovered to within 10%")
+
+    # SCORE IN THE IDENTIFIED SUBSPACE TOO.
+    #
+    # "N of 18 parameters within 10%" charges the optimizer equally for every direction, but the
+    # data does not constrain every direction: the surface Jacobian at the truth has ~5 singular
+    # values above 1e-2 and the rest fall to 1e-4. An optimizer cannot recover what the data does
+    # not contain, so the full-space metric measures partly the fit and partly the question being
+    # ill-posed. Splitting the error in the singular basis separates them.
+    #
+    # Measured with this on the first two runs: CMA-ES put 92.5% of its squared error in
+    # directions beyond the top four, i.e. it largely got the identified part right and wandered
+    # in the null space -- which is CORRECT behaviour, not failure. L-BFGS put 41% in the top
+    # four, so it missed even the determined directions.
+    sub = None
+    try:
+        Jr = C['jac'](v_true)
+        # drop the penalty/ridge rows: only the surface rows carry identifiability information
+        Jr = Jr[:C['n_surface_rows']] if 'n_surface_rows' in C else Jr
+        _U, sv, Vt = np.linalg.svd(Jr, full_matrices=False)
+        svn = sv / sv[0]
+        c = Vt @ dv
+        tot = float(np.linalg.norm(dv))
+        k_det = int(np.sum(svn > 1e-2))
+        det = float(np.linalg.norm(c[:k_det])) / max(tot, 1e-30)
+        print(f"\n  identifiability-aware score (Jacobian at the truth):")
+        print(f"    {k_det} of {len(svn)} directions determined (sigma > 1e-2); "
+              f"spectrum {svn[0]:.3f} .. {svn[-1]:.1e}")
+        print(f"    error in the DETERMINED subspace: {det:.1%} of |dv|  "
+              f"({np.linalg.norm(c[:k_det]):.4f} of {tot:.4f})")
+        print(f"    error in the FLAT subspace:       "
+              f"{np.linalg.norm(c[k_det:]) / max(tot, 1e-30):.1%} of |dv|")
+        print(f"    -> {'the fit missed directions the data DOES constrain' if det > 0.5 else 'the error is mostly where the data is silent, which is expected'}")
+        sub = dict(sv=svn, err_modes=c, k_det=k_det, det_frac=det)
+    except Exception as e:
+        print(f"  [subspace scoring unavailable: {type(e).__name__}: {e}]")
     print(f"  {best.get('nit', -1)} iterations, {best.get('nev', -1)} evaluations, "
           f"{dt_all:.0f}s total ({optimizer})")
     print(f"\n  {'param':12s} {'true':>12s} {'fitted':>12s} {'log err':>9s}")
@@ -176,6 +222,10 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
                 cost_truth=p_true['total'], cost_nominal=p_nom['total'], cost_fit=best['f'],
                 rms_log=rms_log, rms_log0=rms_log0, n_within_10pct=within,
                 nit=best.get('nit', -1), nev=best.get('nev', -1),
+                sub_sv=(sub['sv'] if sub else np.array([])),
+                sub_err_modes=(sub['err_modes'] if sub else np.array([])),
+                sub_k_det=(sub['k_det'] if sub else -1),
+                sub_det_frac=(sub['det_frac'] if sub else float('nan')),
                 n_grad_clipped=best.get('n_grad_clipped', 0),
                 n_grad_dead=best.get('n_grad_dead', 0),
                 grad_max=best.get('grad_max', float('nan')),
@@ -205,14 +255,19 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--starts', type=int, default=1)
     ap.add_argument('--maxiter', type=int, default=300)
-    ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma'))
+    ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma', 'lm', 'nm'))
     ap.add_argument('--maxfev', type=int, default=3000)
+    ap.add_argument('--bound', type=float, default=3.0,
+                    help='search box, |v| <= bound in log-parameter units. Mirsky et al. report that loose bounds FAILED to find oscillating sets and that they tightened until the search was constrained enough to work; 3.0 is a factor of ~20 each way, which is loose by that standard.')
+    ap.add_argument('--ridge', type=float, default=0.0,
+                    help='Tikhonov weight along ALL directions; makes the ~8 flat ones well-posed at the price of shrinking them toward nominal')
     ap.add_argument('--start', default='nominal', choices=('nominal', 'truth'))
     ap.add_argument('--tag', default=None)
     a = ap.parse_args(argv)
     run(a.model, a.target, a.mode, a.eps, a.n_phase, a.n_dose, a.max_factor, a.backend,
-        a.dt, a.seed, a.starts, a.maxiter, tag=a.tag, optimizer=a.optimizer,
-        maxfev=a.maxfev, start=a.start)
+        a.dt, a.seed, a.starts, a.maxiter, bound=a.bound, tag=a.tag,
+        optimizer=a.optimizer,
+        maxfev=a.maxfev, start=a.start, ridge=a.ridge)
     return 0
 
 

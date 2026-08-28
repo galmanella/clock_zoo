@@ -207,3 +207,154 @@ def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
     return dict(v=best_v, f=best_f, runs=runs, nev=len(trace['f']),
                 trace_v=np.array(trace['v']), trace_f=np.array(trace['f']),
                 parts=cost['parts'](best_v))
+
+
+# --------------------------------------------------------------------------- #
+#  Levenberg-Marquardt with geodesic acceleration
+# --------------------------------------------------------------------------- #
+def levenberg_marquardt(cost, v0, bound=3.0, maxiter=100, lam0=1e-2, lam_up=10.0,
+                        lam_down=3.0, accel=True, alpha=0.75, h_accel=0.1,
+                        tol=1e-10, verbose=True, label='lm'):
+    """LM on the residual vector, optionally with geodesic acceleration.
+
+    WHY THIS ALGORITHM FOR THIS LANDSCAPE
+        The measured geometry is the sloppy-model one: conditioning that depends on the scale
+        you probe at (rank 16/16 with condition 65 at a +-26% step, rank 8/16 with condition
+        2000 locally), fits that hold at the truth and fail from a distance, and the same
+        failure under a completely different cost (LC-only fitting on Mirsky). That is a long,
+        narrow, CURVED valley.
+
+        Three properties matter here, and general-purpose methods have none of them:
+
+        1. J^T J is rebuilt from scratch every step. L-BFGS accumulates curvature from gradient
+           history, so the 1e25 spikes this landscape produces where a trajectory grazes the
+           coexisting equilibrium's basin boundary corrupt its Hessian estimate for the rest of
+           the run. Here a bad point costs one rejected step.
+        2. The damping lambda makes the ~8 near-null directions harmless. An undamped Newton
+           step divides by singular values of 1e-4 and flies off; LM interpolates smoothly
+           toward gradient descent in exactly those directions.
+        3. Geodesic acceleration adds the second-order term that lets a step follow the
+           valley's CURVATURE rather than its tangent. In a narrow curved canyon the tangent
+           step leaves the valley immediately and the line search collapses, which is the
+           classic reason first-order methods crawl here.
+
+    The acceleration is the directional second derivative of the residual along the proposed
+    step, taken by finite difference (two extra residual evaluations, no second-order autodiff).
+    It is applied only when |a| / |delta| < alpha, the standard guard: a large acceleration
+    means the quadratic model is not trustworthy and the plain LM step is safer.
+
+    Reference for the method and for why sloppy fits fail from a distance: Transtrum, Machta &
+    Sethna, "Geometry of nonlinear least squares with applications to sloppy models and
+    optimization" (PRE 83, 036701, 2011).
+    """
+    v = np.clip(np.asarray(v0, float), -bound, bound)
+    n = len(v)
+    lam = lam0
+    r = cost['residual'](v)
+    f = float(r @ r)
+    hist = {'f': [f], 'v': [v.copy()], 'lam': [lam], 'accel_used': 0, 'rejected': 0}
+    t0 = time.time()
+    nev = 1
+
+    for it in range(maxiter):
+        J = cost['jac'](v)
+        if not np.all(np.isfinite(J)):
+            J = np.nan_to_num(J, nan=0.0, posinf=0.0, neginf=0.0)
+        JtJ = J.T @ J
+        Jtr = J.T @ r
+        D = np.diag(np.maximum(np.diag(JtJ), 1e-12))     # Marquardt scaling
+        step_taken = False
+        for _try in range(12):
+            try:
+                delta = -np.linalg.solve(JtJ + lam * D, Jtr)
+            except np.linalg.LinAlgError:
+                lam *= lam_up
+                continue
+            if accel:
+                # directional second derivative of r along delta, by central difference
+                vp = np.clip(v + h_accel * delta, -bound, bound)
+                vm = np.clip(v - h_accel * delta, -bound, bound)
+                rp, rm = cost['residual'](vp), cost['residual'](vm)
+                nev += 2
+                d2 = (rp - 2.0 * r + rm) / (h_accel ** 2)
+                a = -np.linalg.solve(JtJ + lam * D, J.T @ d2)
+                ratio = np.linalg.norm(a) / max(np.linalg.norm(delta), 1e-300)
+                if ratio < alpha:
+                    delta = delta + 0.5 * a
+                    hist['accel_used'] += 1
+            v_new = np.clip(v + delta, -bound, bound)
+            r_new = cost['residual'](v_new)
+            nev += 1
+            f_new = float(r_new @ r_new)
+            if np.isfinite(f_new) and f_new < f:
+                v, r, f = v_new, r_new, f_new
+                lam = max(lam / lam_down, 1e-12)
+                step_taken = True
+                break
+            lam *= lam_up
+            hist['rejected'] += 1
+        hist['f'].append(f); hist['v'].append(v.copy()); hist['lam'].append(lam)
+        if not step_taken or (len(hist['f']) > 1 and
+                              abs(hist['f'][-2] - f) < tol * max(f, 1e-12)):
+            break
+
+    dt = time.time() - t0
+    p = cost['parts'](v)
+    if verbose:
+        print(f"    {label:14s} f {hist['f'][0]:.4f} -> {f:.4f} in {it + 1} its "
+              f"({nev} evals, {dt:.0f}s)  c_ptc={p['c_ptc']:.4f} amp_lc={p['amp_lc']:.2f} "
+              f"alive={p['alive_frac']:.2f}", flush=True)
+        print(f"    {'':14s} lambda {lam:.2e}, {hist['accel_used']} accelerated steps, "
+              f"{hist['rejected']} rejected", flush=True)
+    return dict(v=v, f=f, f0=hist['f'][0], nit=it + 1, nev=nev, seconds=dt,
+                success=True, message='lm', n_grad_clipped=0, n_grad_bad=0, n_grad_dead=0,
+                grad_max=float('nan'), accel_used=hist['accel_used'],
+                rejected=hist['rejected'], lam=lam,
+                trace_v=np.array(hist['v']), trace_f=np.array(hist['f']), parts=p)
+
+
+def nelder_mead(cost, v0, bound=3.0, maxiter=2000, verbose=True, label='nm'):
+    """Nelder-Mead simplex -- the scipy equivalent of MATLAB's `fminsearch`.
+
+    WHY IT IS HERE. Almeida et al. (2020) calibrated the very model in models/almeida.py with
+    `fminsearch`, and Mirsky et al. (2009) used an evolutionary strategy; both are
+    DERIVATIVE-FREE, and both published working parameter sets. So a derivative-free simplex is
+    not a fallback here, it is the method the source papers actually used, and it belongs in the
+    comparison for that reason alone.
+
+    What it is good at is exactly this landscape's problem: it needs no gradient (ours spikes to
+    1e25 near basin boundaries), it adapts its simplex to local anisotropy, and it is unbothered
+    by the non-smoothness that wrecks a quasi-Newton Hessian. What it is bad at is dimension --
+    it degrades above ~10-20 parameters, and we are at 16, so treat a poor result as ambiguous
+    rather than conclusive.
+
+    Bounds are enforced by reflection into the box rather than by a penalty: plain Nelder-Mead is
+    unconstrained, and a barrier would distort the simplex geometry it relies on.
+    """
+    from scipy.optimize import minimize
+    f, _g, trace = _harden(cost)
+    b = float(bound)
+
+    def fb(v):
+        # reflect into [-b, b]: cheap, continuous, and keeps the simplex well-shaped
+        w = np.abs(np.asarray(v, float) + b) % (4 * b)
+        w = np.where(w > 2 * b, 4 * b - w, w) - b
+        return f(w)
+
+    t0 = time.time()
+    res = minimize(fb, np.asarray(v0, float), method='Nelder-Mead',
+                   options={'maxiter': maxiter, 'maxfev': maxiter * 2,
+                            'xatol': 1e-6, 'fatol': 1e-10, 'adaptive': True})
+    w = np.abs(np.asarray(res.x, float) + b) % (4 * b)
+    v = np.where(w > 2 * b, 4 * b - w, w) - b
+    dt = time.time() - t0
+    p = cost['parts'](v)
+    if verbose:
+        print(f"    {label:14s} f {trace['f'][0]:.4f} -> {res.fun:.4f} in {res.nit} its "
+              f"({len(trace['f'])} evals, {dt:.0f}s)  c_ptc={p['c_ptc']:.4f} "
+              f"amp_lc={p['amp_lc']:.2f} alive={p['alive_frac']:.2f}", flush=True)
+    return dict(v=v, f=float(res.fun), f0=float(trace['f'][0]), nit=int(res.nit),
+                nev=len(trace['f']), seconds=dt, success=bool(res.success),
+                message=str(res.message), n_grad_clipped=0, n_grad_bad=0, n_grad_dead=0,
+                grad_max=float('nan'),
+                trace_v=np.array(trace['v']), trace_f=np.array(trace['f']), parts=p)

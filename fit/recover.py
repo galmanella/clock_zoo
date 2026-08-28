@@ -88,8 +88,17 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp)
     p_true = C['parts'](v_true)
     p_nom = C['parts'](C['v0'])
-    print(f"[recover] cost at TRUTH   = {p_true['total']:.6f} (floor; c_ptc={p_true['c_ptc']:.2e})")
-    print(f"[recover] cost at NOMINAL = {p_nom['total']:.6f} (start)")
+    for lbl, p in (('TRUTH  ', p_true), ('NOMINAL', p_nom)):
+        print(f"[recover] cost at {lbl} = {p['total']:.6f}  "
+              f"(ptc {p['c_ptc']:.3e} + osc {p['osc']:.4f} + amp {p['amp_pen']:.4f})  "
+              f"amp_lc={p['amp_lc']:.3f} T={p['period']:.2f}")
+    # The truth's PTC residual is ~0 by construction, so anything left in its TOTAL is a
+    # penalty term binding on a healthy parameter set -- which would move the global minimum
+    # off the truth and make this control measure the penalty instead of the landscape.
+    if p_true['total'] > 0.02:
+        print(f"[recover] WARNING: the truth does not sit at ~0 -- a penalty is binding there "
+              f"(osc {p_true['osc']:.4f}, amp {p_true['amp_pen']:.4f}). Loosen it "
+              f"(amp_frac / w_osc) before believing this control.")
 
     t0 = time.time()
     if n_starts > 1:

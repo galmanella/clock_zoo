@@ -23,8 +23,19 @@ DESIGNED AGAINST ONE SPECIFIC FAILURE
             match it -- but only if unusable cells are scored rather than skipped. They score
             the MAXIMUM (1.0). See fit/target.circ_cost; that one line is what inverts the
             Mirsky degeneracy, and `--selftest` asserts it.
-    A       An explicit floor on limit-cycle amplitude. The Mirsky collapse moved parameters
-            less than 4%, so the barrier has to bite early, not just at the bifurcation.
+    A       An explicit floor on limit-cycle amplitude, at `amp_frac` of the NOMINAL model's.
+
+            It must be LOOSE. Set at 0.5 it fired on the self-recovery control's own ground
+            truth: a displaced-but-perfectly-healthy parameter set whose cycle was 1.32 against
+            nominal 4.337 scored 0.153 while its PTC residual was 1e-12 -- so the truth was no
+            longer the global minimum and the control was measuring the floor rather than the
+            landscape. Worse, it is exactly the LC-shape constraint this experiment is supposed
+            to do without: a model with a 3x smaller cycle is a different model, not a dead one.
+
+            At 0.05 the floor sits at 0.217 against a nominal 4.337 -- it means "there is
+            essentially no oscillation left", which is all it is for. It still catches the
+            degenerate optimum (the collapsed case in `selftest` reaches amp_lc = 0.000), and
+            the real anti-degeneracy work is done by C_ptc scoring dead cells at 1.0 anyway.
     B_osc   The Hopf-distance barrier (ported from input_screen/osc_term.py). This is the
             user's stated constraint -- "self-sustained oscillation and nothing more" -- and it
             has a second job that matters just as much: C_ptc SATURATES at 1.0 across the whole
@@ -131,6 +142,11 @@ def make_osc_penalty(model, w=0.2, k=200.0, margin=0.015, n_iter=40, reg=1e-9):
     stable (i.e. the clock is dead or damped). Newton runs to convergence under stop_gradient,
     then ONE differentiable implicit step, so d y*/dP is the exact implicit-function gradient
     at the cost of a single linear solve.
+
+    `margin` and `k` ARE MODEL-SPECIFIC and the defaults here are input_screen's, tuned for
+    Mirsky. Re(lambda_max) has units of 1/time and its natural size differs per model, so a
+    fixed margin means different things in different models. Use `scaled_osc_penalty` unless
+    you have a reason not to -- the literal defaults fire on a healthy Almeida oscillator.
     """
     rhs = model.jax_rhs
     N = int(model.n_states)
@@ -159,6 +175,41 @@ def make_osc_penalty(model, w=0.2, k=200.0, margin=0.015, n_iter=40, reg=1e-9):
         return p, re, res
 
     return pen
+
+
+def scaled_osc_penalty(model, w=0.2, margin_frac=0.02, k_scale=30.0, n_iter=40):
+    """The Hopf barrier, with its scale DERIVED from the model instead of hardcoded.
+
+    Returns `(pen, re_nominal)`.
+
+    WHY THIS IS NOT OPTIONAL. Re(lambda_max) at the fixed point has units of 1/time, so its
+    natural magnitude is a property of the model. input_screen's constants (margin = 0.015,
+    k = 200) were tuned on Mirsky. On Almeida, whose NOMINAL Re(lambda_max) is 0.0627, they
+    misfire badly: the self-recovery control's own ground truth sits at Re = 0.0143 -- POSITIVE,
+    i.e. a genuinely self-sustained oscillator with a healthy cycle (amplitude 2.31, period
+    19.45 h) -- and was charged a penalty of 0.766, which put the global minimum somewhere other
+    than the truth and made the control measure the barrier instead of the landscape.
+
+    So both knobs are expressed relative to the model's own nominal value:
+
+        margin = margin_frac * re_nominal      the buffer past the true Hopf boundary (Re = 0)
+        k      = k_scale / re_nominal          the steepness, in the same units
+
+    With the defaults, a system at 20% of nominal Re pays ~2e-3, at the bifurcation ~1.0, and
+    well past it the penalty grows linearly with a strong gradient -- which is the whole point,
+    since C_ptc is flat at its 1.0 ceiling across the dead region and cannot guide anything.
+    """
+    P0 = model.jax_params()
+    y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
+    probe = make_osc_penalty(model, w=1.0, k=1.0, margin=0.0, n_iter=n_iter)
+    _p, re_nom, _res = probe(P0, y_seed)
+    re_nom = float(np.asarray(re_nom))
+    if not np.isfinite(re_nom) or re_nom <= 0:
+        # Nominal is not an unstable spiral -- fall back to the literal constants rather than
+        # dividing by a non-positive number, and let the caller see it.
+        return make_osc_penalty(model, w=w, n_iter=n_iter), re_nom
+    return (make_osc_penalty(model, w=w, k=k_scale / re_nom,
+                             margin=margin_frac * re_nom, n_iter=n_iter), re_nom)
 
 
 # --------------------------------------------------------------------------- #
@@ -198,7 +249,7 @@ class RadialTarget:
 #  The cost
 # --------------------------------------------------------------------------- #
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
-              dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.5, m_amp=64,
+              dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
               param_names=None, eps=1e-12, grad_mode='rev'):
     """Build the objective.
 
@@ -222,7 +273,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     old = jnp.arange(n_phase) / n_phase
     ref_idx = int(model.var_index(model.reference_variable))
     y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
-    osc = make_osc_penalty(model, w=1.0) if w_osc else None
+    osc, re_nom = scaled_osc_penalty(model, w=1.0) if w_osc else (None, float('nan'))
 
     # base limit-cycle amplitude, the reference the floor is expressed against
     Pb = model.jax_params()
@@ -287,7 +338,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         return np.asarray(zu), np.asarray(alive), np.asarray(amp)
 
     return dict(names=names, z_base=z_base, B=B, gauge=g, n_free=n_free,
-                grad_mode=grad_mode, backend=backend,
+                grad_mode=grad_mode, backend=backend, re_nominal=re_nom,
                 v0=np.zeros(n_free), doses=np.asarray(doses), old=np.asarray(old),
                 amp_base=amp_base, amp_floor=amp_floor, target=tgt.name,
                 theta=lambda v: np.asarray(_theta(jnp.asarray(v, jnp.float64))),

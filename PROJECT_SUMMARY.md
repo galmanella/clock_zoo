@@ -24,9 +24,10 @@ combination that the PTC constrains and the limit cycle leaves ~11x freer -- con
 finite displacement on an independent adaptive solver, with controls (§3.6). No single
 parameter shows this (best ratio 1.04); it only appears in a COMBINATION, which is why a
 per-parameter sensitivity scatter misses it entirely. This is the opposite of the Mirsky
-result, where no direction decoupled. All three targets find the SAME direction
-(`ker`/`gamma_CP`/`ve`/`ke`), so it is a property of the model rather than of the probe --
-though they differ ~18x in how strongly they express it (CRY 1924, PER 108).
+result, where no direction decoupled. The clean probes (BMAL1, DBP) find the SAME direction
+(`ker`/`gamma_CP`/`ve`/`ke`), so it looks like a property of the model rather than of the probe
+-- but see 3.7: the CRY and PER surfaces turned out to be phase-scrambled and their numbers are
+retracted, so this rests on two probes, not four.
 
 The most consequential methodological findings, each of which changed a scientific answer:
 
@@ -333,41 +334,65 @@ adaptive-verified engine rather than autodiff through fixed-step RK4.
 leaves ~11x freer.** That is a positive answer to the project's question for this model, at this
 operating point, for this one probe — and the opposite of what Mirsky gave.
 
-### 3.7 Three targets: the decoupled direction is a property of the MODEL, not the probe
+### 3.7 Three targets -- and a RETRACTION: two of the three surfaces were unusable
 
-The whole objective-(b) chain -- `ptc_sens`, `coupling`, `sweep` -- repeated for **CRY** and
-**PER** alongside BMAL1.
+The objective-(b) chain -- `ptc_sens`, `coupling`, `sweep` -- was repeated for **CRY** and
+**PER** alongside BMAL1. The table below was published here in an earlier revision. **The CRY
+and PER rows are now retracted.** They are kept, struck, because the retraction is the point.
 
-| target | S_crit | phi* | twist (cyc) | best single param | best combination | gain | log-log r | angle k=1 |
-|---|---|---|---|---|---|---|---|---|
-| **BMAL1** | 4.50 | 0.521 | **0.489** | `ve` 1.64 | **122.3** | 75x | +0.660 | 79.1 deg |
-| **CRY** | 138.1 | 0.938 | **0.285** | `ker` 11.27 | **1923.5** | **171x** | +0.464 | 66.1 deg |
-| **PER** | 15.65 | 0.854 | **0.159** | `ve` 2.86 | **108.4** | 38x | +0.686 | 77.8 deg |
+| target | S_crit | phi* | twist (cyc) | best single param | best combination | gain | status |
+|---|---|---|---|---|---|---|---|
+| **BMAL1** | 4.50 | 0.521 | **0.489** | `ve` 1.64 | **122.3** | 75x | **stands** |
+| ~~CRY~~ | ~~138.1~~ | ~~0.938~~ | ~~0.285~~ | ~~`ker` 11.27~~ | ~~1923.5~~ | ~~171x~~ | **RETRACTED** |
+| ~~PER~~ | ~~15.65~~ | ~~0.854~~ | ~~0.159~~ | ~~`ve` 2.86~~ | ~~108.4~~ | ~~38x~~ | **RETRACTED** |
 
-**The top decoupled direction is essentially the SAME combination for all three probes:**
+**What went wrong.** The user noticed from a figure that the CRY surface did not look like a
+PTC, and said so ("CRY is not radial, this is an artifact -- its surface a complete mess"). It
+checks out. The CRY pulse surface is phase-scrambled:
+
+- its winding sequence over dose is `+1 x8, 0, 0, +1, +2, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, +1, 0`
+  -- a PTC has winding +1 or 0 and nothing else, so `-1` and `+2` are not resetting behaviour,
+  they are evidence the phase readout is noise;
+- its phase changes by up to **0.499 cyc between ADJACENT phase samples**, against a
+  theoretical maximum of 0.5 -- i.e. neighbouring samples are uncorrelated;
+- it carries **13 raw winding plaquettes** which the dipole filter reduces to a single
+  survivor, and the reported `S_crit = 138.1` is just which one happened to survive;
+- its twist reads 0.285 at `n_phase = 24` and 0.046 at `n_phase = 32` -- a 6x swing from phase
+  resolution alone, so the quantity is not well defined.
+
+PER is milder but also fails: its winding set includes `-1` at the transition.
+
+**So `rho = 1924` for CRY was never a measurement of anything**, and the two claims built on it
+are withdrawn: that "CRY is nearly radial at base" (it has no usable isochron structure to be
+radial or otherwise) and that "CRY is the most promising probe" (it is the least usable).
+
+**What survives.** The BMAL1 result is unaffected and is the one to quote: a direction exists
+that is quiet in the LC and loud in the PTC, `rho = 122`, confirmed by finite displacement on
+the independent adaptive solver (dLC 0.0017 vs dPTC 0.0303 at eps = 0.15, an 18x ratio against
+1.2-1.6x for both control directions). DBP also passes the gate. The qualitative claim that the
+decoupled direction is a property of the model rather than of the probe was supported by the
+agreement of three eigenvectors, and now rests on **two** clean probes (BMAL1, DBP) rather than
+three -- weaker evidence, honestly labelled, and worth re-testing on Korencic and Goldbeter.
+
+**What changed in the pipeline.** `analysis/quality.py` now gates every surface before any
+feature is quoted from it, and reproduces this exact verdict mechanically:
 
 ```
-BMAL1   +0.65 ker  -0.53 gamma_CP  +0.49 ve  +0.20 ke
-CRY     -0.61 ker  +0.55 gamma_CP  -0.48 ve  -0.26 ke
-PER     -0.52 ker  +0.61 gamma_CP  -0.49 ve  -0.26 ke
+pulse    BMAL1 PASS   DBP PASS   CRY FAIL   PER FAIL
+instant  BMAL1 PASS   PER PASS   CRY FAIL
 ```
 
-Same four parameters, near-identical weights, and the overall sign of an eigenvector is
-arbitrary -- so BMAL1's `+ker` and CRY's `-ker` are the same axis. This matters: it says the
-LC-quiet / PTC-visible direction is a property of **Almeida's parameter geometry**, not an
-artifact of which species you happen to perturb. Any one of these three probes would find it.
+Its hard checks are the winding set and the "scramble fraction" (the share of cells whose phase
+jumps more than 0.25 cyc to their neighbour: BMAL1 0.019, CRY 0.149). The lesson is not that
+CRY is a bad gene -- it is that **a topological feature extractor will always return a number**,
+and the dipole filter in particular is designed to clean up exactly the artifact that here was
+the entire signal. Nothing downstream could tell the difference, so the check had to be added
+upstream.
 
-It also sharpens the design question. In Mirsky the lesson was *vary dose, not gene*, because
-single-gene PTCs were highly redundant. Here three probes agree on the direction but differ a
-lot in **how strongly** they express it -- CRY reaches rho = 1924 against PER's 108 -- so the
-probe choice sets the signal-to-noise on a shared quantity rather than revealing different
-quantities.
-
-**CRY is the outlier worth noting.** Its single-parameter ratio is already 11.3 (versus 1.6 for
-BMAL1), its log-log correlation is the weakest (+0.464), and its base twist is small (0.285)
-with a nearly flat FP-vs-dose curve -- CRY's isochrons are close to radial at base. It is the
-most promising probe of the three for identifiability, and the one whose twist has the most
-room to move in relative terms.
+**Instant mode is cleaner than pulse.** Re-running the characterization with the `instant`
+perturbation gives BMAL1 a surface with `plaq = 1 -> 1`, i.e. a single raw winding plaquette and
+no dipole filtering at all -- the cleanest surface in the project, and the one the fitting work
+in section 5 uses.
 
 ### 3.8 Different directions change the PTC in different WAYS
 

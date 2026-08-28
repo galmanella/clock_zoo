@@ -106,23 +106,29 @@ def make_flow(model, target_idx, backend='rk4', track_min=False):
     term = dfx.ODETerm(field)
 
     def flow(y0, n_steps, dt, P, drive, ymin0=None):
-        t1 = float(n_steps) * dt if np.isscalar(dt) else n_steps * dt
+        # The step size is T/n_pp with T the SOLVED period, so under an optimizer it can arrive
+        # non-positive or NaN from a parameter set with no usable cycle. diffrax asserts
+        # (t1-t0)*dt0 >= 0 and raises through a host callback, which kills the whole jitted
+        # cost instead of scoring that candidate badly. Route it into the same failure channel
+        # everything else uses: substitute a dummy span, then mark the result invalid.
+        t1 = jnp.nan_to_num(n_steps * dt, nan=0.0, posinf=0.0, neginf=0.0)
+        bad_span = t1 <= 0.0
+        t1s = jnp.where(bad_span, 1.0, t1)
         # Sample the interior as well as the endpoint: `y_min` must reflect the whole
         # trajectory, exactly as the RK4 running minimum does. A coarse probe grid is enough --
         # we are detecting gross excursions, not resolving them.
         n_probe = 64
-        ts = jnp.linspace(0.0, t1, n_probe)
+        ts = jnp.linspace(0.0, t1s, n_probe)
         sol = dfx.diffeqsolve(
-            term, dfx.Tsit5(), 0.0, t1, DT0, y0, args=(P, drive),
+            term, dfx.Tsit5(), 0.0, t1s, DT0, y0, args=(P, drive),
             stepsize_controller=dfx.PIDController(rtol=RTOL, atol=ATOL),
             saveat=dfx.SaveAt(ts=ts), max_steps=MAX_STEPS, throw=False)
         ys = sol.ys
-        yf = ys[-1]
-        good = _ok(sol.result)
+        good = _ok(sol.result) & ~bad_span
         mn = jnp.where(good, jnp.min(ys), FAILED_MIN)
         if ymin0 is not None:
             mn = jnp.minimum(mn, ymin0)
-        yf = jnp.where(good, yf, jnp.full_like(yf, jnp.nan))
+        yf = jnp.where(good, ys[-1], jnp.full_like(ys[-1], jnp.nan))
         return (yf, mn) if track_min else yf
 
     return flow
@@ -160,12 +166,17 @@ def make_window_sampler(model, backend='rk4'):
     term = dfx.ODETerm(field)
 
     def sample(y0, n, dt, P):
-        ts = (jnp.arange(n) + 1) * dt                  # state AFTER each step -- see above
+        # Same non-positive/NaN span guard as `make_flow` -- an optimizer reaches parameter sets
+        # whose solved period is degenerate, and diffrax raises rather than returning.
+        d = jnp.nan_to_num(dt, nan=0.0, posinf=0.0, neginf=0.0)
+        bad_span = d <= 0.0
+        ds = jnp.where(bad_span, 1.0, d)
+        ts = (jnp.arange(n) + 1) * ds                  # state AFTER each step -- see above
         sol = dfx.diffeqsolve(
             term, dfx.Tsit5(), 0.0, ts[-1], DT0, y0, args=P,
             stepsize_controller=dfx.PIDController(rtol=RTOL, atol=ATOL),
             saveat=dfx.SaveAt(ts=ts), max_steps=MAX_STEPS, throw=False)
-        return jnp.where(_ok(sol.result), sol.ys, jnp.nan)
+        return jnp.where(_ok(sol.result) & ~bad_span, sol.ys, jnp.nan)
 
     return sample
 

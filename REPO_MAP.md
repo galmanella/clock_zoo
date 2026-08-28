@@ -75,10 +75,17 @@ Order matters: `scrit` derives the dose grid and the integrator step that `chara
 
 ## Hazards
 
-1. **Never autodiff the fixed-step PTC at nontrivial dose.** In input_screen that produced
-   `|J|` up to 3.95e83 against an actual response of 0.006 and invalidated a whole results
-   table. Everything here is finite-difference; a gradient-based cost would need an adaptive
-   (Tsit5/diffrax) backend.
+1. **Never autodiff the FIXED-STEP RK4 PTC at nontrivial dose.** In input_screen that
+   produced `|J|` up to 3.95e83 against an actual response of 0.006 and invalidated a whole
+   results table. The batch-1 analyses are all finite-difference, so this does not touch them.
+
+   *Amended.* As first written this read as a blanket ban on gradients, and it is not one --
+   the indictment is of fixed-step RK4, and input_screen's own resolution was the adaptive
+   backend, with which its gradient optimizer outperformed CMA-ES. That backend is now ported
+   (`engine/flow.py`, `backend='diffrax'`). The enforceable rule is therefore: **a gradient
+   requires the adaptive backend AND a passing `python -m fit.cost --gradcheck`.** Do not
+   assume the check passes -- it FAILS on an unrestricted dose grid, which is why
+   `fit/doses.py` exists; see hazard 11.
 2. **A small BVP residual does not mean you have a limit cycle.** Any equilibrium satisfies
    `phi_T(y0) = y0` for any `T`, and so does a runaway in the negative orthant where the
    clamped RHS is degenerate. `make_orbit_finder` tests amplitude, positivity and period band
@@ -129,9 +136,35 @@ repo. What changed in the copy: the PERTURBATION tier collapsed to `perturbable_
 and the PTC gained a calibrated phase origin, a Floquet-derived transient skip, and validity
 tracking.
 
+10. **A radialization cost has a trivial global optimum: a dead oscillator.**
+    input_screen/radialize.py fit Mirsky to a radial target with `twist_cost + feature_cost`
+    and no limit-cycle term. It CONVERGED -- 0.89 -> 0.159 in 11 L-BFGS iterations -- by
+    walking the clock to a Hopf bifurcation: singularity annihilated, LC amplitude collapsed,
+    twist "improved" because the oscillation was dying, parameters moved less than 4%. Both
+    terms are minimized by a dying oscillator.
+
+    `fit/cost.py` is built against exactly this: a POINTWISE surface match (not a feature
+    match), with unusable cells scored at the MAXIMUM rather than dropped, plus an amplitude
+    floor and the Hopf barrier. `python -m fit.cost --selftest` asserts the invariant --
+    measured base 0.292 against collapsed 2.748 -- and if it ever fails, the degeneracy has
+    been rebuilt and no result from that pipeline should be believed.
+11. **The PTC gradient explodes at far-supercritical dose, adaptive backend or not.** Measured
+    on Almeida/BMAL1/instant at nominal: |grad| is 0.7 near S_crit and 2.4 at 3-5x S_crit, but
+    2.0e75 on the full characterization grid (to 18x S_crit). The cost VALUE stays bounded in
+    [0,1] throughout, so nothing in the objective looks wrong -- only the derivative reveals
+    it. Fits use `fit/doses.fit_dose_grid`, capped at `max_factor * S_crit`; characterizations
+    still use the wide grid, which is correct for them.
+12. **A topological feature extractor always returns a number.** `detect_grid` reported
+    `S_crit = 138.1` and a twist of 0.285 for a CRY surface that was phase-scrambled, and the
+    dipole filter -- designed to clean up fast phase changes -- silently reduced 13 spurious
+    plaquettes to one arbitrary survivor. Nothing downstream could tell. Gate every surface
+    with `analysis/quality.py` BEFORE quoting any feature from it.
+
 ## Open
 
 - `analysis/characterize.py` and `ptc_sens.py` have not yet been run for Korencic or
   Goldbeter (Almeida only).
-- `instant` mode is implemented and gated but not yet swept.
-- No optimisation yet — that is batch 2 (see PROJECT_SUMMARY §5).
+- `instant` mode: `scrit` + `characterize` + `quality` done for Almeida
+  (BMAL1 is the cleanest surface in the project); not yet swept through `ptc_sens`/`coupling`.
+- Fitting (`fit/`) is in progress: target, cost and search are built and self-tested; the T1
+  self-recovery control has not yet been run.

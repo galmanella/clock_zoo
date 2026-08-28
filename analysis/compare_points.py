@@ -123,9 +123,12 @@ def figure(g, path=None):
     n = len(pts)
     truth = next(p for p in pts if p['label'] == 'truth')
 
-    fig = plt.figure(figsize=(3.05 * n, 12.4))
-    gs = fig.add_gridspec(4, n, height_ratios=[1.25, 0.95, 0.95, 0.85], hspace=0.52,
-                          wspace=0.30)
+    # A dedicated narrow column for the colorbars. Attaching a colorbar to the last panel
+    # steals width from it alone, so the rightmost surface renders narrower than the five it is
+    # meant to be compared with.
+    fig = plt.figure(figsize=(3.05 * n + 1.1, 12.4))
+    gs = fig.add_gridspec(4, n + 1, height_ratios=[1.25, 0.95, 0.95, 0.85],
+                          width_ratios=[1.0] * n + [0.075], hspace=0.52, wspace=0.30)
 
     # --- row 0: PTC surfaces, common colour scale ------------------------------ #
     for i, p in enumerate(pts):
@@ -136,14 +139,16 @@ def figure(g, path=None):
         ax.set_xlabel('old phase (cyc)')
         if i == 0:
             ax.set_ylabel('dose')
-        ax.axhline(g['s_crit'], color='w', ls='--', lw=1.0, alpha=0.8)
+        # this panel's OWN S_crit -- the previous version drew one global value on every
+        # panel, which put the line in the wrong place everywhere except by coincidence
         if np.isfinite(p['S']):
+            ax.axhline(p['S'], color='w', ls='--', lw=1.1, alpha=0.85)
             ax.plot([p['phi']], [p['S']], 'o', mfc='none', mec='w', mew=1.8, ms=9)
         bad = '' if p['quality'] else '  [GATE FAIL]'
         ax.set_title(f"{p['label']}{bad}\nc_ptc={p['c_ptc']:.4f}  T={p['period']:.1f} h",
                      fontsize=8.5)
         if i == n - 1:
-            fig.colorbar(m, ax=ax, label='new phase (cyc)')
+            fig.colorbar(m, cax=fig.add_subplot(gs[0, n]), label='new phase (cyc)')
 
     # --- row 1: PTC difference from the truth ---------------------------------- #
     for i, p in enumerate(pts):
@@ -158,11 +163,11 @@ def figure(g, path=None):
         ax.set_title(f"|PTC - truth|   rms {np.sqrt(np.nanmean(d ** 2)):.4f} cyc",
                      fontsize=8.5)
         if i == n - 1:
-            fig.colorbar(mm, ax=ax, label='|d phase| (cyc)')
+            fig.colorbar(mm, cax=fig.add_subplot(gs[1, n]), label='|d phase| (cyc)')
 
     # --- row 2: features -- twist, winding, LC traces --------------------------- #
     cols = plt.cm.tab10(np.linspace(0, 1, 10))
-    ax = fig.add_subplot(gs[2, :2])
+    ax = fig.add_subplot(gs[2, 0:2])
     for i, p in enumerate(pts):
         twist_panel(ax, doses, p['twist'], label=p['label'], color=cols[i],
                     scrit=g['s_crit'] if i == 0 else None,
@@ -181,7 +186,7 @@ def figure(g, path=None):
     # LC traces of the reference species, against NORMALIZED phase (see module docstring)
     ph = np.arange(pts[0]['cyc'].shape[0]) / pts[0]['cyc'].shape[0]
     ref = 0
-    ax = fig.add_subplot(gs[2, 4:])
+    ax = fig.add_subplot(gs[2, 4:n])
     for i, p in enumerate(pts):
         c = p['cyc'][:, ref]
         ax.plot(ph, c / max(np.mean(c), 1e-12), color=cols[i], lw=1.6, alpha=0.85,
@@ -191,7 +196,7 @@ def figure(g, path=None):
     ax.legend(fontsize=7)
 
     # --- row 3: the numbers ------------------------------------------------------ #
-    ax = fig.add_subplot(gs[3, :])
+    ax = fig.add_subplot(gs[3, 0:n])
     ax.axis('off')
     hdr = (f"{'point':22s} {'c_ptc':>8s} {'phase err':>10s} {'S_crit':>9s} {'phi*':>7s} "
            f"{'n_sing':>6s} {'twist':>8s} {'T (h)':>7s} {'amp_lc':>8s} {'alive':>7s} "

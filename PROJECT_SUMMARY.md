@@ -678,6 +678,57 @@ RELATIVE SENSITIVITY (the PTC responds more strongly along that direction), not 
 complementarity (the PTC sees something the LC cannot). Both statements hold at once, and they
 are different claims about the same geometry.
 
+### 5.4c WHY the optimizers stop: the spiral / cross-correlation problem
+
+The optimizers are not doing badly. CMA-ES reaches c_ptc = 0.026, a typical phase error of
+**1.24 h** on a 24 h clock, from a start at 6.65 h. What stops it has a specific geometric
+cause, and it is not a defect in the search.
+
+**The pointwise cost is not monotone in singularity displacement.** Two independent
+demonstrations:
+
+| | c_ptc | S_crit | phi* |
+|---|---|---|---|
+| CMA's minimum | 0.0260 | 6.979 | 0.521 |
+| `barrier-c` (t = 0.70 toward the truth) | **0.0616** | **5.458** | **0.604** |
+| truth | 0.0000 | 5.458 | 0.604 |
+
+`barrier-c` has the truth's **exact** singularity location and costs 2.4x more than CMA's
+solution, which does not. And along the segment CMA -> truth, the soft singularity location
+moves steadily CLOSER to the target (distance 0.0320 -> 0.0132 over t = 0 .. 0.25) while c_ptc
+rises monotonically (0.02596 -> 0.03174). Moving the defect onto its target makes the fit worse.
+
+**The mechanism.** Around a singularity the PTC is a spiral. Comparing two such surfaces is a
+cross-correlation of two spirals: alignment oscillates with relative displacement instead of
+improving monotonically, and every half-turn of relative rotation is a local minimum. A denser
+spiral -- more twisted isochrons, or a finer grid -- produces more of them, so the landscape
+gets MORE rugged as resolution improves. The same geometry applies to the strongly twisted
+type-0 region at high dose, which is where the L-BFGS solution is stuck: its residual is a band
+at dose 50-100, not a spot at the singularity.
+
+**A singularity-location feature term does NOT fix this**, which was the natural guess. From
+t = 0.50 onward the detected `(S_crit, phi*)` is pinned at the truth's values for the entire
+rest of the path while the cost swings 0.046 -> 0.062 -> 0.000. Over exactly the stretch where
+guidance is needed, such a term is constant and contributes no gradient. The feature saturates
+long before the surfaces agree.
+
+**What does work is alignment, and the radial target already has it.** `fit/target.profile`
+optimizes the relative registration `(k, psi)` between model and target on every evaluation --
+dose scale and kick direction -- at zero ODE cost, because the target is closed-form. That is
+the cross-correlation fix proper: find the shift that maximizes alignment rather than comparing
+at fixed registration. The self-recovery control does NOT profile alignment (its target is in
+the model's own units), which is part of why its landscape is harsher than the radial fit's.
+
+`fit/target.soft_singularity` provides a smooth, unquantized singularity location for use as a
+staged term where it does have signal. Its temperature adapts to the amplitude range: a fixed
+one fails outright here, because |z| never falls below 0.79 on this grid -- the singularity sits
+BETWEEN cells and the dip is never resolved -- so fixed weights underflow and the centroid
+degenerates to the grid's own log-mean.
+
+**Consequence for the programme.** CMA-ES on the radial target is the right tool and is worth
+running as it stands: the alignment profiling is already in place, and the optimizer demonstrably
+moves a long way toward the objective before the spiral geometry stops it.
+
 ### 5.5 Genes are NOT redundant -- the opposite of the Mirsky prescription
 
 Since dose variation was ruled out (5.1: widening the window 3x moves nothing), the remaining

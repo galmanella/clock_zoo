@@ -214,3 +214,78 @@ if __name__ == '__main__':
     ap.add_argument('--selftest', action='store_true')
     ap.parse_args()
     raise SystemExit(0 if selftest() else 1)
+
+
+# --------------------------------------------------------------------------- #
+#  Soft singularity location -- a FEATURE that does not suffer the spiral problem
+# --------------------------------------------------------------------------- #
+def soft_singularity(z_unit, amp, old, doses, eps=0.25):
+    """Smooth (phi, log-dose) location of the phase singularity, from the amplitude field.
+
+    WHY A FEATURE TERM IS NEEDED AT ALL
+        The pointwise cost is not monotone in singularity displacement. MEASURED: a parameter
+        set whose singularity sits at EXACTLY the truth's (S_crit, phi*) = (5.458, 0.604) scores
+        c_ptc = 0.0616, worse than one sitting at (6.979, 0.521) which scores 0.0260. Moving the
+        defect onto its target made the cost go up.
+
+        The reason is geometric. Around a singularity the PTC is a spiral, so comparing two
+        surfaces is like cross-correlating two spirals: alignment oscillates with displacement
+        rather than improving monotonically, and every half-turn of relative rotation is a local
+        minimum. With a denser spiral -- a more twisted isochron field, or a finer grid -- there
+        are more such minima, and the surface becomes rugged in a way no local method handles.
+        The same argument applies to the strongly twisted type-0 region at high dose, which is
+        where the L-BFGS solution got stuck.
+
+    WHY THIS ESTIMATOR
+        `analysis.winding.detect_grid` gives (S_crit, phi*) but it is a discrete plaquette
+        search: quantized to the dose grid (on a 16-dose grid it returns one of two values) and
+        not differentiable. As a cost term that is a staircase, which trades a rugged landscape
+        for a flat one.
+
+        The amplitude field is the smooth alternative. |z| -> 0 AT the singularity and nowhere
+        else, so a centroid weighted by exp(-(|z|/eps)^2) locates it continuously, without a
+        grid, and differentiably. `old` is circular, so the phi centroid is taken on the unit
+        circle rather than as an arithmetic mean.
+
+    THE TEMPERATURE MUST ADAPT TO THE AMPLITUDE RANGE, NOT BE FIXED.
+        A fixed eps = 0.06 fails outright. MEASURED on the BMAL1/instant grid: |z| never falls
+        below 0.79, because the singularity sits BETWEEN grid cells and the amplitude dip is
+        never resolved. Every weight exp(-(0.79/0.06)^2) then underflows to zero and the
+        centroid degenerates to the grid's own log-mean -- the estimator returned dose 23.690 at
+        every point along a path where the singularity was demonstrably moving.
+
+        So the scale is taken from the surface: the softmin is measured from the MINIMUM
+        amplitude present, with a temperature proportional to the observed spread. That tracks
+        the dip wherever it is and however shallow it is.
+
+    Returns (phi, log_dose, contrast). `contrast` = (max - min)/max of the amplitude field: how
+    pronounced the dip is at all. Near zero means there is no singularity on this grid and the
+    location is meaningless, so a caller must check it rather than trusting the centroid.
+    """
+    a = jnp.asarray(amp)
+    a_min, a_max = jnp.min(a), jnp.max(a)
+    spread = jnp.maximum(a_max - a_min, 1e-12)
+    temp = jnp.maximum(eps * spread, 1e-9)
+    w = jnp.exp(-((a - a_min) / temp) ** 2)
+    w = w / (jnp.sum(w) + 1e-300)
+    zc = jnp.sum(w * jnp.exp(2j * jnp.pi * jnp.asarray(old)[:, None]))
+    phi = (jnp.angle(zc) / (2 * jnp.pi)) % 1.0
+    ld = jnp.sum(w * jnp.log(jnp.asarray(doses))[None, :])
+    return phi, ld, spread / jnp.maximum(a_max, 1e-12)
+
+
+def singularity_cost(amp, amp_target, old, doses, eps=0.25):
+    """Squared distance between two surfaces' soft singularity locations.
+
+    Circular in phi, log-scaled in dose (a factor-of-two error at dose 5 and at dose 100 are
+    the same error). Returns 0 when either surface has no singularity to speak of, so this term
+    stays silent rather than inventing a target when there is nothing to match.
+    """
+    p1, l1, m1 = soft_singularity(None, amp, old, doses, eps)
+    p2, l2, m2 = soft_singularity(None, amp_target, old, doses, eps)
+    dphi = jnp.abs(((p1 - p2 + 0.5) % 1.0) - 0.5)
+    dld = (l1 - l2) / jnp.maximum(jnp.abs(l2), 1e-9)
+    # `contrast` now, not raw mass: a surface with no amplitude dip has no singularity
+    # to locate, and matching one that is not there is worse than staying silent.
+    live = (m1 > 1e-3) & (m2 > 1e-3)
+    return jnp.where(live, dphi ** 2 + dld ** 2, 0.0)

@@ -90,7 +90,7 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     # RecursiveCheckpointAdjoint (a custom_vjp, reverse-mode only). ForwardMode is the right
     # choice here anyway: the residual has ~200 outputs and only 16 inputs, so forward mode costs
     # 16 JVPs against reverse mode's 200 VJPs.
-    gmode = 'fwd' if optimizer == 'lm' else 'rev'
+    gmode = 'fwd' if optimizer in ('lm', 'bh') else 'rev'
     C = make_cost(model, target, doses, FixedTarget(zt), n_phase=n_phase, mode=mode,
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp, ridge=ridge,
                   grad_mode=gmode)
@@ -114,7 +114,9 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     # and the failure from nominal is genuinely about reaching it.
     v_start = v_true.copy() if start == 'truth' else C['v0']
     t0 = time.time()
-    if optimizer == 'nm':
+    if optimizer == 'bh':
+        runs = [search.basin_hopping(C, v_start, bound=bound, seed=seed, label=start)]
+    elif optimizer == 'nm':
         runs = [search.nelder_mead(C, v_start, bound=bound, maxiter=maxiter, label=start)]
     elif optimizer == 'lm':
         runs = [search.levenberg_marquardt(C, v_start, bound=bound, maxiter=maxiter,
@@ -255,7 +257,7 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--starts', type=int, default=1)
     ap.add_argument('--maxiter', type=int, default=300)
-    ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma', 'lm', 'nm'))
+    ap.add_argument('--optimizer', default='lbfgs', choices=('lbfgs', 'cma', 'lm', 'nm', 'bh'))
     ap.add_argument('--maxfev', type=int, default=3000)
     ap.add_argument('--bound', type=float, default=3.0,
                     help='search box, |v| <= bound in log-parameter units. Mirsky et al. report that loose bounds FAILED to find oscillating sets and that they tightened until the search was constrained enough to work; 3.0 is a factor of ~20 each way, which is loose by that standard.')

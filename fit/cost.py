@@ -196,10 +196,27 @@ def make_osc_penalty(model, w=0.2, k=200.0, margin=0.015, n_iter=40, reg=1e-9):
         ystar, res = fixed_point(P, y_guess)
         re = _max_re_eig(jax.jacfwd(rhs)(ystar, P))
         p = w * jax.nn.softplus(k * (margin - re))
-        # No fixed point found -> a large but FINITE 'dead' penalty, never NaN.
-        p = jnp.where(jnp.isfinite(re) & (res < 1e-3), p,
-                      w * jax.nn.softplus(k * margin + 5.0))
-        return p, re, res
+
+        # REJECT THE TRIVIAL FIXED POINT.
+        #
+        # y = 0 is a genuine equilibrium of a model like Almeida -- every CCE term vanishes when
+        # all species are zero -- and `fixed_point` clamps with max(y - 0.7 dy, 0), which makes
+        # it an attractor for the damped Newton from some starting points. Its stability is not
+        # the quantity this barrier is about: the question is whether the PHYSIOLOGICAL fixed
+        # point has crossed the Hopf boundary.
+        #
+        # Unguarded it produced a flickering penalty. MEASURED along one line in parameter
+        # space: osc = 0.0000, 0.0000, 0.0127, 0.0000, 1.0375, 0.0005, 1.0375 -- switching
+        # between ~0 and exactly softplus(0.6) = 1.0375, the value for Re(lambda) = 0, at
+        # scattered parameter values with every PTC cell alive throughout. That is pure
+        # numerical roughness added to an objective an optimizer has to navigate.
+        #
+        # (It was NOT the cause of the barriers between basins: with w_osc = 0 those measure
+        # +0.03623 and +0.57997 against +0.0363 and +0.5800 with it. Two separate problems.)
+        trivial = jnp.linalg.norm(ystar) < 1e-3 * jnp.maximum(jnp.linalg.norm(y_guess), 1e-30)
+        dead = w * jax.nn.softplus(k * margin + 5.0)
+        p = jnp.where(jnp.isfinite(re) & (res < 1e-3) & ~trivial, p, dead)
+        return p, jnp.where(trivial, jnp.nan, re), res
 
     return pen
 
@@ -227,7 +244,31 @@ def scaled_osc_penalty(model, w=0.2, margin_frac=0.02, k_scale=30.0, n_iter=40):
     since C_ptc is flat at its 1.0 ceiling across the dead region and cannot guide anything.
     """
     P0 = model.jax_params()
-    y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
+    # SEED FROM THE LIMIT-CYCLE MEAN, not from a generic initial state.
+    #
+    # The damped Newton in `fixed_point` clamps at zero, and y = 0 is a genuine equilibrium of a
+    # model like Almeida (every CCE term vanishes there). Started from `get_initial_state()` it
+    # frequently lands on that trivial point instead of the physiological one, and the trivial
+    # point is UNSTABLE, so Re(lambda) > 0 reads as "healthy oscillation" and the barrier
+    # silently switches off. At other parameter values Newton fails outright (res >= 1e-3) and
+    # the constant fallback softplus(k*margin+5) = 5.6037 switches on.
+    #
+    # MEASURED before this fix, along one segment: osc took the values 5.6037, 5.6037, ...,
+    # 0.0000, 0.0000, 5.6037, ... with every PTC cell alive and the cycle healthy throughout --
+    # and because both branches are CONSTANT in the parameters, the term contributed exactly
+    # zero gradient (|grad| identical with and without it, to 4 digits, at 0.0 degrees). It was
+    # adding discontinuous offsets to the cost while supplying none of the gradient it exists
+    # for.
+    #
+    # The cycle mean lies inside the basin of the interior fixed point, which is the one whose
+    # stability the Hopf distance is actually about.
+    from engine.orbit import OrbitSolver as _OS
+    _s = _OS(model)
+    try:
+        _y0, _T, _r = jax.jit(_s.solve)(P0, _s.guess(P0))
+        y_seed = jnp.mean(_s.cycle(P0, _y0, _T, 64), axis=0)
+    except Exception:
+        y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
     probe = make_osc_penalty(model, w=1.0, k=1.0, margin=0.0, n_iter=n_iter)
     _p, re_nom, _res = probe(P0, y_seed)
     re_nom = float(np.asarray(re_nom))
@@ -299,15 +340,26 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     nd, npz = len(doses), n_phase
     old = jnp.arange(n_phase) / n_phase
     ref_idx = int(model.var_index(model.reference_variable))
+    # The ORBIT relaxation seed. Distinct from the fixed-point seed below, and deliberately
+    # left alone: `guess(P, y_seed)` feeds Newton's basin for the periodic orbit, every batch-1
+    # result was produced with this value, and repurposing it would silently change orbit
+    # finding everywhere.
     y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
-    osc, re_nom = scaled_osc_penalty(model, w=1.0) if w_osc else (None, float('nan'))
 
     # base limit-cycle amplitude, the reference the floor is expressed against
     Pb = model.jax_params()
     y0b, Tb, _rb = jax.jit(solver.solve)(Pb, solver.guess(Pb))
-    cb = np.asarray(solver.cycle(Pb, y0b, Tb, m_amp))[:, ref_idx]
+    cyc_b = solver.cycle(Pb, y0b, Tb, m_amp)
+    cb = np.asarray(cyc_b)[:, ref_idx]
     amp_base = float((cb.max() - cb.min()) / max(abs(cb.mean()), 1e-12))
     amp_floor = amp_frac * amp_base
+
+    # The FIXED-POINT seed for the Hopf barrier: the limit-cycle mean, which lies inside the
+    # basin of the interior equilibrium. See scaled_osc_penalty for what starting from
+    # `get_initial_state()` did instead (it landed on the trivial y = 0 point, or failed to
+    # converge, and the term contributed constants with zero gradient).
+    y_fp_seed = jnp.mean(cyc_b, axis=0)
+    osc, re_nom = scaled_osc_penalty(model, w=1.0) if w_osc else (None, float('nan'))
 
     def _theta(v):
         return jnp.exp(zbj + Bj @ v)
@@ -336,7 +388,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         # rather than linear so it is gentle near the floor and firm well below it.
         a = jnp.maximum(0.0, 1.0 - amp_lc / amp_floor) ** 2
         if osc is not None:
-            b, re, res = osc(P, y_seed)
+            b, re, res = osc(P, y_fp_seed)
         else:
             b = jnp.array(0.0); re = jnp.array(jnp.nan); res = jnp.array(jnp.nan)
         total = c_ptc + w_osc * b + w_amp * a
@@ -380,7 +432,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
 
         a = jnp.maximum(0.0, 1.0 - amp_lc / amp_floor) ** 2
         if osc is not None:
-            b, _re, _res = osc(P, y_seed)
+            b, _re, _res = osc(P, y_fp_seed)
         else:
             b = jnp.array(0.0)
         extra = [jnp.sqrt(jnp.maximum(w_osc * b, 0.0))[None],

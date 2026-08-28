@@ -358,3 +358,77 @@ def nelder_mead(cost, v0, bound=3.0, maxiter=2000, verbose=True, label='nm'):
                 message=str(res.message), n_grad_clipped=0, n_grad_bad=0, n_grad_dead=0,
                 grad_max=float('nan'),
                 trace_v=np.array(trace['v']), trace_f=np.array(trace['f']), parts=p)
+
+
+def basin_hopping(cost, v0, bound=3.0, n_hops=20, T=0.02, step=1.0, maxiter=60,
+                  local='lm', seed=0, verbose=True, label='bh'):
+    """Basin hopping: local minimization, then a stochastic jump, Metropolis accept/reject.
+
+    WHY THIS, AND WHY ONLY NOW. Every earlier optimizer here stopped away from the truth, and I
+    reported that as failure. It was not. `analysis/minimum.py` established that CMA-ES's
+    stopping point is a GENUINE local minimum -- 0 of 24 random directions descend at radii
+    0.01, 0.05, 0.15 and 0.40 -- and that a BARRIER of +0.0363 separates it from the truth, with
+    the cost climbing monotonically over three quarters of the way there before falling. No
+    local method can cross that, so the correct response is a method built to escape minima
+    rather than a better local one.
+
+    The measured barrier also sets the parameters. It is only ~6% of the range between nominal
+    (0.592) and the floor (0.0004), and the truth sits |dv| = 2.53 away, so:
+
+        T     0.02   Metropolis temperature, of order the barrier height -- large enough to
+                     accept a crossing, small enough not to random-walk.
+        step  1.0    jump size, a substantial fraction of the distance to a distinct basin.
+                     Too small and every hop lands in the same basin.
+
+    Requires a local minimizer at each hop; 'lm' (Levenberg-Marquardt on the residual vector)
+    is the default because it rebuilds J^T J each step and so is unharmed by the gradient spikes
+    this landscape produces, but 'lbfgs' and 'nm' also work.
+    """
+    rng = np.random.default_rng(seed)
+    _local = {'lm': levenberg_marquardt, 'lbfgs': lbfgs, 'nm': nelder_mead}[local]
+    v = np.clip(np.asarray(v0, float), -bound, bound)
+
+    r = _local(cost, v, bound=bound, maxiter=maxiter, verbose=False, label=label)
+    v_cur, f_cur = r['v'], r['f']
+    v_best, f_best, best_r = v_cur.copy(), f_cur, r
+    hops = [dict(hop=0, f=f_cur, f_best=f_best, accepted=True, v=v_cur.copy())]
+    n_acc, nev = 1, r.get('nev', 0)
+    t0 = time.time()
+    if verbose:
+        print(f"    {label}: start f={f_cur:.6f}", flush=True)
+
+    for k in range(1, n_hops + 1):
+        v_try = np.clip(v_cur + rng.normal(0, step, len(v)), -bound, bound)
+        rk = _local(cost, v_try, bound=bound, maxiter=maxiter, verbose=False, label=label)
+        nev += rk.get('nev', 0)
+        # Metropolis: always accept downhill, accept uphill with exp(-df/T) so a barrier can be
+        # crossed but the walk still concentrates on good regions.
+        df = rk['f'] - f_cur
+        accept = df < 0 or rng.random() < np.exp(-df / max(T, 1e-12))
+        if accept:
+            v_cur, f_cur, n_acc = rk['v'], rk['f'], n_acc + 1
+        if rk['f'] < f_best:
+            v_best, f_best, best_r = rk['v'].copy(), rk['f'], rk
+        hops.append(dict(hop=k, f=rk['f'], f_best=f_best, accepted=bool(accept),
+                         v=rk['v'].copy()))
+        if verbose:
+            mark = 'accept' if accept else '  reject'
+            print(f"    {label}: hop {k:3d}  f={rk['f']:.6f}  {mark}   best={f_best:.6f}",
+                  flush=True)
+
+    dt = time.time() - t0
+    p = cost['parts'](v_best)
+    if verbose:
+        print(f"    {label:14s} best {f_best:.6f} over {n_hops} hops "
+              f"({n_acc}/{n_hops + 1} accepted, {nev} evals, {dt:.0f}s)  "
+              f"c_ptc={p['c_ptc']:.4f}", flush=True)
+    return dict(v=v_best, f=f_best, f0=hops[0]['f'], nit=n_hops, nev=nev, seconds=dt,
+                success=True, message=f'basin-hopping, {n_acc} accepted',
+                n_grad_clipped=best_r.get('n_grad_clipped', 0),
+                n_grad_bad=best_r.get('n_grad_bad', 0), n_grad_dead=best_r.get('n_grad_dead', 0),
+                grad_max=best_r.get('grad_max', float('nan')),
+                hops_f=np.array([h['f'] for h in hops]),
+                hops_v=np.array([h['v'] for h in hops]),
+                hops_accepted=np.array([h['accepted'] for h in hops]),
+                trace_v=np.array([h['v'] for h in hops]),
+                trace_f=np.array([h['f'] for h in hops]), parts=p)

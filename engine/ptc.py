@@ -93,7 +93,7 @@ def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=1024, verbose=Tru
 
 def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pulse=8.0,
              settle_p=1, skip_p=None, ev_p=3, readout='phase', eps=1e-6, newton_iters=8,
-             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='rk4'):
+             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='rk4', grad_mode='rev'):
     # skip_p=None means "derive it from the Floquet multiplier" (see recommended_skip). Pass an
     # integer to override. ev_p=3, not 2: it must be >= 2 for exactness (below), and 3 leaves
     # margin. MEASURED on Almeida at dose 2.0 against the adaptive reference engine: skip_p=3
@@ -157,7 +157,7 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
     ti = resolve_target(model, target)
     check_backend(backend)
     solver = OrbitSolver(model, n_steps=n_steps, newton_iters=newton_iters)
-    flow = make_flow(model, ti, backend=backend, track_min=True)
+    flow = make_flow(model, ti, backend=backend, track_min=True, grad_mode=grad_mode)
     rhs = model.jax_rhs
     ref_idx = solver.ref_idx
     gp = float(gp or getattr(model, 'approx_period', None) or 24.0)
@@ -205,7 +205,8 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
         c = jnp.sum(ys[:, ref_idx] * wgt * jnp.exp(-1j * w * (li * hT)))
         return c / jnp.sum(wgt)
 
-    _sampler = make_window_sampler(model, backend) if backend != 'rk4' else None
+    _sampler = (make_window_sampler(model, backend, grad_mode)
+                if backend != 'rk4' else None)
     _four_vec = _four_vec_rk4 if backend == 'rk4' else _four_vec_dfx
 
     def f(P, x0, old_phases, doses):

@@ -37,10 +37,24 @@ import numpy as np
 #: line search and CMA rank the whole population by chance.
 BIG = 1e6
 
+#: Gradient norm above which the value is the basin-boundary pathology rather than a slope.
+#:
+#: The cost is bounded in [0, 1] and the search box is |v| <= ~3, so an honest gradient cannot
+#: exceed O(10). MEASURED on Almeida/BMAL1/instant: legitimate gradients run 0.2-2.4, while a
+#: cell whose trajectory passes near the coexisting equilibrium's basin boundary produces 1e73
+#: with a perfectly healthy forward value (see fit/doses.py). `fit/doses.py` keeps those doses
+#: out of the fit window, but a DISPLACED parameter set can put a boundary crossing at a dose
+#: that is ordinarily safe, so the guard has to be here too.
+#:
+#: Rescaled, not zeroed: the direction is still meaningful even when the magnitude is not, and
+#: zeroing would tell L-BFGS it had converged. Every trigger is COUNTED and reported, because a
+#: run where this fires constantly is a run whose result should not be trusted.
+GRAD_MAX = 1e3
+
 
 def _harden(cost):
     """(f, g) wrappers that never return NaN/inf, and that record every evaluation."""
-    trace = {'v': [], 'f': []}
+    trace = {'v': [], 'f': [], 'gclip': 0, 'gbad': 0, 'gmax': 0.0}
 
     def f(v):
         try:
@@ -58,10 +72,25 @@ def _harden(cost):
         except Exception:
             gr = None
         if gr is None or not np.all(np.isfinite(gr)):
+            trace['gbad'] += 1
             return np.zeros(len(v))
-        return np.asarray(gr, float)
+        gr = np.asarray(gr, float)
+        nrm = float(np.linalg.norm(gr))
+        trace['gmax'] = max(trace['gmax'], nrm)
+        if nrm > GRAD_MAX:
+            trace['gclip'] += 1
+            gr = gr * (GRAD_MAX / nrm)
+        return gr
 
     return f, g, trace
+
+
+def _grad_health(trace, n_eval):
+    """One line on how trustworthy the gradients were, or '' if they were clean."""
+    if not (trace['gclip'] or trace['gbad']):
+        return ''
+    return (f"  [grad] {trace['gclip']} clipped (>{GRAD_MAX:g}), {trace['gbad']} non-finite, "
+            f"max |g| = {trace['gmax']:.3e} over {n_eval} evals")
 
 
 def lbfgs(cost, v0, bound=3.0, maxiter=300, verbose=True, label=''):
@@ -79,9 +108,14 @@ def lbfgs(cost, v0, bound=3.0, maxiter=300, verbose=True, label=''):
         print(f"    {label:14s} f {trace['f'][0]:.4f} -> {res.fun:.4f} in {res.nit} its "
               f"({len(trace['f'])} evals, {dt:.0f}s)  c_ptc={p['c_ptc']:.4f} "
               f"amp_lc={p['amp_lc']:.2f} alive={p['alive_frac']:.2f}", flush=True)
+        h = _grad_health(trace, len(trace['f']))
+        if h:
+            print(h, flush=True)
     return dict(v=np.asarray(res.x), f=float(res.fun), f0=float(trace['f'][0]),
                 nit=int(res.nit), nev=len(trace['f']), seconds=dt,
                 success=bool(res.success), message=str(res.message),
+                n_grad_clipped=trace['gclip'], n_grad_bad=trace['gbad'],
+                grad_max=trace['gmax'],
                 trace_v=np.array(trace['v']), trace_f=np.array(trace['f']), parts=p)
 
 

@@ -11,20 +11,37 @@ WHY THEY DIFFER
     about 18x S_crit = 24.97.
 
     A fit cannot use the top of that range. MEASURED (Almeida/BMAL1/instant, adaptive Tsit5
-    backend, gradient of c_ptc at nominal):
+    backend, n_phase=8, gradient of c_ptc at nominal, S_crit = 24.97):
 
-        doses 10-21    (0.4-0.9 x S_crit)   |grad| = 6.9e-01
-        doses 12-21    (0.5-0.9 x S_crit)   |grad| = 7.7e-01
-        doses 75-129   (3-5 x S_crit)       |grad| = 2.4e+00
-        full grid to 454                    |grad| = 2.0e+75
+        dose 7.2 alone          (0.3 x S)     |grad| = 2.1e-01
+        doses 7.2, 14.8, 36.5   (0.3-1.5 x S) |grad| = 4.8e-01
+        doses 10-21             (0.4-0.9 x S) |grad| = 6.9e-01
+        doses 75-129            (3-5 x S)     |grad| = 2.4e+00
+        dose 154 alone          (6 x S)       |grad| = 2.9e-01
+        all of 7.2 ... 454.4    (to 18 x S)   |grad| = 1.2e+73    <-- and the value is FINE
 
-    The cost VALUE stays bounded in [0,1] throughout -- (1-cos)/2 cannot do otherwise -- so
-    nothing in the objective looks wrong. Only the derivative explodes, which is the signature
-    of a surface that is genuinely non-smooth in PARAMETERS at those doses: an instant kick of
-    +454 into a species whose limit cycle spans ~4 sends the trajectory far off the attractor,
-    and where it lands is exquisitely sensitive. That is a real property of the model, not a
-    solver artifact -- note it survives the switch to an adaptive integrator, which is what
-    fixed the analogous RK4 problem.
+    Every sub-range is well behaved, so the blow-up comes from one or two cells at the very top
+    (184.6 and/or 454.4 -- the only doses in the failing set not individually cleared).
+
+    THREE EXPLANATIONS RULED OUT BY MEASUREMENT, so this note does not repeat a guess:
+      * not the oscillation or amplitude terms -- the Hopf barrier's own gradient is 1.4e-03;
+      * not amplitude collapse near the singularity, and not a runaway -- across the whole
+        failing grid the relative amplitude is between 0.999 and 1.000475 and every one of the
+        48 cells is alive, i.e. every trajectory returns cleanly to the limit cycle;
+      * not reverse-mode instability over the long transient skip -- shortening skip_p from 8
+        to 1 leaves the gradient at 1.2e+73, unchanged.
+
+    What is left is that the map really is non-smooth in PARAMETERS at those doses. Almeida has
+    a stable equilibrium coexisting with its limit cycle (see analysis/lc_sens: continuation had
+    to be seeded through the relaxation for exactly this reason), and an instant kick of +454
+    into a species whose cycle spans ~4 lands the state near that basin boundary. The
+    trajectory still returns -- hence a perfectly healthy amplitude -- but WHERE it returns in
+    phase depends on which side of the boundary it passed, so the derivative is enormous while
+    the value is bounded and correct. The cost cannot see this: (1-cos)/2 is bounded in [0,1]
+    by construction, so nothing in the objective looks wrong.
+
+    That is a property of the model, not of the solver -- it survives the switch to an adaptive
+    integrator, which is what fixed the analogous fixed-step RK4 problem (REPO_MAP hazard 1).
 
     So the fit window is capped at `max_factor * S_crit`. The default 6.0 keeps the entire
     informative structure -- the type-1 side, the transition, the singularity, and a stretch of

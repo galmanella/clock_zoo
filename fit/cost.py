@@ -199,7 +199,7 @@ class RadialTarget:
 # --------------------------------------------------------------------------- #
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.5, m_amp=64,
-              param_names=None, eps=1e-12):
+              param_names=None, eps=1e-12, grad_mode='rev'):
     """Build the objective.
 
     Returns a dict with
@@ -215,7 +215,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     Bj, zbj = jnp.asarray(B), jnp.asarray(z_base)
 
     f, solver = make_ptc(model, target_state, mode=mode, readout='raw', skip_p=skip_p,
-                         dt=dt, track_min=True, backend=backend)
+                         dt=dt, track_min=True, backend=backend, grad_mode=grad_mode)
     guess = make_guess_fn(model)
     ph, dz = grid_points(n_phase, doses)
     nd, npz = len(doses), n_phase
@@ -267,7 +267,10 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
                     fp_res=res, **aux)
 
     _total = jax.jit(lambda v: _parts(v)['total'])
-    _grad = jax.jit(jax.grad(lambda v: _parts(v)['total']))
+    # jacfwd of a scalar returns the gradient. Forward mode integrates the variational equation
+    # ALONGSIDE the state, so it never runs the dynamics backward -- see engine/flow.GRAD_MODES.
+    _grad = jax.jit((jax.jacfwd if grad_mode == 'fwd' else jax.grad)(
+        lambda v: _parts(v)['total']))
     _parts_j = jax.jit(_parts)
 
     def parts(v):
@@ -279,6 +282,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         return np.asarray(zu), np.asarray(alive), np.asarray(amp)
 
     return dict(names=names, z_base=z_base, B=B, gauge=g, n_free=n_free,
+                grad_mode=grad_mode, backend=backend,
                 v0=np.zeros(n_free), doses=np.asarray(doses), old=np.asarray(old),
                 amp_base=amp_base, amp_floor=amp_floor, target=tgt.name,
                 theta=lambda v: np.asarray(_theta(jnp.asarray(v, jnp.float64))),
@@ -291,17 +295,22 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
 #  Self-tests
 # --------------------------------------------------------------------------- #
 def _build(name='almeida', target='BMAL1', n_phase=12, n_dose=6, backend='diffrax',
-           dt=0.02, w_osc=0.2):
+           dt=0.02, w_osc=0.2, max_factor=6.0):
+    """The configuration a FIT actually uses -- so the selftest and gradcheck test that.
+
+    Deliberately `fit.doses.fit_dose_grid` and not the wide characterization grid. The two
+    differ by design (see fit/doses.py): the characterization grid runs to ~18x S_crit because
+    the twist lives above S_crit, while a fit is capped at `max_factor * S_crit`. Checking the
+    gradient on a grid the fit will never use would answer the wrong question in both
+    directions -- it could fail on doses that are never fitted, or pass on a grid that omits
+    ones that are."""
     from models import get_model
-    from analysis.ptc_sens import load_grid
+    from fit.doses import fit_dose_grid
     model = get_model(name)
-    doses, gdt = load_grid(name, target, 'instant')
-    if doses is None:
-        doses = np.geomspace(0.5, 60.0, n_dose)
-    else:
-        doses = np.asarray(doses)[np.linspace(0, len(doses) - 1, n_dose).astype(int)]
+    doses, s_crit = fit_dose_grid(name, target, 'instant', max_factor, n_dose)
     C = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode='instant',
                   backend=backend, dt=dt, w_osc=w_osc)
+    C['s_crit'] = s_crit
     return model, C
 
 

@@ -57,6 +57,28 @@ BACKENDS = ('rk4', 'diffrax')
 RTOL, ATOL, DT0, MAX_STEPS = 1e-7, 1e-10, 0.05, 50_000
 
 
+#: How the adaptive solves are differentiated.
+#:
+#:   'rev'  diffrax's RecursiveCheckpointAdjoint -- reverse-mode. One VJP gives the whole
+#:          gradient regardless of dimension, which is why it is the default everywhere.
+#:   'fwd'  diffrax's ForwardMode -- integrates the variational equation FORWARD in time,
+#:          alongside the state. Costs one solve per input direction, so it only makes sense in
+#:          low dimension (the gauge quotient here is 16).
+#:
+#: The distinction is not merely about cost. The reverse-mode adjoint runs BACKWARD in time,
+#: which turns the system's contracting directions into expanding ones -- and a limit cycle is
+#: contracting by definition (Almeida's leading Floquet multiplier is 0.546 per period, and the
+#: transient skip is ~8 periods). Forward mode integrates in the stable direction and has no
+#: such failure mode. Use `python -m fit.cost --gradcheck` to decide, per model; do not assume.
+GRAD_MODES = ('rev', 'fwd')
+
+
+def _adjoint(grad_mode):
+    if grad_mode not in GRAD_MODES:
+        raise ValueError(f"grad_mode must be one of {GRAD_MODES}, got {grad_mode!r}")
+    return dfx.ForwardMode() if grad_mode == 'fwd' else dfx.RecursiveCheckpointAdjoint()
+
+
 def check_backend(backend):
     if backend not in BACKENDS:
         raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
@@ -79,7 +101,7 @@ def _ok(result):
 FAILED_MIN = -jnp.inf
 
 
-def make_flow(model, target_idx, backend='rk4', track_min=False):
+def make_flow(model, target_idx, backend='rk4', track_min=False, grad_mode='rev'):
     """`flow(y0, n_steps, dt, P, drive, ymin0=None)` -- the same signature the RK4 path exposes,
     so engine/ptc.py's call sites are backend-independent.
 
@@ -104,6 +126,7 @@ def make_flow(model, target_idx, backend='rk4', track_min=False):
         return rhs(y, P) + drive * e
 
     term = dfx.ODETerm(field)
+    adj = _adjoint(grad_mode)
 
     def flow(y0, n_steps, dt, P, drive, ymin0=None):
         # The step size is T/n_pp with T the SOLVED period, so under an optimizer it can arrive
@@ -122,7 +145,8 @@ def make_flow(model, target_idx, backend='rk4', track_min=False):
         sol = dfx.diffeqsolve(
             term, dfx.Tsit5(), 0.0, t1s, DT0, y0, args=(P, drive),
             stepsize_controller=dfx.PIDController(rtol=RTOL, atol=ATOL),
-            saveat=dfx.SaveAt(ts=ts), max_steps=MAX_STEPS, throw=False)
+            saveat=dfx.SaveAt(ts=ts), max_steps=MAX_STEPS, throw=False,
+            adjoint=adj)
         ys = sol.ys
         good = _ok(sol.result) & ~bad_span
         mn = jnp.where(good, jnp.min(ys), FAILED_MIN)
@@ -134,7 +158,7 @@ def make_flow(model, target_idx, backend='rk4', track_min=False):
     return flow
 
 
-def make_window_sampler(model, backend='rk4'):
+def make_window_sampler(model, backend='rk4', grad_mode='rev'):
     """`sample(y0, n, dt, P) -> states[n, n_states]` on the uniform grid `0, dt, ..., (n-1)*dt`.
 
     This is the readout window engine/ptc.py Hann-windows into a Fourier fundamental. The RK4
@@ -164,6 +188,7 @@ def make_window_sampler(model, backend='rk4'):
         return rhs(y, args)
 
     term = dfx.ODETerm(field)
+    adj = _adjoint(grad_mode)
 
     def sample(y0, n, dt, P):
         # Same non-positive/NaN span guard as `make_flow` -- an optimizer reaches parameter sets
@@ -175,7 +200,8 @@ def make_window_sampler(model, backend='rk4'):
         sol = dfx.diffeqsolve(
             term, dfx.Tsit5(), 0.0, ts[-1], DT0, y0, args=P,
             stepsize_controller=dfx.PIDController(rtol=RTOL, atol=ATOL),
-            saveat=dfx.SaveAt(ts=ts), max_steps=MAX_STEPS, throw=False)
+            saveat=dfx.SaveAt(ts=ts), max_steps=MAX_STEPS, throw=False,
+            adjoint=adj)
         return jnp.where(_ok(sol.result) & ~bad_span, sol.ys, jnp.nan)
 
     return sample

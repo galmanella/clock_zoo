@@ -630,6 +630,41 @@ within tens of percent even where it cannot be pinned.
 out-of-class target through a map that cannot recover an in-class one would produce a number
 with no interpretation.
 
+### 5.5 Genes are NOT redundant -- the opposite of the Mirsky prescription
+
+Since dose variation was ruled out (5.1: widening the window 3x moves nothing), the remaining
+lever is the probe. Rank of stacked per-gene surface jacobians, each block scale-normalized so
+no probe dominates, **quality-gated surfaces only**:
+
+| probes | rank @1e-2 | rank @1e-3 | condition |
+|---|---|---|---|
+| BMAL1 alone | 7/16 | 14/16 | 2.02e3 |
+| any single (BMAL1, PER, PER_CRY, DBP) | 7-8/16 | 13-15/16 | 2.0e3 - 9.8e3 |
+| any two | 9-11/16 | 15-16/16 | 8.2e2 - 1.9e3 |
+| any three | 11-13/16 | 16/16 | 5.2e2 - 8.3e2 |
+| **all four** | **13/16** | **16/16** | **5.08e2** |
+
+Four probes nearly double the determined rank and improve conditioning 4x. Three directions
+remain poorly determined even then.
+
+**This inverts the Mirsky design rule.** There the finding was that single-gene PTCs are highly
+redundant, and the advice was *vary dose, not gene*. In Almeida dose does nothing and gene is
+the informative axis. **Optimal PTC experimental design is model-dependent and does not
+transfer** -- which is a result the complexity ladder was built to be able to state.
+
+Two details worth keeping:
+
+- **BMAL1 is the WEAKEST probe** (7/16) despite having the cleanest surface in the project
+  (`plaq 1 -> 1`). `PER+PER_CRY+DBP` reaches 13/16 without it. A clean surface is not an
+  informative one, and the two were being conflated when BMAL1 was chosen as the fit probe.
+- **The quality gate overturned the headline number.** The first pass of this table included
+  E4BP4 and reported the best single probe at 10/16 (condition 609) and four probes at 14/16
+  (condition 290). E4BP4 then FAILED the gate (winding set {-1, 0, +1}), as did REV. A jacobian
+  of a phase-scrambled surface is a jacobian of noise, and **noise inflates numerical rank** --
+  so the broken probe produced the most attractive number, exactly as CRY's broken surface had
+  produced the largest S_crit/twist/rho in 3.7. Same trap, opposite sign, caught only because
+  the gate now runs before anything is quoted.
+
 ### 5.5 Status
 
 `fit/` is built and self-tested: `target.py`, `cost.py`, `search.py` (L-BFGS, multistart,

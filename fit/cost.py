@@ -266,12 +266,17 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
                     alive_frac=jnp.mean(alive.astype(jnp.float64)), re_lambda=re,
                     fp_res=res, **aux)
 
-    _total = jax.jit(lambda v: _parts(v)['total'])
+    # TWO compiles, not three. `total` is just a field of `parts`, and this graph is expensive
+    # to trace -- compiling a separate scalar version of it cost about a third of the startup
+    # time for nothing. The dict lookup is free next to a 160-cell ODE solve.
     # jacfwd of a scalar returns the gradient. Forward mode integrates the variational equation
     # ALONGSIDE the state, so it never runs the dynamics backward -- see engine/flow.GRAD_MODES.
     _grad = jax.jit((jax.jacfwd if grad_mode == 'fwd' else jax.grad)(
         lambda v: _parts(v)['total']))
     _parts_j = jax.jit(_parts)
+
+    def _total(v):
+        return _parts_j(v)['total']
 
     def parts(v):
         d = _parts_j(jnp.asarray(v, jnp.float64))

@@ -93,7 +93,7 @@ def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=1024, verbose=Tru
 
 def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pulse=8.0,
              settle_p=1, skip_p=None, ev_p=3, readout='phase', eps=1e-6, newton_iters=8,
-             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='rk4', grad_mode='rev'):
+             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='rk4', grad_mode='rev', ev_sp=64):
     # skip_p=None means "derive it from the Floquet multiplier" (see recommended_skip). Pass an
     # integer to override. ev_p=3, not 2: it must be >= 2 for exactness (below), and 3 leaves
     # margin. MEASURED on Almeida at dose 2.0 against the adaptive reference engine: skip_p=3
@@ -167,6 +167,9 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
     n_settle = int(settle_p * n_pp)
     n_skip = int(skip_p * n_pp)
     n_ev = int(ev_p * n_pp)
+    # Readout samples for the ADAPTIVE path only (see _four_vec_dfx). The fixed-step
+    # path samples once per step by construction and ignores this.
+    m_ev = int(ev_p * ev_sp)
 
     def _four_vec_rk4(state, P, w, hT):
         """Hann-windowed fundamental Fourier coefficient of the reference oscillation,
@@ -191,18 +194,31 @@ def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pu
         return c / sw
 
     def _four_vec_dfx(state, P, w, hT):
-        """The same quantity on the adaptive backend, with the IDENTICAL Hann formula and the
-        identical sample grid -- so an A/B difference is attributable to the integrator alone.
+        """The same quantity on the adaptive backend, with the same Hann formula.
 
-        The skip is integrated as its own solve and discarded rather than being fused into the
-        sampled window, so only n_ev states are materialized instead of n_skip + n_ev. For
-        Almeida that is ~3.7k states per cell rather than ~19k, which is the difference between
-        a vmapped gradient fit fitting in memory and not."""
+        Two differences from the RK4 path, both because an adaptive solver DECOUPLES
+        integration accuracy from sampling density:
+
+        1. The skip is its own solve and is discarded, rather than fused into the sampled
+           window, so only the readout window is materialized.
+        2. The window is sampled at `m_ev` points rather than one per integrator step. The
+           fixed-step path has no choice -- its samples ARE its steps -- but here the step size
+           is chosen by the PID controller and the sample grid is free. A Hann-windowed
+           FUNDAMENTAL needs only enough samples to keep the waveform's harmonics away from
+           DC, and 64 per period is generous for that; matching the RK4 grid instead meant 3723
+           samples per cell for Almeida, and the resulting graph dominated both compile and run
+           time under vmap.
+
+        The window still spans EXACTLY `ev_p` true periods, which is the property that makes
+        the Hann-windowed fundamental exact (see the note in make_ptc). Note `w * li * hE =
+        2*pi * li * ev_p / m_ev`, so the period cancels and the kernel is independent of T --
+        exactly as in the fused version."""
         y = flow(state, n_skip, hT, P, 0.0)[0]
-        ys = _sampler(y, n_ev, hT, P)
-        li = jnp.arange(n_ev)
-        wgt = 0.5 - 0.5 * jnp.cos(2 * jnp.pi * li / (n_ev - 1))
-        c = jnp.sum(ys[:, ref_idx] * wgt * jnp.exp(-1j * w * (li * hT)))
+        hE = (n_ev * hT) / m_ev                    # same total span, coarser sampling
+        ys = _sampler(y, m_ev, hE, P)
+        li = jnp.arange(m_ev)
+        wgt = 0.5 - 0.5 * jnp.cos(2 * jnp.pi * li / (m_ev - 1))
+        c = jnp.sum(ys[:, ref_idx] * wgt * jnp.exp(-1j * w * (li * hE)))
         return c / jnp.sum(wgt)
 
     _sampler = (make_window_sampler(model, backend, grad_mode)

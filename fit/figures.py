@@ -42,26 +42,6 @@ def _circd(a, b):
     return np.minimum(d, 1 - d)
 
 
-def _cycles(model_name, names, theta_base, theta_fit, m=256):
-    """Re-solve both limit cycles from the saved parameter vectors.
-
-    radial.py does not store the cycles, so they are recomputed here from `theta_*`, which it
-    does store. Returns (t, y, T) per point in REAL TIME, since the period difference is the
-    whole diagnostic."""
-    from models import get_model
-    from engine.orbit import OrbitSolver
-    import jax
-    model = get_model(model_name)
-    solver = OrbitSolver(model)
-    ref = int(model.var_index(model.reference_variable))
-    out = []
-    for th in (theta_base, theta_fit):
-        P = model.jax_apply(np.asarray(th), list(names))
-        y0, T, _r = jax.jit(solver.solve)(P, solver.guess(P))
-        cyc = np.asarray(solver.cycle(P, y0, T, m))[:, ref]
-        T = float(T)
-        out.append((np.linspace(0, T, m), cyc, T))
-    return out
 
 
 def _backfill(z, old, doses, names):

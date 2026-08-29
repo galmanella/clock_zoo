@@ -61,7 +61,10 @@ def run_schedule(build_cost, v0, schedule=DEFAULT_SCHEDULE, optimizer='cma', bou
         if verbose:
             print(f"\n  [stage {si}] {nph} phases x {nd} doses ({nph * nd} cells)  "
                   f"start f={f_start:.6f}", flush=True)
-        if optimizer == 'cma':
+        if optimizer == 'bobyqa':
+            r = search.bobyqa(C, v, bound=bound, maxfev=maxfev, seek_global=True,
+                              verbose=verbose)
+        elif optimizer == 'cma':
             # anneal, not ipop: the point of the coarse stage is a smooth envelope, and
             # restarting from random points would throw away the warm start
             r = search.cma(C, v0=v, bound=bound, maxfev=maxfev, seed=seed + si,

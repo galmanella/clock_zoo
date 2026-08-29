@@ -114,7 +114,10 @@ def run(model_name='almeida', target='BMAL1', mode='instant', eps=0.3, n_phase=1
     # and the failure from nominal is genuinely about reaching it.
     v_start = v_true.copy() if start == 'truth' else C['v0']
     t0 = time.time()
-    if optimizer == 'bh':
+    if optimizer == 'bobyqa':
+        # benchmark winner: 0.0104 against cma-anneal 0.0397 at a matched 1500-eval budget
+        runs = [search.bobyqa(C, v_start, bound=bound, maxfev=maxfev, seek_global=True)]
+    elif optimizer == 'bh':
         runs = [search.basin_hopping(C, v_start, bound=bound, seed=seed, label=start)]
     elif optimizer == 'lm':
         runs = [search.levenberg_marquardt(C, v_start, bound=bound, maxiter=maxiter,

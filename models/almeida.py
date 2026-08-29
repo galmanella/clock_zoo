@@ -81,9 +81,34 @@ _IC = {
 class AlmeidaModel(JaxDictParams, ClockModel):
     """Almeida et al. 2020 transcription-factor clock (8 ODEs, 18 parameters)."""
 
-    #: BMAL1: the largest relative amplitude (4.34) and cleanly unimodal, which is what the
-    #: orbit solver's phase condition f(y0)[ref] = 0 needs.
-    reference_variable = 'BMAL1'
+    #: PER, not BMAL1. BMAL1 was chosen on its BASE-POINT numbers -- largest relative
+    #: amplitude (4.26), cleanly unimodal -- but the phase species has to survive the parameter
+    #: sets an OPTIMIZER visits, not just the published one. At the RAD01 radialization optimum
+    #: BMAL1's baseline collapses to 0.0024 (it sits at zero and spikes), the section stops
+    #: being unimodal, and the orbit BVP stops converging: residual 3.58, and a period that
+    #: comes back as 0.159 h or 43.1 h depending only on the initial guess. The DYNAMICS there
+    #: are fine -- every species oscillates, nothing goes negative, trajectories stay bounded
+    #: out to 400 h -- so this was purely a bad choice of observable.
+    #:
+    #: PER is the only species measured stable on both counts (rel amp 1.76 -> 1.98, unimodal
+    #: at both points, baseline 3.9 -> 8.2) and is a necessary component for rhythmicity in
+    #: this model. REV loses 3x of its relative amplitude at the same point (0.96 -> 0.33),
+    #: so it is available via `readout_variable` for matching REV-based experiments, but it is
+    #: not the safe default.
+    reference_variable = 'PER'
+
+    #: REV (Reverb-alpha) carries the PHASE, because that is what the experiments measure and
+    #: because it is numerically safe here: over a 100 h transient at the RAD01 optimum its
+    #: minimum is 67.8, while BMAL1 reaches 1.2e-27, ROR 4.1e-28 and E4BP4 3.8e-17 against a
+    #: REV maximum of 1.2e3. Thirty decades inside one state vector is what makes that region
+    #: stiff enough to exhaust the integrator and to stall the orbit BVP's Newton solve.
+    #:
+    #: Asymptotic phase is a property of the STATE, not of the species you watch, so with a
+    #: long enough skip every observable reports the same PTC up to a constant offset -- and
+    #: that offset is calibrated away against an unperturbed cell. Choosing REV therefore costs
+    #: nothing in principle and buys agreement with the measurement.
+    readout_variable = 'REV'
+
     approx_period = 24.83
 
     def __init__(self):

@@ -64,6 +64,75 @@ def _cycles(model_name, names, theta_base, theta_fit, m=256):
     return out
 
 
+def _backfill(z, old, doses, names):
+    """Recompute panels that older runs did not store, from what they DID store.
+
+    A figure should never require re-fitting. Runs made before radial.py saved the target
+    surface and the multi-species cycles still hold `theta_base` / `theta_fit`, which is enough
+    to reconstruct both: re-solve the orbit for the cycles, and re-profile (k, psi) against the
+    stored PTC for the target. Costs a couple of orbit solves, not a fit.
+    """
+    import jax
+    import jax.numpy as jnp
+    from models import get_model
+    from engine.orbit import OrbitSolver, make_guess_fn
+    from fit.target import profile as _profile, radial_z as _radial_z
+
+    need_t = 'ptc_target_fit' not in z
+    need_c = 'cyc_fit' not in z
+    need_r = 'fit__orbit_res' not in z
+    if not (need_t or need_c or need_r):
+        return
+    model = get_model(str(z['model']))
+    solver = OrbitSolver(model)
+    guess = make_guess_fn(model)
+    y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
+    obs = list(model.observable_states())
+    oidx = [int(model.var_index(sn)) for sn in obs]
+    z['obs'] = np.array(obs)
+
+    for pref, thkey, ptckey in (('base', 'theta_base', 'ptc_base'),
+                                ('fit', 'theta_fit', 'ptc_fit')):
+        P = model.jax_apply(np.asarray(z[thkey]), names)
+
+        # SOLVE THE ORBIT THE WAY THE COST DID, AND KEEP THE RESIDUAL.
+        #
+        # This line used to read `solver.solve(P, solver.guess(P))` and throw the residual away
+        # as `_r`. Both halves were wrong, and together they produced a figure that showed an
+        # orbit the fit had never evaluated:
+        #
+        #   * `solver.guess` is the numpy peak-hunt; `fit.cost._surface` uses `make_guess_fn`,
+        #     the jittable relaxation. On a pathological parameter set the two land in
+        #     DIFFERENT places. On the RAD01 optimum, `solver.guess` converged to a fixed point
+        #     (every species constant, all negative) while `make_guess_fn` did not converge at
+        #     all. Diagnosing the fitted PTC against the first of those was diagnosing the
+        #     wrong object.
+        #
+        #   * discarding the residual hid which case this was. `solve` returns the BVP residual
+        #     precisely so a caller can ask whether the thing it just got back IS a periodic
+        #     orbit. At the RAD01 optimum it is 3.87, not ~1e-13: there is no cycle there, and
+        #     `cycle()` just integrates a transient forward for T hours. That transient wanders,
+        #     which is why the "fitted PTC" varied with old phase and looked plausible while
+        #     the underlying state was garbage.
+        #
+        # The residual is now stored and PLOTTED, so a non-orbit can never again be presented
+        # as a limit cycle.
+        y0, T, res = jax.jit(solver.solve)(P, guess(P, y_seed))
+        z[f'{pref}__orbit_res'] = float(res)
+        if need_c:
+            z[f'cyc_{pref}'] = np.asarray(solver.cycle(P, y0, T, 256))[:, oidx]
+            z[f'{pref}__period_solved'] = float(T)
+        if need_t:
+            ptc = np.asarray(z[ptckey])
+            alive = np.isfinite(ptc)
+            zu = np.exp(2j * np.pi * np.nan_to_num(ptc))
+            k, psi, _c = _profile(jnp.asarray(zu), jnp.asarray(alive), old, doses)
+            z[f'ptc_target_{pref}'] = (np.angle(np.asarray(_radial_z(old, doses, k, psi)))
+                                       / (2 * np.pi)) % 1.0
+            z[f'k_target_{pref}'] = float(k)
+            z[f'psi_target_{pref}'] = float(psi)
+
+
 def fig_radial(z):
     """Target, base and fitted PTCs; both limit cycles on their OWN axes; the numbers.
 
@@ -87,28 +156,45 @@ def fig_radial(z):
     """
     old, doses = np.asarray(z['old']), np.asarray(z['doses'])
     names = [str(s_) for s_ in z['names']]
+    _backfill(z, old, doses, names)
     obs = [str(s_) for s_ in z['obs']] if 'obs' in z else None
 
-    panels = [('radial target', np.asarray(z['ptc_target_fit'])),
-              ('base', np.asarray(z['ptc_base'])),
-              ('fitted', np.asarray(z['ptc_fit']))]
+    def _sc(key):
+        return float(z[key]) if key in z and np.isfinite(z[key]) else None
+
+    k_t = float(z['k_target_fit']) if 'k_target_fit' in z else np.nan
+    panels = [('radial target', np.asarray(z['ptc_target_fit']),
+               (1.0 / k_t) if np.isfinite(k_t) and k_t > 0 else None),
+              ('base', np.asarray(z['ptc_base']), _sc('base__S_crit')),
+              ('fitted', np.asarray(z['ptc_fit']), _sc('fit__S_crit'))]
     diffs = [('|base - target|', np.asarray(z['ptc_base']), np.asarray(z['ptc_target_base'])),
              ('|fitted - target|', np.asarray(z['ptc_fit']), np.asarray(z['ptc_target_fit']))]
 
     # dedicated colorbar columns so no panel is narrower than its neighbours
-    fig = plt.figure(figsize=(19.5, 9.0))
+    fig = plt.figure(figsize=(20.5, 9.0))
     gs = fig.add_gridspec(2, 7, height_ratios=[1.05, 0.95],
                           width_ratios=[1, 1, 1, 0.07, 1, 1, 0.07],
-                          hspace=0.40, wspace=0.34)
+                          hspace=0.44, wspace=0.42)
 
-    for i, (lab, ptc) in enumerate(panels):
+    for i, (lab, ptc, sc) in enumerate(panels):
         ax = fig.add_subplot(gs[0, i])
         m = ax.pcolormesh(old, doses, ptc.T, cmap=phase_cmap(), vmin=0, vmax=1,
                           shading='nearest')
         ax.set_yscale('log'); ax.set_xlabel('old phase (cyc)')
         if i == 0:
             ax.set_ylabel('dose')
-        ax.axhline(float(z['s_crit']), color='w', ls=':', lw=1.0, alpha=0.7)
+
+        # EACH PANEL'S OWN S_crit, NOT ONE GLOBAL VALUE.
+        #
+        # The dashed line marks where THAT surface turns over, so a line drawn at the same
+        # height in all three panels is not merely an approximation -- it is a false claim.
+        # The whole point of the fit is that the singularity MOVES, and a line that cannot
+        # move cannot show it. (Fixed once before in analysis/compare_points for the same
+        # reason; it was still wrong here.) The target's S_crit is exact rather than measured:
+        # radial_z has |k * dose| = 1 at its singularity, so it sits at 1/k.
+        if sc is not None and np.isfinite(sc) and sc > 0:
+            ax.axhline(sc, color='w', ls=':', lw=1.2, alpha=0.85)
+            ax.text(0.02, sc, f'S={sc:.3g}', color='w', fontsize=6.5, va='bottom')
         ax.set_title(lab, fontsize=9.5)
     fig.colorbar(m, cax=fig.add_subplot(gs[0, 3]), label='new phase (cyc)')
 
@@ -122,26 +208,52 @@ def fig_radial(z):
     fig.colorbar(mm, cax=fig.add_subplot(gs[0, 6]), label='|d phase| (cyc)')
 
     # --- limit cycles, one panel each, own axes, several species ------------------- #
-    for j, (key, per_key, lab) in enumerate((('cyc_base', 'base__period', 'base'),
-                                             ('cyc_fit', 'fit__period', 'fitted'))):
+    for j, (pref, lab) in enumerate((('base', 'base'), ('fit', 'fitted'))):
         ax = fig.add_subplot(gs[1, 2 * j:2 * j + 2])
-        if key in z:
-            cyc = np.asarray(z[key])
-            T = float(z[per_key])
-            t = np.linspace(0, T, cyc.shape[0])
-            for k in range(cyc.shape[1]):
-                ax.plot(t, cyc[:, k], lw=1.5,
-                        label=(obs[k] if obs and k < len(obs) else f'y{k}'))
-            ax.set_xlabel('time (h)'); ax.set_ylabel('concentration')
-            ax.set_title(f'{lab} limit cycle -- T = {T:.3f} h  (own axes)', fontsize=9.5)
-            ax.legend(fontsize=6.5, ncol=2)
-        else:
+        key = f'cyc_{pref}'
+        if key not in z:
             ax.axis('off')
-            ax.text(0.5, 0.5, lab + ' cycle not stored\n(re-run fit.radial)', ha='center')
+            ax.text(0.5, 0.5, lab + ' cycle not stored -- re-run fit.radial', ha='center')
+            continue
+        cyc = np.asarray(z[key])
+        T = float(z[f'{pref}__period_solved'] if f'{pref}__period_solved' in z
+                  else z[f'{pref}__period'])
+        res = float(z[f'{pref}__orbit_res']) if f'{pref}__orbit_res' in z else float('nan')
+        t = np.linspace(0, T, cyc.shape[0])
+
+        # EVERY SPECIES ON ITS OWN SCALE, WITH ITS ABSOLUTE RANGE IN THE LEGEND.
+        #
+        # Almeida's species differ by ELEVEN orders of magnitude on a bad parameter set. Shared
+        # axes render all but the largest as a flat line at zero, which reads as "the clock
+        # stopped" whether or not it did -- the exact artifact that made a diverging transient
+        # look like a dead oscillator here. Scaling each trace to its own [min, max] makes the
+        # SHAPE readable at any magnitude, and the legend carries the absolute numbers so the
+        # normalisation hides nothing: a species with zero range plots flat at 0 AND shows
+        # range 0 in its label.
+        for k in range(cyc.shape[1]):
+            y = cyc[:, k]
+            lo, hi = float(np.min(y)), float(np.max(y))
+            span = hi - lo
+            yn = (y - lo) / span if span > 0 else np.zeros_like(y)
+            nm = obs[k] if obs and k < len(obs) else 'y%d' % k
+            ax.plot(t, yn, lw=1.4, label=f'{nm}  [{lo:.3g}, {hi:.3g}]')
+
+        ok = np.isfinite(res) and res < 1e-4
+        neg = float(np.min(cyc)) < 0.0
+        flag = 'orbit' if ok else 'NOT AN ORBIT'
+        ax.set_title(f'{lab}:  T = {T:.2f} h   BVP res {res:.1e}   [{flag}]',
+                     fontsize=8.5, color='k' if ok else '#b3261e')
+        ax.set_xlabel('time (h)')
+        ax.set_ylabel('each species scaled to its own [min, max]')
+        ax.set_ylim(-0.05, 1.05)
+        if neg:
+            ax.text(0.99, 0.02, 'negative concentrations present', transform=ax.transAxes,
+                    ha='right', va='bottom', fontsize=7.5, color='#b3261e')
+        ax.legend(fontsize=6.0, ncol=2, loc='upper right', framealpha=0.85)
 
     ax = fig.add_subplot(gs[1, 4])
     twist_panel(ax, doses, np.asarray(z['twist_fit']), base=np.asarray(z['twist_base']),
-                label='fitted', scrit=float(z['s_crit']),
+                label='fitted', scrit=_sc('fit__S_crit'),
                 title='isochron twist (flat = radial)')
 
     ax = fig.add_subplot(gs[1, 5:]); ax.axis('off')

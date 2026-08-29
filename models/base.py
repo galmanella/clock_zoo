@@ -28,6 +28,12 @@ class ClockModel(ABC):
     #: condition. Must be cleanly UNIMODAL over the cycle -- see engine/orbit.py.
     reference_variable = None
 
+    #: name of the state variable the PTC reads phase FROM. Defaults to `reference_variable`.
+    #: Set it separately when the section species and the best phase carrier differ -- the
+    #: section wants unimodality, the readout wants a healthy amplitude and baseline, and a
+    #: parameter set that ruins one need not ruin the other.
+    readout_variable = None
+
     #: rough period (time units), used to size transients and the orbit initial guess. The
     #: true period is solved for, not assumed.
     approx_period = None

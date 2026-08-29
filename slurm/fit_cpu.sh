@@ -1,11 +1,16 @@
 #!/bin/bash
 #SBATCH --job-name=cz-fit
 #SBATCH --output=slurm-%A_%a.out
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=08:00:00
-#SBATCH --array=0-7
-# Usage: sbatch slurm/fit_cpu.sh <model> <target> [recover|radial] [eps]
+#SBATCH --array=0-15
+# Usage: sbatch slurm/fit_cpu.sh <model> <target> [recover|radial] [eps] [optimizer]
+#
+#   e.g. sbatch slurm/fit_cpu.sh almeida BMAL1 radial 0.3 bobyqa
+#
+#   PHASE IS READ FROM REV AND THE POINCARE SECTION IS PER (see models/almeida.py). <target>
+#   is the PERTURBATION target, a different role -- passing BMAL1 there is still correct.
 #
 #   One ARRAY TASK PER START. Multistart is the globality instrument here (see fit/search.py):
 #   the question is whether distinct basins exist, which wants many INDEPENDENT converged
@@ -13,9 +18,26 @@
 #   the RNG seed, and every task writes into the same SLURM_ARRAY_JOB_ID run directory, so one
 #   array job produces one output dir -- the convention paths.py already implements.
 #
-#   CPU, not GPU. A fit is a long chain of sequential L-BFGS steps over a modest grid
-#   (~100 cells), not one big vmapped launch, so it is latency-bound rather than
-#   throughput-bound. The GPU script is for the sensitivity sweeps, which are the opposite.
+#   ONE CPU PER TASK, AND THAT IS NOT AN OVERSIGHT. MEASURED, one cost evaluation on the
+#   20 x 14 grid (280 cells):
+#
+#       threads=1   1.298 s          threads=4   1.552 s
+#       threads=2   1.482 s          threads=8   1.539 s
+#
+#   More threads make it SLOWER. The 280 cells are logically independent, but each is an
+#   adaptive Tsit5 integration -- sequential by nature -- and XLA's CPU backend does not
+#   parallelise the vmap across them, so extra threads only add contention. The previous
+#   --cpus-per-task=4 reserved three idle cores per task; those cores belong in the ARRAY
+#   WIDTH, where scaling is linear, which is why the array doubled to 0-15 as the cpus fell.
+#
+#   The serial fraction inside one evaluation is small -- the orbit BVP solve is 114 ms of
+#   1.505 s, 7.5%, so Amdahl caps a perfect implementation near 13x -- but that headroom is
+#   reachable only on a GPU, and only in f64, which runs at 1/32 rate on consumer cards. Until
+#   `search.cma` evaluates its population in ONE batched call instead of a Python loop, no
+#   launch here is big enough to be worth a card.
+#
+#   So the cluster buys THROUGHPUT, not latency: one fit takes as long as it does locally, and
+#   the array is what makes sixteen of them cost the wall time of one.
 #
 #   DEPENDENCY: this needs `diffrax` in the cluster env (pip install diffrax). The fit runs on
 #   the adaptive backend -- see REPO_MAP hazard 1 and fit/doses.py for why the fixed-step path
@@ -25,6 +47,8 @@ MODEL="${1:?usage: sbatch slurm/fit_cpu.sh <model> <target> [recover|radial] [ep
 TARGET="${2:?target required}"
 WHAT="${3:-recover}"
 EPS="${4:-0.3}"
+OPT="${5:-bobyqa}"     # measured best on the T1 benchmark: 0.0104 against cma-anneal
+                       # 0.0397, cma-ipop 0.0674 and lm 0.436 at a matched 1500-eval budget
 
 cd "$(dirname "$0")/.."
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
@@ -47,6 +71,7 @@ case "$WHAT" in
   recover) python -m fit.recover --model "$MODEL" --target "$TARGET" --eps "$EPS" \
                                  --seed "$SEED" --tag "$TAG" ;;
   radial)  python -m fit.radial  --model "$MODEL" --target "$TARGET" \
-                                 --seed "$SEED" --tag "$TAG" ;;
+                                 --optimizer "$OPT" --n-phase 20 --n-dose 14 \
+                                 --max-factor 8.0 --seed "$SEED" --tag "$TAG" ;;
   *) echo "unknown mode '$WHAT' (want recover|radial)" >&2; exit 2 ;;
 esac

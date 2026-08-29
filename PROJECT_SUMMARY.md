@@ -201,7 +201,7 @@ dose grid 0.912–22.1. Ranked by twist response: `vd` 0.375, `gamma_c` 0.340, `
 `analysis/coupling.py`, the gauge quotiented out (2 of 15 usable parameters), J_LC = 513
 observables x 15 parameters, J_PTC = 576 x 15.
 
-![LC vs PTC coupling](docs/figures/almeida_coupling_BMAL1.png)
+![LC vs PTC coupling](out/almeida/coupling/coupling_BMAL1_pulse_twist.png)
 
 **Preliminary, and it points the opposite way to Mirsky — but read the caveats.**
 
@@ -764,11 +764,88 @@ Two details worth keeping:
   produced the largest S_crit/twist/rho in 3.7. Same trap, opposite sign, caught only because
   the gate now runs before anything is quoted.
 
-### 5.5 Status
+### 5.5b Status
 
 `fit/` is built and self-tested: `target.py`, `cost.py`, `search.py` (L-BFGS, multistart,
 CMA-ES), `doses.py`, `recover.py` (T1, with `--start truth` and `--optimizer`), `radial.py`
 (T3, unrun), `figures.py`. T0 and T0.5 pass; T1 fails from a distance and passes from the truth.
+
+### 5.6 Optimizer head-to-head: a model-based trust region wins
+
+Matched budget, 1500 evaluations, T1 self-recovery, BMAL1/instant, cost at truth 0.000392 and
+at nominal 0.592153:
+
+| optimizer | final cost | evals | wall | note |
+|---|---|---|---|---|
+| **Py-BOBYQA** | **0.010388** | 1500 | 684 s | stopped on MAXFUN -- still improving |
+| cma-anneal | 0.039718 | 1489 | 667 s | monotone over 4 restarts, sigma 0.5 -> 0.046 |
+| cma-ipop | 0.067431 | ~1500 | ~670 s | restarts 1-2 got WORSE (2.12, 1.24) |
+| Levenberg-Marquardt | 0.435844 | 37 | 83 s | |
+
+BOBYQA wins by 3.8x over the best CMA arm, and beats the previous overall incumbent
+(cma-ipop 0.0198 at a larger budget) at less than half its budget. This is what §5.4c's spiral
+picture predicts: a model-based trust region fits a quadratic through interpolation points
+spread over a region wide enough to AVERAGE OVER the fine-scale ruggedness that stalls a
+gradient and that CMA can only sample through.
+
+Two further results in the same table. `cma-anneal` beats `cma-ipop`, and the mechanism is
+visible in the timings: IPOP's larger populations ran 88-193 s/gen at popsize 24/48 against
+3-7 s/gen at popsize 12, because the extra samples land on pathological parameter sets whose
+orbit solves are slow. And LM ran at all only after the Hopf barrier's eigenvalue helper was
+converted from `jax.custom_vjp` (reverse mode ONLY) to `jax.custom_jvp` (both) -- `jacfwd`
+through a `custom_vjp` raises, which had been killing every LM leg inside the Hopf barrier,
+nowhere near the flow anyone would have suspected.
+
+DEAD ENDS REMOVED FROM THE CODE, RECORDED HERE: `nelder_mead` (T1 0.4449) and
+`smoothed_trust_region` (benchmark 0.348) were both measured and both lost. The second was a
+hand-rolled approximation of exactly what BOBYQA does properly. Keeping three implementations
+of one idea, two known worse, is how a directory becomes a museum.
+
+### 5.7 RETRACTION: the RAD01 "degenerate optimum" was a bad OBSERVABLE, not a dead clock
+
+RAD01 (CMA radialization) reported `c_ptc = 0.0110` -- a nearly perfect radial match -- from a
+parameter set whose orbit BVP had residual 3.58. It was first written up here as the Mirsky
+degeneracy reproduced: a dead oscillator scoring well. **That reading was wrong**, and the
+correction matters because it changes what the pipeline has to defend against.
+
+The dynamics at that parameter set are HEALTHY. End-to-end perturbation simulations across
+(phase x dose) oscillate in every species, stay strictly positive and stay bounded to 400 h
+(`out/almeida/fit_radial/RAD01/endtoend_perturbations.png`). What fails is the phase
+MEASUREMENT: BMAL1 -- which was simultaneously the Poincare section, the Fourier readout and
+the perturbation target -- transiently collapses to 1.2e-27 there while REV sits at 1.2e3.
+Thirty decades in one state vector makes the system stiff enough to stall Newton and to exhaust
+the integrator. See REPO_MAP hazard 14 for the full measurement.
+
+Consequences now in the code:
+
+* `reference_variable` (Poincare section) and `readout_variable` (phase carrier) are SEPARATE,
+  because they have different requirements -- unimodality versus a healthy baseline.
+  Almeida: section `PER`, readout `REV` (the experimental observable).
+* Verified harmless: BMAL1 / REV / PER readouts agree to max **5.6e-4 cyc** at base, so this is
+  a change of phase ORIGIN, not of the PTC. Prior BMAL1-readout results stand.
+* The orbit gate added to `fit/cost._surface` (residual < 1e-4, period in [0.25T, 4T],
+  non-negative states, finite) DOES reject the RAD01 optimum: re-scored under the current cost
+  it returns `c_ptc = 1.000000, alive_frac 0.000` instead of 0.0110. The escape route is shut.
+
+### 5.8 What parallelism is actually available (measured, not assumed)
+
+One cost evaluation on the 20 x 14 grid = one serial orbit BVP solve (114 ms) plus 280
+independent perturbation integrations (1.505 s total). Serial fraction 7.5%, so Amdahl caps a
+perfect implementation near 13x. CPU threading realises NONE of it:
+
+    threads=1  1.298 s     threads=2  1.482 s     threads=4  1.552 s     threads=8  1.539 s
+
+More threads are SLOWER. Each cell is an adaptive Tsit5 integration, sequential by nature, and
+XLA's CPU backend does not parallelise the vmap across cells. So:
+
+* **the cluster buys throughput, not latency** -- a single fit takes as long there as locally,
+  and the array width is what makes N of them cost the wall time of one. `slurm/fit_cpu.sh`
+  accordingly dropped to `--cpus-per-task=1` and doubled to `--array=0-15`;
+* **a GPU is only worth it after `search.cma` evaluates its population in one batched call**
+  (12 x 280 = 3360 cells per launch instead of 280). Even then, f64 is required and runs at
+  1/32 rate on consumer cards, and vmapped adaptive steppers waste work marching in lockstep to
+  the slowest cell. Estimated 3-10x for a single evaluation, 10-30x for a batched generation --
+  to be MEASURED before it is believed.
 
 ## 5b. Next
 

@@ -184,6 +184,63 @@ tracking.
     The same check in reverse catches the other failure: a figure PROJECT_SUMMARY references
     that was never published at all (`almeida_coupling_BMAL1.png` is currently a broken link).
 
+14. **THE PHASE OBSERVABLE IS A NUMERICAL CHOICE, AND THE WRONG ONE FAKES A DYNAMICAL FAILURE.**
+
+    Almeida used `reference_variable = 'BMAL1'` for BOTH roles -- the orbit solver's Poincare
+    section (`rhs(y0)[ref] = 0`) and the PTC's Fourier phase readout. BMAL1 was picked on its
+    BASE-POINT numbers: largest relative amplitude (4.26), cleanly unimodal. Neither property
+    survives the parameter sets an optimizer visits.
+
+    At the RAD01 radialization optimum, over a 100 h transient:
+
+        BMAL1  min 1.2e-27      ROR    min 4.1e-28      E4BP4  min 3.8e-17
+        REV    min 6.8e+01      PER    min 3.4e+00      REV    max 1.2e+03
+
+    Thirty decades inside one state vector. Three species collapse to numerical zero while REV
+    sits at 1e3. Consequences, all of which were initially misread as the model being broken:
+
+      * the section stops being unimodal (1.7 `dy/dt` sign changes per period instead of 2), so
+        Newton lands wherever the guess points it -- the SAME parameter set returned a period of
+        0.159 h from one guess and 43.1 h from another, a 99.6% disagreement;
+      * the stiffness exhausts diffrax's `MAX_STEPS=50_000` on long spans, and the sampler then
+        NaNs the ENTIRE trajectory, which is indistinguishable from a blow-up in a plot;
+      * `solver.cycle` called on the resulting non-converged `y0` produces negative
+        concentrations and visible numerical noise -- an artifact of the failed solve, NOT of
+        the dynamics.
+
+    THE DYNAMICS WERE FINE THE WHOLE TIME. End-to-end perturbation simulations at that same
+    parameter set oscillate in every species, stay strictly positive, stay bounded out to 400 h
+    (`out/almeida/fit_radial/RAD01/endtoend_perturbations.png`). The fit was largely correct and
+    the observable was the problem.
+
+    So the two roles are now SEPARATE attributes with different criteria:
+
+      * `reference_variable` (section) wants UNIMODALITY -> Almeida: `PER`, the only species
+        measured unimodal at both the base point and the optimum, baseline 3.9 -> 8.2;
+      * `readout_variable` (phase) wants a healthy amplitude and baseline -> Almeida: `REV`,
+        which never approaches zero and is what the experiments measure.
+
+    Switching the readout costs nothing in principle and this was CHECKED, not assumed:
+    asymptotic phase is a property of the state, so BMAL1 / REV / PER readouts agree to
+    **max 5.6e-4 cyc** (~50 s of a 24.8 h period) at the base point. Earlier BMAL1-readout
+    results stand.
+
+    The rule: before blaming a model for a numerical failure, check the SPREAD OF SCALES in the
+    state vector and check whether the phase species is one of the collapsing ones.
+
+15. **A DIAGNOSTIC THAT CAN FAIL SILENTLY WILL BE MISTAKEN FOR THE RESULT.** Two separate
+    misdiagnoses in one session came from tools, not from the system under study:
+
+      * `fit/figures._backfill` re-solved the orbit with `solver.guess` (the numpy peak-hunt)
+        while `fit/cost._surface` uses `make_guess_fn` (the jittable relaxation), and threw the
+        residual away as `_r`. The figure therefore showed an orbit THE FIT HAD NEVER
+        EVALUATED, and gave no way to notice. Diagnostics must reproduce the production path
+        exactly and must display the residual that says whether the answer is valid.
+      * a 517 h single solve returned all-NaN from `MAX_STEPS`, plotted as an empty panel, and
+        read as "the model diverges". The same set is finite and bounded at 400 h. Never let a
+        SOLVER LIMIT and a DIVERGENCE render identically -- walk the span out and report which
+        one it is.
+
 ## Open
 
 - `analysis/characterize.py` and `ptc_sens.py` have not yet been run for Korencic or

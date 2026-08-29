@@ -66,10 +66,6 @@ def run_schedule(build_cost, v0, schedule=DEFAULT_SCHEDULE, optimizer='cma', bou
             # restarting from random points would throw away the warm start
             r = search.cma(C, v0=v, bound=bound, maxfev=maxfev, seed=seed + si,
                            mode='anneal', verbose=verbose)
-        elif optimizer == 'str':
-            r = search.smoothed_trust_region(C, v, bound=bound, maxiter=maxiter,
-                                             seed=seed + si, verbose=verbose,
-                                             label=f'stage{si}')
         elif optimizer == 'lm':
             r = search.levenberg_marquardt(C, v, bound=bound, maxiter=maxiter,
                                            verbose=verbose, label=f'stage{si}')
@@ -119,7 +115,7 @@ def main(argv=None):
     ap.add_argument('--model', default='almeida')
     ap.add_argument('--target', default='BMAL1')
     ap.add_argument('--mode', default='instant', choices=('pulse', 'instant'))
-    ap.add_argument('--optimizer', default='cma', choices=('cma', 'str', 'lm', 'lbfgs'))
+    ap.add_argument('--optimizer', default='cma', choices=('cma', 'bobyqa', 'lm', 'lbfgs'))
     ap.add_argument('--schedule', default='8x6,12x8,16x10,24x16')
     ap.add_argument('--maxfev', type=int, default=1200)
     ap.add_argument('--maxiter', type=int, default=60)

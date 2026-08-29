@@ -140,25 +140,37 @@ def _leading_np(J):
     return val, np.asarray(G, J.dtype)
 
 
-@jax.custom_vjp
+@jax.custom_jvp
 def _max_re_eig(J):
     return jax.pure_callback(_maxre_val_np, jax.ShapeDtypeStruct((), J.dtype), J,
                              vmap_method='sequential')
 
 
-def _mre_fwd(J):
+@_max_re_eig.defjvp
+def _mre_jvp(primals, tangents):
+    """custom_JVP, not custom_VJP, and the difference is load-bearing.
+
+    `jax.custom_vjp` supplies REVERSE mode only. Anything needing forward mode hits
+
+        TypeError: can't apply forward-mode autodiff (jvp) to a custom_vjp function
+
+    and `fit.search.levenberg_marquardt` needs forward mode by construction: the residual
+    Jacobian is built with `jacfwd` (that is how the diffrax flow gets differentiated -- see
+    GRAD_MODES in engine/flow). So every LM run died here, in the Hopf barrier, nowhere near
+    the flow anyone would have suspected. It killed the whole optimizer benchmark process
+    partway through, taking the finished CMA and BOBYQA legs down with it.
+
+    `custom_jvp` gives BOTH modes: JAX obtains reverse mode by transposing the jvp rule, which
+    is exact here because the rule is linear in the tangent -- the derivative is the fixed
+    matrix G contracted with dJ. The numerics are unchanged; G is the same analytic
+    eigenvalue derivative `_leading_np` already returned, zero-guarded at defective points.
+    """
+    (J,), (dJ,) = primals, tangents
     val, G = jax.pure_callback(
         _leading_np,
         (jax.ShapeDtypeStruct((), J.dtype), jax.ShapeDtypeStruct(J.shape, J.dtype)),
         J, vmap_method='sequential')
-    return val, G
-
-
-def _mre_bwd(G, ct):
-    return (ct * G,)
-
-
-_max_re_eig.defvjp(_mre_fwd, _mre_bwd)
+    return val, jnp.sum(G * dJ)
 
 
 def make_osc_penalty(model, w=0.2, k=200.0, margin=0.015, n_iter=40, reg=1e-9):

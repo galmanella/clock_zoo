@@ -34,6 +34,7 @@ import argparse
 import glob
 import os
 import time
+import traceback
 
 import numpy as np
 
@@ -98,6 +99,45 @@ def run(evals=1500, model_name='almeida', target='BMAL1', mode='instant', eps=0.
               f"|err| det={results[name]['det']:.3f} total={results[name]['tot']:.3f}",
               flush=True)
 
+    tag = paths.run_tag(tag)
+    out_npz = paths.out_path(model_name, 'fit_benchmark',
+                             f'bench_{target}_{mode}.npz', tag)
+    failed = {}
+
+    def dump():
+        """Write the .npz after EVERY leg, not once at the end.
+
+        A benchmark is a sequence of INDEPENDENT experiments. There is no reason a late one
+        should be able to destroy an early one's result, and rewriting the same path is cheap
+        next to a 700 s optimizer run.
+        """
+        blob = dict(model=model_name, target=target, mode=mode, eps=eps, seed=seed,
+                    n_phase=n_phase, n_dose=n_dose, evals=evals, f_true=f_true, f_nom=f_nom,
+                    k_det=k_det, methods=np.array(list(results)), v_true=v_true,
+                    failed=np.array([f'{k}: {v}' for k, v in failed.items()]))
+        for k, r in results.items():
+            for f in ('f', 'nev', 'secs', 'det', 'tot'):
+                blob[f'{f}__{k}'] = np.asarray(r[f])
+            blob[f'v__{k}'] = r['v']
+        paths.savez(out_npz, **blob)
+
+    def attempt(name, fn):
+        """Run one leg; a failure costs that leg and nothing else.
+
+        The traceback is PRINTED, not swallowed. A crashed optimizer is itself a result -- "this
+        method cannot run against this cost" -- and it must not be confused with a method that
+        merely scored badly, nor vanish silently from the table. `failed` is saved into the .npz
+        alongside the scores for exactly that reason.
+        """
+        try:
+            record(name, fn())
+        except Exception as exc:
+            failed[name] = f'{type(exc).__name__}: {exc}'
+            print(f"  -> {name}: FAILED -- {failed[name]}", flush=True)
+            traceback.print_exc()
+        dump()
+
+
     want = [w.strip() for w in which.split(',')] if which != 'all' else \
         ['cma-ipop', 'cma-anneal', 'bobyqa', 'lm', 'bh', 'lbfgs', 'multires']
 
@@ -107,7 +147,7 @@ def run(evals=1500, model_name='almeida', target='BMAL1', mode='instant', eps=0.
         # where a restart starts from and what happens to sigma
         _ps = int(4 + 3 * np.log(n))
         _gpr = max(10, evals // (4 * _ps))
-        record('cma-ipop', search.cma(C, bound=3.0, seed=seed, maxfev=evals, mode='ipop',
+        attempt('cma-ipop', lambda: search.cma(C, bound=3.0, seed=seed, maxfev=evals, mode='ipop',
                                       restarts=3, gens_per_run=_gpr))
     if 'cma-anneal' in want:
         print(f"\n=== cma-anneal ===", flush=True)
@@ -117,30 +157,25 @@ def run(evals=1500, model_name='almeida', target='BMAL1', mode='instant', eps=0.
         # same computation and reported identical numbers for both.
         _ps = int(4 + 3 * np.log(n))
         _gpr = max(10, evals // (4 * _ps))                 # ~4 restarts inside the budget
-        record('cma-anneal', search.cma(C, bound=3.0, seed=seed, maxfev=evals, mode='anneal',
+        attempt('cma-anneal', lambda: search.cma(C, bound=3.0, seed=seed, maxfev=evals, mode='anneal',
                                         restarts=3, gens_per_run=_gpr))
     if 'bobyqa' in want:
         print("\n=== Py-BOBYQA (model-based trust region) ===", flush=True)
-        record('bobyqa', search.bobyqa(C, v0, bound=3.0, maxfev=evals, seek_global=True))
+        attempt('bobyqa', lambda: search.bobyqa(C, v0, bound=3.0, maxfev=evals, seek_global=True))
     if 'lm' in want:
         print("\n=== Levenberg-Marquardt (residual vector) ===", flush=True)
         from fit.cost import make_cost as _mc, FixedTarget as _FT
         Cf = _mc(model, target, mode=mode, doses=doses, tgt=_FT(zt), n_phase=n_phase,
                  backend='diffrax', dt=0.02, grad_mode='fwd')
-        record('lm', search.levenberg_marquardt(Cf, v0, bound=3.0,
+        attempt('lm', lambda: search.levenberg_marquardt(Cf, v0, bound=3.0,
                                                 maxiter=max(4, evals // (2 * n))))
     if 'bh' in want:
         print("\n=== basin hopping ===", flush=True)
-        record('bh', search.basin_hopping(C, v0, bound=3.0, n_hops=max(3, evals // 300),
+        attempt('bh', lambda: search.basin_hopping(C, v0, bound=3.0, n_hops=max(3, evals // 300),
                                           maxiter=25, local='lbfgs', seed=seed))
     if 'lbfgs' in want:
         print("\n=== L-BFGS ===", flush=True)
-        record('lbfgs', search.lbfgs(C, v0, bound=3.0, maxiter=evals // 3, label='lbfgs'))
-    if 'str' in want:
-        print(f"\n=== smoothed trust region ===", flush=True)
-        # 2n evals per iteration -> iterations sized to the same budget
-        record('str', search.smoothed_trust_region(C, v0, bound=3.0,
-                                                   maxiter=max(4, evals // (2 * n)), seed=seed))
+        attempt('lbfgs', lambda: search.lbfgs(C, v0, bound=3.0, maxiter=evals // 3, label='lbfgs'))
     if 'multires' in want:
         print(f"\n=== multires (coarse -> fine) ===", flush=True)
         # the target is re-rendered from the KNOWN truth at each resolution
@@ -161,7 +196,7 @@ def run(evals=1500, model_name='almeida', target='BMAL1', mode='instant', eps=0.
         # score the multires answer on the SAME final grid as everyone else
         r = dict(v=v_mr, f=C['total'](v_mr), nev=int(sum(s['nev'] for s in stages)),
                  seconds=time.time() - t0, parts=C['parts'](v_mr))
-        record('multires', r)
+        attempt('multires', lambda: r)
 
     print(f"\n{'=' * 78}\nBENCHMARK -- lower cost is better; floor is {f_true:.6f}\n{'=' * 78}")
     print(f"  {'method':14s} {'cost':>10s} {'vs incumbent':>13s} {'phase err':>10s} "
@@ -174,17 +209,13 @@ def run(evals=1500, model_name='almeida', target='BMAL1', mode='instant', eps=0.
         print(f"  {k:14s} {r['f']:10.6f} {rel:>13s} {herr:9.2f}h {r['nev']:7d} "
               f"{r['secs']:6.0f}s {r['det']:10.3f} {r['tot']:10.3f}")
 
-    tag = paths.run_tag(tag)
-    blob = dict(model=model_name, target=target, mode=mode, eps=eps, seed=seed,
-                n_phase=n_phase, n_dose=n_dose, evals=evals, f_true=f_true, f_nom=f_nom,
-                k_det=k_det, methods=np.array(list(results)), v_true=v_true)
-    for k, r in results.items():
-        for f in ('f', 'nev', 'secs', 'det', 'tot'):
-            blob[f'{f}__{k}'] = np.asarray(r[f])
-        blob[f'v__{k}'] = r['v']
-    out = paths.out_path(model_name, 'fit_benchmark', f'bench_{target}_{mode}.npz', tag)
-    paths.savez(out, **blob)
-    print(f"\n[benchmark] -> {out}")
+    if failed:
+        print(f"\n  {len(failed)} method(s) could not run:")
+        for k, v in failed.items():
+            print(f"    {k:14s} {v}")
+
+    dump()
+    print(f"\n[benchmark] -> {out_npz}")
     return results
 
 

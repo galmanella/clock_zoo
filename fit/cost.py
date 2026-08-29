@@ -555,6 +555,34 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
                 amp_base=amp_base, amp_floor=amp_floor, target=tgt.name,
                 theta=lambda v: np.asarray(_theta(jnp.asarray(v, jnp.float64))),
                 total=lambda v: float(_total(jnp.asarray(v, jnp.float64))),
+                # WHOLE POPULATION IN ONE LAUNCH. CMA has a parallel axis that a quasi-Newton
+                # method does not -- popsize mutually independent parameter vectors per
+                # generation -- and evaluating them in a Python loop throws it away. Batched,
+                # one generation is popsize * n_cells integrations in a single call (12 * 280 =
+                # 3360) instead of popsize calls of n_cells, which is the difference between
+                # poor and good GPU occupancy. Returns a jnp array, NOT floats: the caller
+                # converts, because `float()` on a traced value is what stopped `total` itself
+                # from being vmappable.
+                #
+                # NOT YET FIT TO OPTIMISE AGAINST. MEASURED, 8 x 5 grid, population 4: the
+                # batched values differ from the sequential ones by up to 9.955e-04, on a cost
+                # whose working scale is 0.1-0.5. That is far too large to be rounding, and it
+                # lands exactly where it does the most damage -- CMA RANKS its population, and
+                # late in a run the gaps between good members are within an order of magnitude
+                # of 1e-3, so a batched generation could reorder itself relative to the true
+                # costs.
+                #
+                # Leading suspicion: vmapped lanes share the diffrax `while_loop` termination
+                # and `max_steps` accounting, so a lane's effective step budget depends on its
+                # NEIGHBOURS -- i.e. a member's cost would depend on who else was sampled in
+                # the same generation. Explain the 1e-3 before wiring this into `search.cma`;
+                # a self-consistency assert (batched == looped to ~1e-12) is the gate.
+                #
+                # It also runs 2.2x SLOWER than the loop on CPU, as expected: the CPU cannot
+                # exploit the population axis, and lockstep stepping makes every lane pay for
+                # the slowest. The value here is purely that the graph TRACES, which is what a
+                # GPU would need.
+                total_batch=jax.jit(jax.vmap(_total)),
                 grad=lambda v: np.asarray(_grad(jnp.asarray(v, jnp.float64))),
                 parts=parts, surface=surface, solver=solver, ptc_fn=f)
 

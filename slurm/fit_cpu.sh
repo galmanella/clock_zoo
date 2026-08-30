@@ -50,8 +50,25 @@ EPS="${4:-0.3}"
 OPT="${5:-bobyqa}"     # measured best on the T1 benchmark: 0.0104 against cma-anneal
                        # 0.0397, cma-ipop 0.0674 and lm 0.436 at a matched 1500-eval budget
 
-cd "$(dirname "$0")/.."
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+# LOCATE THE CODE. A SCRIPT-RELATIVE cd DOES NOT WORK UNDER SBATCH.
+#
+# SLURM copies the batch script into a spool directory and runs it from there, so inside the
+# job $0 is something like /var/spool/slurmd/job12345/slurm_script, and a script-relative cd
+# lands in the spool dir where `fit` does not exist. It fails identically on EVERY array task
+# while working perfectly by hand -- which is exactly how it presented. Mirsky's scripts pin
+# CODE_DIR absolutely for this reason.
+#
+# Order: explicit CODE_DIR, else the directory sbatch was invoked FROM, else script-relative
+# (correct when the script is executed directly rather than through SLURM).
+_here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)"
+CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR:-$_here}}"
+cd "$CODE_DIR" || { echo "ERROR: cannot cd to CODE_DIR=$CODE_DIR"; exit 1; }
+if [ ! -d "$CODE_DIR/fit" ]; then
+    echo "ERROR: CODE_DIR=$CODE_DIR is not the clock_zoo repo root (no fit/ there)."
+    echo "       Submit from the repo root, or pass CODE_DIR=/path/to/clock_zoo"
+    exit 1
+fi
+export PYTHONPATH="$CODE_DIR:${PYTHONPATH:-}"
 export CLOCKZOO_STRICT_PROVENANCE=1
 export JAX_ENABLE_X64=1                      # long-horizon circadian integration needs f64
 export JAX_PLATFORMS=cpu

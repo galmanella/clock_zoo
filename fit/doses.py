@@ -80,12 +80,28 @@ def load_scrit(model_name, target, mode='instant', tag=None):
         tags = sorted((t for t in os.listdir(root)
                        if os.path.isdir(os.path.join(root, t))), reverse=True) \
             if os.path.isdir(root) else []
-    if not tags:
-        raise SystemExit(f"run `python -m analysis.scrit --model {model_name} "
-                         f"--mode {mode}` first")
+    # FIXTURES ARE SEARCHED LAST, AND THAT ORDER MATTERS.
+    #
+    # S_crit is an INPUT to every fit -- it sets the dose window -- but it is produced into
+    # out/, which is gitignored, so a fresh clone (i.e. the cluster) has none of it and every
+    # task exits with "run analysis.scrit first". Recomputing per machine is also wrong: the
+    # canonical per-gene values are a documented result (PROJECT_SUMMARY 3.4) that this project
+    # has agreed not to recompute, and two machines silently disagreeing about the dose window
+    # would make their fits incomparable.
+    #
+    # So a tracked copy lives in fixtures/scrit/<model>/ and is used only when out/ has nothing
+    # -- a local run always wins, so recomputing deliberately still overrides the fixture.
+    fixture_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               'fixtures', 'scrit', model_name)
+    search = [(paths.out_dir(model_name, 'scrit', tg, create=False), tg) for tg in tags]
+    if os.path.isdir(fixture_dir):
+        search.append((fixture_dir, 'fixtures'))
+    if not search:
+        raise SystemExit(f"no S_crit for {model_name}: run `python -m analysis.scrit "
+                         f"--model {model_name} --mode {mode}`, or add a tracked copy under "
+                         f"fixtures/scrit/{model_name}/")
     seen = []
-    for tg in tags:
-        d = paths.out_dir(model_name, 'scrit', tg, create=False)
+    for d, tg in search:
         for fp in sorted(glob.glob(os.path.join(d, f'scrit_{mode}*.npz'))):
             z = np.load(fp, allow_pickle=True)
             names = [str(t) for t in z['targets']]
@@ -93,10 +109,14 @@ def load_scrit(model_name, target, mode='instant', tag=None):
                 i = names.index(target)
                 grid = np.asarray(z[f'grid__{target}']) if f'grid__{target}' in z else None
                 dt = float(z['dt_used'][i]) if 'dt_used' in z.files else 0.02
+                if tg == 'fixtures':
+                    print(f"[doses] S_crit for {target} ({mode}) read from the tracked "
+                          f"fixture, not from a local run", flush=True)
                 return float(z['S_crit'][i]), grid, dt
         seen.append(tg)
     raise SystemExit(f"no scrit entry for {target} ({mode}) in any of {seen} -- "
-                     f"run `python -m analysis.scrit --model {model_name} --mode {mode}`")
+                     f"run `python -m analysis.scrit --model {model_name} --mode {mode}`, "
+                     f"or add fixtures/scrit/{model_name}/scrit_{mode}.npz")
 
 
 def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10, tag=None,

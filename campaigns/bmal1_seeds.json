@@ -1,15 +1,41 @@
 {
-  "notes": "Multimodality of the BMAL1 radialization: 16 independent searches, each starting from a rejection-sampled healthy circadian clock, split into 4 array tasks of 4 seeds. Seeds sharing a task are compared against each other by run_seeds.",
-  "tag": "bmal1seeds",
-  "model": "almeida",
-  "target": "BMAL1",
+  "maxfev": 8000,
   "mode": "instant",
-  "section": "PER",
-  "readout": "REV",
-  "n_phase": 20,
+  "model": "almeida",
   "n_dose": 14,
+  "n_phase": 20,
+  "notes": "Multimodality of the BMAL1 radialization: 16 independent searches, each from a rejection-sampled healthy circadian clock, as 4 array tasks of 4 seeds. Seeds sharing a task are compared by run_seeds; comparing ACROSS tasks needs a separate aggregation over the four seeds_*.npz. popsize set explicitly to the core count -- see genes.json for why not the oversubscribed recommendation.",
   "optimizer": "cma",
-  "maxfev": 6000,
+  "popsize": 32,
+  "readout": "REV",
+  "section": "PER",
+  "seeds": [
+    [
+      0,
+      1,
+      2,
+      3
+    ],
+    [
+      4,
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10,
+      11
+    ],
+    [
+      12,
+      13,
+      14,
+      15
+    ]
+  ],
   "start": "viable",
-  "seeds": [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]
+  "tag": "bmal1seeds",
+  "target": "BMAL1"
 }

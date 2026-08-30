@@ -1,26 +1,16 @@
 {
-  "maxfev": 4000,
-  "mode": "instant",
-  "model": "almeida",
-  "n_dose": 14,
-  "n_phase": 20,
-  "notes": "Radialize each gene in turn from the BASE parameters, four seeds each. Asks which genes can be radialized at all, and whether each gene's landscape is multimodal in the neighbourhood of base. start='base' is deliberate: seeds share a start and differ only in sampling, which measured 3.4-6.3 apart at convergence. For starts drawn from across the viable set, see bmal1_seeds.json.",
-  "optimizer": "cma",
-  "readout": "REV",
-  "section": "PER",
-  "seeds": [
-    0,
-    1,
-    2,
-    3
-  ],
-  "start": "base",
+  "notes": "One radialization per gene, from BASE, one seed each: which genes can be radialized at all. One gene per array task, cores spent on the CMA population. popsize is set EXPLICITLY to the core count rather than left to recommend_popsize, which oversubscribes ~4.1x and would give 131 on 32 cores -- at maxfev 8000 that is only 61 generations, against the ~334 RAD03 needed to converge at popsize 12.",
   "tag": "genes",
-  "target": [
-    "BMAL1",
-    "PER",
-    "CRY",
-    "REV"
-  ],
-  "workers": 8
+  "model": "almeida",
+  "target": ["BMAL1", "PER", "CRY", "REV"],
+  "mode": "instant",
+  "section": "PER",
+  "readout": "REV",
+  "n_phase": 20,
+  "n_dose": 14,
+  "optimizer": "cma",
+  "start": "base",
+  "seeds": [0],
+  "popsize": 32,
+  "maxfev": 8000
 }

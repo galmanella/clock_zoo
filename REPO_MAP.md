@@ -241,6 +241,35 @@ tracking.
         SOLVER LIMIT and a DIVERGENCE render identically -- walk the span out and report which
         one it is.
 
+16. **`out/` IS OUTPUT. IT IS NEVER AN INPUT. Anything a later run DEPENDS on lives in
+    `fixtures/`.**
+
+    S_crit is an input to every fit -- it sets the dose window -- but `analysis.scrit` writes it
+    into `out/`, which is gitignored. So a fresh clone has none of it and every cluster array
+    task exited with "run `analysis.scrit` first". The first fix was to search `out/` and fall
+    back to `fixtures/`, and that was WRONG for two reasons:
+
+      * it contradicted its own justification. If a local `out/` run overrides the tracked
+        value, two machines silently disagree about the dose window and their fits stop being
+        comparable -- the exact failure the fixture existed to prevent.
+      * it was fragile in a duller way: an `out/` directory that merely EXISTS but is empty, or
+        that holds the other perturbation mode, changes which branch runs.
+
+    THE RULE IS ABSOLUTE, and it is not only about S_crit. If a result is needed as the basis
+    of another run, PROMOTE it:
+
+        python -m fit.doses --promote --model almeida --mode instant [--dry-run]
+        git add fixtures/scrit/almeida && git commit
+
+    Promotion is deliberate, reviewable, and shows up as a diff. "The dose window changed"
+    should be a commit, not a property of whichever machine ran `analysis.scrit` most recently.
+
+    The test that this holds: hide the fixture and confirm the code FAILS even though a
+    perfectly good result is sitting in `out/`.
+
+        mv fixtures/scrit/almeida /tmp/ && python -c "from fit.doses import fit_dose_grid;
+        fit_dose_grid('almeida','BMAL1','instant',8.0,14)"    # must raise, not succeed
+
 ## Open
 
 - `analysis/characterize.py` and `ptc_sens.py` have not yet been run for Korencic or

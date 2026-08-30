@@ -63,43 +63,31 @@ import numpy as np
 import paths
 
 
-def load_scrit(model_name, target, mode='instant', tag=None):
-    """(S_crit, full_dose_grid, dt) for one target, from the newest scrit run THAT HAS IT.
+def load_scrit(model_name, target, mode='instant'):
+    """(S_crit, full_dose_grid, dt) for one target, read from fixtures/scrit/<model>/.
 
-    Searches tags newest-first rather than taking `latest_run` and hoping. scrit runs are
-    per-mode: a `--mode instant` run writes only `scrit_instant*.npz`, so asking the newest tag
-    for a pulse entry finds nothing even though a perfectly good pulse run exists under an older
-    tag. That silently skipped every pulse configuration in a conditioning sweep, which read as
-    "pulse is unavailable" rather than "look one directory over".
+    NO out/ IS CONSULTED. See the note in the body: a result in out/ silently overriding the
+    tracked value is how two machines end up fitting on different dose windows.
     """
-    if tag is not None:
-        tags = [tag]
-    else:
-        d = paths.model_dir(model_name, 'scrit') if hasattr(paths, 'model_dir') else None
-        root = d or os.path.join(paths.OUT, model_name, 'scrit')
-        tags = sorted((t for t in os.listdir(root)
-                       if os.path.isdir(os.path.join(root, t))), reverse=True) \
-            if os.path.isdir(root) else []
-    # FIXTURES ARE SEARCHED LAST, AND THAT ORDER MATTERS.
+    # OUT/ IS OUTPUT. IT IS NEVER AN INPUT. S_crit is read ONLY from fixtures/.
     #
-    # S_crit is an INPUT to every fit -- it sets the dose window -- but it is produced into
-    # out/, which is gitignored, so a fresh clone (i.e. the cluster) has none of it and every
-    # task exits with "run analysis.scrit first". Recomputing per machine is also wrong: the
-    # canonical per-gene values are a documented result (PROJECT_SUMMARY 3.4) that this project
-    # has agreed not to recompute, and two machines silently disagreeing about the dose window
-    # would make their fits incomparable.
+    # An earlier version searched out/ first and fell back to fixtures. That was wrong, and it
+    # contradicted its own justification: if a local run in out/ overrides the tracked value,
+    # then two machines silently disagree about the dose window and their fits stop being
+    # comparable -- the exact failure the fixture was introduced to prevent. It was also
+    # fragile in a duller way: an out/ directory that merely EXISTS but is empty, or holds the
+    # other perturbation mode, changes which branch runs.
     #
-    # So a tracked copy lives in fixtures/scrit/<model>/ and is used only when out/ has nothing
-    # -- a local run always wins, so recomputing deliberately still overrides the fixture.
+    # So the rule is absolute. `analysis.scrit` PRODUCES S_crit into out/; promoting it to
+    # fixtures/ is a separate, deliberate, reviewable act:
+    #
+    #     python -m fit.doses --promote --model almeida --mode instant [--tag TAG]
+    #
+    # which makes "the dose window changed" a tracked diff rather than a property of whichever
+    # machine happened to run last.
     fixture_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                'fixtures', 'scrit', model_name)
-    search = [(paths.out_dir(model_name, 'scrit', tg, create=False), tg) for tg in tags]
-    if os.path.isdir(fixture_dir):
-        search.append((fixture_dir, 'fixtures'))
-    if not search:
-        raise SystemExit(f"no S_crit for {model_name}: run `python -m analysis.scrit "
-                         f"--model {model_name} --mode {mode}`, or add a tracked copy under "
-                         f"fixtures/scrit/{model_name}/")
+    search = [(fixture_dir, 'fixtures')]
     seen = []
     for d, tg in search:
         for fp in sorted(glob.glob(os.path.join(d, f'scrit_{mode}*.npz'))):
@@ -109,17 +97,18 @@ def load_scrit(model_name, target, mode='instant', tag=None):
                 i = names.index(target)
                 grid = np.asarray(z[f'grid__{target}']) if f'grid__{target}' in z else None
                 dt = float(z['dt_used'][i]) if 'dt_used' in z.files else 0.02
-                if tg == 'fixtures':
-                    print(f"[doses] S_crit for {target} ({mode}) read from the tracked "
-                          f"fixture, not from a local run", flush=True)
                 return float(z['S_crit'][i]), grid, dt
         seen.append(tg)
-    raise SystemExit(f"no scrit entry for {target} ({mode}) in any of {seen} -- "
-                     f"run `python -m analysis.scrit --model {model_name} --mode {mode}`, "
-                     f"or add fixtures/scrit/{model_name}/scrit_{mode}.npz")
+    raise SystemExit(
+        f"no S_crit for {target} ({mode}) in fixtures/scrit/{model_name}/." \
+        + chr(10) + f"  1. produce it:  python -m analysis.scrit --model {model_name} "
+        f"--mode {mode}" + chr(10)
+        + f"  2. promote it:  python -m fit.doses --promote --model {model_name} "
+        f"--mode {mode}" + chr(10)
+        + f"  3. commit fixtures/scrit/{model_name}/ so every machine agrees.")
 
 
-def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10, tag=None,
+def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10,
                   lo_factor=0.5):
     """(doses, S_crit) -- a log-spaced fit window from lo_factor*S_crit to max_factor*S_crit.
 
@@ -145,8 +134,70 @@ def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10, tag=
         8 * S_crit is still well inside the smooth regime: the gradient pathology sets in around
         18 * S_crit, and 3-5 * S_crit measured |grad| = 2.4 against 0.7 near S_crit.
     """
-    S, _grid, dt = load_scrit(model_name, target, mode, tag)
+    S, _grid, dt = load_scrit(model_name, target, mode)
     if not np.isfinite(S):
         raise SystemExit(f"{target} ({mode}) has no S_crit -- it does not reset, so there is "
                          f"no transition to fit")
     return np.geomspace(lo_factor * S, max_factor * S, int(n)), S
+
+
+def promote(model_name, mode='instant', tag=None, dry_run=False):
+    """Copy an S_crit result out of out/ into fixtures/ -- the ONLY way it becomes an input.
+
+    Deliberately a separate command rather than something a fit does implicitly. Promoting
+    changes the dose window every future fit on every machine will use, so it should be an act
+    someone performs and commits, visible as a diff, not a side effect of whoever ran
+    `analysis.scrit` most recently.
+    """
+    import shutil
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dest = os.path.join(root, 'fixtures', 'scrit', model_name)
+
+    d = paths.model_dir(model_name, 'scrit') if hasattr(paths, 'model_dir') else None
+    src_root = d or os.path.join(paths.OUT, model_name, 'scrit')
+    tags = [tag] if tag else sorted(
+        (t for t in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, t))),
+        reverse=True) if os.path.isdir(src_root) else []
+    for tg in tags:
+        hits = sorted(glob.glob(os.path.join(src_root, tg, f'scrit_{mode}*.npz')))
+        if not hits:
+            continue
+        src = hits[-1]
+        z = np.load(src, allow_pickle=True)
+        names = [str(t) for t in z['targets']]
+        S = np.asarray(z['S_crit'])
+        print(f"promoting {src}")
+        print(f"  -> {os.path.join(dest, os.path.basename(src))}")
+        for nm, sv in zip(names, S):
+            print(f"     {nm:9s} S_crit {sv:12.4f}" + ("   (no reset)" if not np.isfinite(sv)
+                                                       else ""))
+        if dry_run:
+            print("  --dry-run: nothing copied")
+            return src
+        os.makedirs(dest, exist_ok=True)
+        for ext in ('', '.meta.json'):
+            if os.path.exists(src + ext):
+                shutil.copy2(src + ext, os.path.join(dest, os.path.basename(src) + ext))
+        print(f"  copied. NOW COMMIT fixtures/scrit/{model_name}/ so the cluster sees it.")
+        return src
+    raise SystemExit(f"no scrit_{mode}*.npz under {src_root} (tags tried: {tags or 'none'}) -- "
+                     f"run `python -m analysis.scrit --model {model_name} --mode {mode}` first")
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(
+        description='S_crit is read from fixtures/ only; this promotes an out/ result into it.')
+    ap.add_argument('--promote', action='store_true', required=True)
+    ap.add_argument('--model', default='almeida')
+    ap.add_argument('--mode', default='instant', choices=('instant', 'pulse'))
+    ap.add_argument('--tag', default=None, help='which out/ run (default: newest that has it)')
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args(argv)
+    promote(a.model, a.mode, a.tag, a.dry_run)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+

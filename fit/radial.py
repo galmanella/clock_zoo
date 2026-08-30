@@ -162,6 +162,15 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
               f"Raise --n-phase / --n-dose until the base passes before trusting this run.",
               flush=True)
 
+    # the pinned target rendered on this grid, for the record and the figure
+    if tgt.k is not None:
+        from fit.target import radial_z as _rz
+        _ptc_used = (np.angle(np.asarray(_rz(np.asarray(C['old']), doses,
+                                             float(tgt.k), float(tgt.psi))))
+                     / (2 * np.pi)) % 1.0
+    else:
+        _ptc_used = np.full((n_phase, len(doses)), np.nan)
+
     t0 = time.time()
     if optimizer == 'cma':
         # anneal, not ipop -- see fit/search.cma. The obstacle here is small-scale ruggedness,
@@ -205,27 +214,58 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     # bound is now two-sided and stability is checked explicitly.
     amp_ratio = after['amp_lc'] / max(before['amp_lc'], 1e-12)
     per_ratio = after['period'] / max(before['period'], 1e-12)
-    collapsed = (amp_ratio < 0.5 or amp_ratio > 2.0
-                 or per_ratio < 0.5 or per_ratio > 2.0
-                 or not (0.0 < after['mu'] < 0.99))
+
+    # DEGENERATE == NOT OSCILLATING, decided by which side of the Hopf bifurcation the
+    # physiological fixed point sits on. This replaced an amplitude-RATIO test, which was
+    # wrong twice over. `amp_lc` is range / |mean| on ONE species, so (a) a species whose
+    # BASELINE falls toward zero inflates it without the oscillation growing at all, and
+    # (b) the verdict changes when the reference species changes, for the same fit.
+    #
+    # RAD03 was declared DEGENERATE for 'amplitude x2.54' when BMAL1's absolute range had
+    # SHRUNK 6.4x (27.79 -> 4.34) while its mean fell 16x (6.41 -> 0.394). Every other
+    # species was healthy or larger: PER 55 -> 86, PER_CRY 22 -> 68, CRY 15 -> 30.
+    #
+    # Whether a deterministic system still oscillates is not a question about amplitude. The
+    # cost already answers it every evaluation as `re_lambda`, with `fp_res` saying whether
+    # Newton reached a fixed point at all. MEASURED: base +0.06275, RAD03 +0.02507, RAD05
+    # +0.01723, all at fp_res ~1e-15 -- both fits unambiguously oscillate.
+    re_fit = float(after['parts']['re_lambda'])
+    fp_res = float(after['parts']['fp_res'])
+    fp_ok = fp_res < 1e-6
+    collapsed = (not fp_ok) or re_fit <= 0.0 or not (0.0 < after['mu'] < 0.99)
     if collapsed:
         why = []
-        if amp_ratio < 0.5 or amp_ratio > 2.0:
-            why.append(f"amplitude x{amp_ratio:.3g}")
-        if per_ratio < 0.5 or per_ratio > 2.0:
-            why.append(f"period x{per_ratio:.3g} ({after['period']:.3f} h)")
+        if not fp_ok:
+            why.append(f'fixed-point solve did not converge (residual {fp_res:.2e}), so the '
+                       f'stability test is not a measurement')
+        elif re_fit <= 0.0:
+            why.append(f'Re(lambda_max) = {re_fit:+.5f} at the fixed point -- STABLE, i.e. '
+                       f'on the non-oscillating side of the Hopf bifurcation')
         if not (0.0 < after['mu'] < 0.99):
             why.append(f"Floquet mu = {after['mu']:.4f} (not an attracting cycle)")
         print("\n  DEGENERACY: " + "; ".join(why))
+    else:
+        print(f"\n  oscillation OK: Re(lambda_max) = {re_fit:+.5f} > 0 at "
+              f"the fixed point (base "
+              f"{float(before['parts']['re_lambda']):+.5f}), Floquet mu "
+              f"{after['mu']:.4f}")
+
+    # A SEPARATE claim from degeneracy: still an oscillator, but no longer a circadian one.
+    # Period is pure GAUGE in parameter space -- freely rescalable -- so residual bought by
+    # stretching time is not radialization, but it is also not a dead clock.
+    off_regime = per_ratio < 0.7 or per_ratio > 1.4
+    if off_regime and not collapsed:
+        print(f"  OUT OF CIRCADIAN RANGE: period {before['period']:.2f} -> "
+              f"{after['period']:.2f} h (x{per_ratio:.3g}). The oscillation is genuine.")
     improved = after['parts']['c_ptc'] < 0.9 * before['parts']['c_ptc']
     less_twist = after['total_twist'] < before['total_twist']
     print(f"\n  residual {before['parts']['c_ptc']:.4f} -> {after['parts']['c_ptc']:.4f}"
           f"   twist {before['total_twist']:.4f} -> {after['total_twist']:.4f}"
           f"   amplitude {before['amp_lc']:.3f} -> {after['amp_lc']:.3f}")
     if collapsed:
-        print("  VERDICT: DEGENERATE -- the oscillator left the circadian regime (see above). "
-              "Any twist or residual improvement is an artefact of fitting a different "
-              "dynamical object, not radialization.")
+        print("  VERDICT: DEGENERATE -- there is no self-sustained oscillation (see above). "
+              "Any twist or residual improvement is an artefact of fitting a "
+              "different dynamical object, not radialization.")
     elif not after['quality_pass']:
         print("  VERDICT: UNUSABLE -- the fitted surface fails the PTC quality gate, so its "
               "twist and S_crit are not measurements.")
@@ -247,6 +287,20 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
                 ptc_target_base=before['ptc_target'], ptc_target_fit=after['ptc_target'],
                 k_target_base=before['k_target'], k_target_fit=after['k_target'],
                 psi_target_base=before['psi_target'], psi_target_fit=after['psi_target'],
+                # THE TARGET THE COST ACTUALLY USED, which is not the profiled registration
+                # above whenever the target is pinned. Stored separately and explicitly rather
+                # than reconstructed later, so a figure can never again caption a profiled
+                # surface as "the target".
+                # THE OBSERVABLE IS PART OF THE RUN. Without it a re-plot silently adopts
+                # whatever the model default happens to be today -- see REPO_MAP hazard 14.
+                section=str(model.reference_variable),
+                readout=str(getattr(model, 'readout_variable', None)
+                            or model.reference_variable),
+                off_regime=bool(off_regime), re_lambda_fit=float(re_fit),
+                target_pinned=bool(tgt.k is not None),
+                k_used=float(tgt.k) if tgt.k is not None else np.nan,
+                psi_used=float(tgt.psi) if tgt.psi is not None else np.nan,
+                ptc_target_used=_ptc_used,
                 cyc_base=before['cyc'], cyc_fit=after['cyc'],
                 obs=np.array(before['obs']),
                 alive_base=before['alive'], alive_fit=after['alive'],

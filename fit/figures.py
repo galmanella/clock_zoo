@@ -58,15 +58,54 @@ def _backfill(z, old, doses, names):
     from engine.orbit import OrbitSolver, make_guess_fn
     from fit.target import profile as _profile, radial_z as _radial_z
 
+    # RECONSTRUCT THE PINNED TARGET for runs made before it was stored. Pinning is the
+    # default (`--profile-target` opts out) and `from_singularity` is exactly k = 1/S_crit,
+    # psi = phi* - 0.5 applied to the SEED's measured singularity -- both of which the run
+    # already saved as base__S_crit / base__phi_sing. So this is a re-derivation, not a guess.
+    if 'ptc_target_used' not in z and {'base__S_crit', 'base__phi_sing'} <= set(z):
+        from fit.target import radial_z as _rz
+        S0, p0 = float(z['base__S_crit']), float(z['base__phi_sing'])
+        if np.isfinite(S0) and S0 > 0 and np.isfinite(p0):
+            z['k_used'] = 1.0 / S0
+            z['psi_used'] = (p0 - 0.5) % 1.0
+            z['ptc_target_used'] = (np.angle(np.asarray(
+                _rz(old, doses, z['k_used'], z['psi_used']))) / (2 * np.pi)) % 1.0
+            z['target_pinned'] = True
+
     need_t = 'ptc_target_fit' not in z
     need_c = 'cyc_fit' not in z
     need_r = 'fit__orbit_res' not in z
     if not (need_t or need_c or need_r):
         return
     model = get_model(str(z['model']))
-    solver = OrbitSolver(model)
-    guess = make_guess_fn(model)
     y_seed = jnp.asarray(model.get_initial_state(), jnp.float64)
+
+    # SOLVE WITH THE SECTION THE RUN USED, not the one the model defaults to now.
+    #
+    # If the run recorded it, use it. If it predates that (RAD01/RAD03/RAD05), recover it by
+    # trying the candidates and keeping the one that actually converges -- a wrong section does
+    # not merely shift the phase origin, it fails to solve, so the residual identifies it
+    # unambiguously. The choice is reported rather than assumed silently.
+    cands = [str(z['section'])] if 'section' in z else         [str(model.reference_variable)] + [s_ for s_ in model.state_names
+                                           if s_ != model.reference_variable]
+    best = None
+    for sec in cands:
+        try:
+            sv, gs = OrbitSolver(model, ref=sec), make_guess_fn(model, ref=sec)
+            P0 = model.jax_apply(np.asarray(z['theta_fit']), names)
+            _y, _T, r = jax.jit(sv.solve)(P0, gs(P0, y_seed))
+            r = float(r)
+        except Exception:
+            continue
+        if best is None or r < best[0]:
+            best = (r, sec, sv, gs)
+        if r < 1e-8:
+            break
+    _res, sec_used, solver, guess = best
+    z['section_used'] = sec_used
+    if 'section' not in z:
+        print(f"[fig] run did not record its section; recovered '{sec_used}' "
+              f"(fitted BVP residual {_res:.2e})")
     obs = list(model.observable_states())
     oidx = [int(model.var_index(sn)) for sn in obs]
     z['obs'] = np.array(obs)
@@ -142,13 +181,28 @@ def fig_radial(z):
     def _sc(key):
         return float(z[key]) if key in z and np.isfinite(z[key]) else None
 
-    k_t = float(z['k_target_fit']) if 'k_target_fit' in z else np.nan
-    panels = [('radial target', np.asarray(z['ptc_target_fit']),
-               (1.0 / k_t) if np.isfinite(k_t) and k_t > 0 else None),
+    # PREFER THE TARGET THE COST USED. `ptc_target_*` are per-surface PROFILED registrations
+    # -- each surface's own best alignment to a radial pattern -- which is a descriptive
+    # statistic, not the thing the optimizer minimised against. When the run pinned its target,
+    # that pinned surface is the only honest thing to label "target" and the only honest thing
+    # to difference against.
+    pinned = bool(z['target_pinned']) if 'target_pinned' in z else False
+    if pinned and 'ptc_target_used' in z:
+        t_ptc = np.asarray(z['ptc_target_used'])
+        k_t = float(z['k_used'])
+        t_lab = f'radial target (PINNED, S={1.0 / k_t:.4g})'
+        t_base = t_fit = t_ptc
+    else:
+        t_ptc = np.asarray(z['ptc_target_fit'])
+        k_t = float(z['k_target_fit']) if 'k_target_fit' in z else np.nan
+        t_lab = 'radial target (profiled per surface)'
+        t_base, t_fit = np.asarray(z['ptc_target_base']), np.asarray(z['ptc_target_fit'])
+
+    panels = [(t_lab, t_ptc, (1.0 / k_t) if np.isfinite(k_t) and k_t > 0 else None),
               ('base', np.asarray(z['ptc_base']), _sc('base__S_crit')),
               ('fitted', np.asarray(z['ptc_fit']), _sc('fit__S_crit'))]
-    diffs = [('|base - target|', np.asarray(z['ptc_base']), np.asarray(z['ptc_target_base'])),
-             ('|fitted - target|', np.asarray(z['ptc_fit']), np.asarray(z['ptc_target_fit']))]
+    diffs = [('|base - target|', np.asarray(z['ptc_base']), t_base),
+             ('|fitted - target|', np.asarray(z['ptc_fit']), t_fit)]
 
     # dedicated colorbar columns so no panel is narrower than its neighbours
     fig = plt.figure(figsize=(20.5, 9.0))
@@ -261,9 +315,22 @@ def fig_radial(z):
     ax.text(0.0, 1.0, "\n".join(lines), family='monospace', fontsize=9, va='top',
             color=('#b31d28' if bad else '#1a7f37'), transform=ax.transAxes)
 
-    lab = 'DEGENERATE' if bad else ('radialized' if bool(z['improved']) else 'no progress')
+    # THE TITLE MUST AGREE WITH THE VERDICT. It used to read `improved` alone, so RAD05 was
+    # captioned "radialized" while radial.py's own verdict was UNUSABLE: twist had moved
+    # 0.4972 -> 0.4818, technically "less", on a surface with three singularities and a winding
+    # set of [0, 1, 2]. A twist number read off a surface that fails the quality gate is not a
+    # measurement, so a figure must never promote it to a headline.
+    qual_ok = bool(z['quality_fit']) if 'quality_fit' in z else True
+    if bad:
+        lab, col = 'DEGENERATE', '#b31d28'
+    elif not qual_ok:
+        lab, col = 'UNUSABLE -- fitted surface fails the PTC quality gate', '#b31d28'
+    elif bool(z['improved']):
+        lab, col = 'radialized', 'black'
+    else:
+        lab, col = 'no progress', 'black'
     fig.suptitle(f"{z['model']}/{z['target']} ({z['mode']}) radial fit [{z['optimizer']}] "
-                 f"-- {lab}", fontsize=12, color=('#b31d28' if bad else 'black'))
+                 f"-- {lab}", fontsize=12, color=col)
     return _save(fig, f"radial_{z['target']}_{z['mode']}_{z['optimizer']}",
                  target=str(z['target']), degenerate=bool(bad))
 

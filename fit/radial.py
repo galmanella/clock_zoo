@@ -403,7 +403,24 @@ def run_seeds(cfg):
     from models import get_model
     _m = get_model(cfg.model)
     n_free = quotient_basis(_m)[0].shape[1]
-    starts = start_points(cfg, n_free)
+    if cfg.start == 'viable':
+        from fit.viability import find_starts
+        starts, via_report = find_starts(
+            cfg.model, seeds, workers=cfg.workers, section=cfg.section,
+            readout=cfg.readout, bound=cfg.bound, period_lo=cfg.viable_period_lo,
+            period_hi=cfg.viable_period_hi, min_ratio=cfg.viable_min_ratio,
+            max_draws=cfg.viable_max_draws, verbose=cfg.verbose)
+        missing = [sd for sd, v in starts.items() if v is None]
+        if missing:
+            # LOUD, not silent. A quiet fallback to base would turn a dispersed campaign into
+            # a start='base' one while still calling itself 'viable' in the output.
+            print(f"[viability] WARNING: seeds {missing} found no healthy circadian clock "
+                  f"within {cfg.viable_max_draws} draws and will start from BASE instead. "
+                  f"Their results are NOT independent starts.", flush=True)
+            for sd in missing:
+                starts[sd] = np.zeros(n_free)
+    else:
+        starts, via_report = start_points(cfg, n_free), None
     if cfg.start != 'base':
         D = np.array([[np.linalg.norm(starts[a] - starts[b]) for b in seeds] for a in seeds])
         off = D[np.triu_indices(len(seeds), 1)] if len(seeds) > 1 else np.array([0.0])
@@ -418,9 +435,42 @@ def run_seeds(cfg):
         # stays one directory level and carries its structure in the name instead.
         tag = base_tag if len(seeds) == 1 else f"{base_tag}__seed{sd}"
         out.append(run(cfg, seed=sd, tag=tag, v_start=starts[sd]))
+    if via_report is not None:
+        _save_viability(cfg, via_report, base_tag)
     if len(seeds) > 1:
         _compare_seeds(cfg, seeds, out, base_tag)
     return out
+
+
+def _save_viability(cfg, report, tag):
+    """Keep the rejection-sampling record. The REJECTED draws are the point.
+
+    A seed needs on the order of a thousand draws to find a healthy circadian clock, and every
+    one of those draws is a viability measurement of a random parameter set. Across a campaign
+    that is tens of thousands of samples of where a clock can exist -- accumulated for free, as
+    a byproduct of seeding, rather than paid for as a separate survey.
+    """
+    found = np.array([bool(r['found']) for r in report])
+    draws = np.array([int(r['draws']) for r in report])
+    rate = float(found.sum()) / max(int(draws.sum()), 1)
+    print(f"[viability] recorded {int(draws.sum())} draws, {int(found.sum())} accepted "
+          f"(rate {rate:.3%}) -> the campaign accumulates this map for free", flush=True)
+    blob = dict(seeds=np.array([r['seed'] for r in report]), found=found, draws=draws,
+                hit_rate=rate,
+                period=np.array([np.nan if r['period'] is None else r['period']
+                                 for r in report]),
+                min_ratio=np.array([np.nan if r['min_ratio'] is None else r['min_ratio']
+                                    for r in report]),
+                norm=np.array([np.nan if r['norm'] is None else r['norm'] for r in report]),
+                cfg_json=json.dumps(cfg.to_dict(), sort_keys=True))
+    # the sampled |v| and their verdicts, so a viability map can be built from campaign output
+    pr = [(r['seed'], nv, ok) for r in report for nv, ok in r['probes']]
+    if pr:
+        blob['probe_seed'] = np.array([p[0] for p in pr])
+        blob['probe_norm'] = np.array([p[1] for p in pr])
+        blob['probe_ok'] = np.array([p[2] for p in pr])
+    paths.savez(paths.out_path(cfg.model, 'fit_radial',
+                               f'viability_{cfg.target}_{cfg.mode}.npz', tag), **blob)
 
 
 def _compare_seeds(cfg, seeds, results, tag):

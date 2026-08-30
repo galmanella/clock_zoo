@@ -111,6 +111,11 @@ class RunConfig:
     #:             multimodality question needs.
     #: 'random'    independent uniform draws of radius `start_radius`; simpler than a Latin
     #:             hypercube and clumpier for small N.
+    #: 'viable'    REJECTION SAMPLE the whole box until a healthy circadian clock is found,
+    #:             per seed. The accepted starts are as far apart as the viable set permits --
+    #:             which isotropic dispersion cannot achieve, because any radius large enough
+    #:             to separate seeds is mostly dead. See fit/viability.py for the three-part
+    #:             acceptance test and the measurements that forced each part.
     start: str = 'base'
     #: dispersion radius in gauge-quotient log-parameter units.
     #:
@@ -130,6 +135,19 @@ class RunConfig:
     #: -- which move far in parameter space while preserving the dynamics -- is the right tool
     #: and is not built yet.
     start_radius: float = 0.25
+
+    #: acceptance window for start='viable', as multiples of the model's nominal period. A
+    #: 6 h oscillator is a real limit cycle and a useless place to start a circadian fit.
+    viable_period_lo: float = 0.7
+    viable_period_hi: float = 1.4
+    #: reject a start where any species' minimum falls below this fraction of its own mean.
+    #: Base sits at 0.014, so 1e-3 admits it while rejecting the collapsed corners that make up
+    #: most of the far viable set.
+    viable_min_ratio: float = 1e-3
+    #: give up after this many draws for one seed. At a measured ~0.9% raw viable rate -- and
+    #: lower once circadian and non-collapsed are required -- a seed needs on the order of a
+    #: thousand draws, and the geometric tail is long (observed gaps up to 281 at 0.87%).
+    viable_max_draws: int = 20000
 
     #: seeds to run. A LIST runs several independent searches in one job, which is what the
     #: multimodality question needs; results are saved per seed and compared.
@@ -178,9 +196,14 @@ class RunConfig:
         # measured: a 2-seed BOBYQA smoke campaign returned cost spread 0.000000 and pairwise
         # distance 0.000. That is not multimodality evidence, it is the same run twice, and on
         # a cluster it is N-1 wasted array tasks.
-        if self.start not in ('base', 'dispersed', 'random'):
-            bad.append(f"start {self.start!r} must be base/dispersed/random")
-        if self.start != 'base' and not (0 < self.start_radius <= self.bound):
+        if self.start not in ('base', 'dispersed', 'random', 'viable'):
+            bad.append(f"start {self.start!r} must be base/dispersed/random/viable")
+        if self.start == 'viable' and not (0 < self.viable_period_lo
+                                           < self.viable_period_hi):
+            bad.append(f"need 0 < viable_period_lo < viable_period_hi, got "
+                       f"{self.viable_period_lo}/{self.viable_period_hi}")
+        if self.start in ('dispersed', 'random') and not (0 < self.start_radius
+                                                          <= self.bound):
             bad.append(f"start_radius must be in (0, bound={self.bound}], got "
                        f"{self.start_radius}")
         if (len(self.seed_list) > 1 and self.start == 'base'
@@ -372,6 +395,10 @@ def start_points(cfg, n_free):
     n = int(n_free)
     if cfg.start == 'base':
         return {sd: np.zeros(n) for sd in seeds}
+    if cfg.start == 'viable':
+        # handled by fit.viability.find_starts, which needs the model and can fail per seed
+        raise RuntimeError("start='viable' is resolved by fit.viability.find_starts, "
+                           "not by start_points")
     if cfg.start == 'random':
         return {sd: np.random.default_rng(1000 + sd).uniform(
             -cfg.start_radius, cfg.start_radius, n) for sd in seeds}

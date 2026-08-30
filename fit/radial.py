@@ -402,7 +402,10 @@ def run_seeds(cfg):
     from fit.cost import quotient_basis
     from models import get_model
     _m = get_model(cfg.model)
-    n_free = quotient_basis(_m)[0].shape[1]
+    # unpack by NAME: quotient_basis returns (names, z_base, B, gauge) and indexing it
+    # positionally is how this became `list.shape` -- twice, in two different files
+    _nm, _zb, _B, _gg = quotient_basis(_m)
+    n_free = _B.shape[1]
     if cfg.start == 'viable':
         from fit.viability import find_starts
         starts, via_report = find_starts(

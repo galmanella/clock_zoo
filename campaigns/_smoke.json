@@ -1,13 +1,16 @@
 {
-  "notes": "Tiny end-to-end validation of the config/campaign/multi-seed path. Not science.",
+  "notes": "Tiny end-to-end validation of config -> campaign -> viable starts -> multi-seed -> save. Small bound so the rejection sampler hits quickly; this is a plumbing test, not science.",
   "tag": "SMOKECAMP",
   "target": "BMAL1",
   "section": "PER",
   "readout": "REV",
   "n_phase": 8,
   "n_dose": 5,
-  "optimizer": ["cma", "bobyqa"],
+  "optimizer": "cma",
   "maxfev": 60,
+  "popsize": 6,
+  "bound": 0.5,
+  "start": ["base", "viable"],
   "seeds": [0, 1],
   "workers": 1
 }

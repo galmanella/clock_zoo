@@ -95,11 +95,17 @@ class RunConfig:
     restarts: int = 2
     #: WHERE EACH SEED STARTS. This is what decides whether a seed sweep measures anything.
     #:
-    #: 'base'      every seed starts from the base parameters (CMA's default behaviour).
-    #:             MEASURED: the seeds' initial population CENTROIDS then sit 0.55 apart while
-    #:             their own members are 2.9 apart -- the clouds overlap almost completely, so
-    #:             the seeds differ by sampling noise and all explore one neighbourhood. Fine
-    #:             for "how good an optimum is there near base", useless for multimodality.
+    #: 'base'      every seed starts from the base parameters (CMA's default behaviour), so
+    #:             the seeds differ only in their sampling RNG. Their initial population
+    #:             centroids sit 0.55 apart while members within one population are 2.9 apart:
+    #:             the clouds overlap almost completely.
+    #:
+    #:             THAT DOES NOT MAKE IT USELESS FOR MULTIMODALITY, and an earlier version of
+    #:             this note wrongly said it did. Where searches START is not the question;
+    #:             where they END is. MEASURED, three seeds from the identical start converged
+    #:             3.4-6.3 apart in the gauge quotient with costs 0.145 / 0.195 / 0.266 --
+    #:             against a 0.55 starting separation, and a large fraction of the +-3 box
+    #:             (two random points there are ~9.8 apart). Seeds diverge on their own.
     #: 'dispersed' seeds are placed on a Latin hypercube of radius `start_radius`, so N seeds
     #:             COVER the region instead of clustering in it. This is the setting the
     #:             multimodality question needs.
@@ -179,9 +185,10 @@ class RunConfig:
                        f"{self.start_radius}")
         if (len(self.seed_list) > 1 and self.start == 'base'
                 and self.optimizer == 'cma'):
-            print(f"  [config] NOTE: {len(self.seed_list)} seeds with start='base' all begin "
-                  f"from the same point and differ only by sampling noise. For a MULTIMODALITY "
-                  f"sweep use start='dispersed'.")
+            print(f"  [config] NOTE: {len(self.seed_list)} seeds with start='base' begin "
+                  f"from one point and differ only in sampling. They still diverge (measured: "
+                  f"3.4-6.3 apart at convergence), so this is a valid multimodality sweep; "
+                  f"start='dispersed' widens the net but see start_radius for its limits.")
         if len(self.seed_list) > 1 and self.optimizer in ('bobyqa', 'lbfgs', 'lm'):
             bad.append(f"optimizer {self.optimizer!r} is DETERMINISTIC from a fixed start, so "
                        f"{len(self.seed_list)} seeds would produce {len(self.seed_list)} "

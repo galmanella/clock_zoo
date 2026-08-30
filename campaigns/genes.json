@@ -1,15 +1,26 @@
 {
-  "notes": "Radialize each gene in turn, four seeds each, to ask (a) which genes can be radialized at all and (b) whether each gene's landscape is multimodal.",
-  "tag": "genes",
-  "model": "almeida",
-  "target": ["BMAL1", "PER", "CRY", "REV"],
-  "mode": "instant",
-  "section": "PER",
-  "readout": "REV",
-  "n_phase": 20,
-  "n_dose": 14,
-  "optimizer": "cma",
   "maxfev": 4000,
-  "seeds": [0, 1, 2, 3],
+  "mode": "instant",
+  "model": "almeida",
+  "n_dose": 14,
+  "n_phase": 20,
+  "notes": "Radialize each gene in turn from the BASE parameters, four seeds each. Asks which genes can be radialized at all, and whether each gene's landscape is multimodal in the neighbourhood of base. start='base' is deliberate: seeds share a start and differ only in sampling, which measured 3.4-6.3 apart at convergence. For starts drawn from across the viable set, see bmal1_seeds.json.",
+  "optimizer": "cma",
+  "readout": "REV",
+  "section": "PER",
+  "seeds": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "start": "base",
+  "tag": "genes",
+  "target": [
+    "BMAL1",
+    "PER",
+    "CRY",
+    "REV"
+  ],
   "workers": 8
 }

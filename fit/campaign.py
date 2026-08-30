@@ -38,9 +38,16 @@ def load_matrix(path):
     silently duplicated array task is a wasted queue slot and a misleading directory.
     """
     base = RunConfig.load(path)
+    # `seeds` counts as an axis ONLY when given as a list of lists (seed SETS). Excluding it
+    # unconditionally meant a seed-set sweep produced no axes, so every entry got the same tag
+    # and the array tasks silently overwrote one another's output.
     axes = sorted(f.name for f in dataclasses.fields(RunConfig)
                   if f.name != 'seeds'
                   and isinstance(getattr(base, f.name), (list, tuple)))
+    sv = getattr(base, 'seeds')
+    if isinstance(sv, (list, tuple)) and sv and all(
+            isinstance(x, (list, tuple)) for x in sv):
+        axes = sorted(axes + ['seeds'])
     seen, configs, dropped = {}, [], 0
     for c in base.expand():
         c.validate()

@@ -257,8 +257,11 @@ class RunConfig:
         """
         parts = []
         for name in sorted(axes):
-            v = self.seed_list if name == 'seeds' else getattr(self, name)
-            parts.append(f"{name}-{v}")
+            if name == 'seeds':
+                # 'seeds-0-1-2-3', not 'seeds-[0, 1, 2, 3]' -- this becomes a directory name
+                parts.append('seeds-' + '-'.join(str(x) for x in self.seed_list))
+                continue
+            parts.append(f"{name}-{getattr(self, name)}")
         safe = [str(p).replace(' ', '').replace('/', '-').replace('=', '-') for p in parts]
         return '_'.join(safe) or 'run'
 
@@ -321,7 +324,18 @@ class RunConfig:
         axes = {}
         for f in fields(self):
             v = getattr(self, f.name)
-            if f.name != 'seeds' and isinstance(v, (list, tuple)):
+            if f.name == 'seeds':
+                # A LIST OF LISTS sweeps seed SETS, one per entry:
+                #     "seeds": [[0,1,2,3],[4,5,6,7]]   -> two runs of four seeds
+                # while a flat list stays one run of those seeds. This is what lets a big node
+                # spread seeds across array tasks instead of walking them sequentially inside
+                # one task, without breaking the rule that the seeds sharing a task are the
+                # unit `_compare_seeds` reports on.
+                if isinstance(v, (list, tuple)) and v and all(
+                        isinstance(x, (list, tuple)) for x in v):
+                    axes['seeds'] = [list(x) for x in v]
+                continue
+            if isinstance(v, (list, tuple)):
                 axes[f.name] = list(v)
         if not axes:
             return [copy.deepcopy(self)]

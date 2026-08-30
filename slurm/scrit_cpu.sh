@@ -19,11 +19,14 @@ export JAX_PLATFORMS=cpu JAX_ENABLE_X64=1
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 
 NSHARDS="${SLURM_ARRAY_TASK_COUNT:-1}"
-python -m analysis.scrit --model "$MODEL" --mode "$MODE" \
+PYTHON_EXE="${PYTHON_EXE:-/home/galmanel/miniconda3/envs/mirsky/bin/python}"
+[ -x "$PYTHON_EXE" ] || { echo "ERROR: no python at $PYTHON_EXE"; exit 1; }
+
+"$PYTHON_EXE" -m analysis.scrit --model "$MODEL" --mode "$MODE" \
        --shard "${SLURM_ARRAY_TASK_ID:-0}" --nshards "$NSHARDS"
 
 # the last task merges; all tasks share SLURM_ARRAY_JOB_ID, hence one output dir
 if [ "${SLURM_ARRAY_TASK_ID:-0}" -eq "$((NSHARDS - 1))" ]; then
     sleep 30
-    python -m analysis.scrit --model "$MODEL" --mode "$MODE" --merge
+    "$PYTHON_EXE" -m analysis.scrit --model "$MODEL" --mode "$MODE" --merge
 fi

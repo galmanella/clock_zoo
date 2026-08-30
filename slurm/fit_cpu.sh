@@ -55,22 +55,27 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 export CLOCKZOO_STRICT_PROVENANCE=1
 export JAX_ENABLE_X64=1                      # long-horizon circadian integration needs f64
 export JAX_PLATFORMS=cpu
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export XLA_FLAGS="--xla_force_host_platform_device_count=1"
+
+# The interpreter by ABSOLUTE PATH, not whatever PATH resolves to on a compute node.
+PYTHON_EXE="${PYTHON_EXE:-/home/galmanel/miniconda3/envs/mirsky/bin/python}"
+[ -x "$PYTHON_EXE" ] || { echo "ERROR: no python at $PYTHON_EXE"; exit 1; }
 
 SEED="${SLURM_ARRAY_TASK_ID:-0}"
 TAG="${SLURM_ARRAY_JOB_ID:-local}"
 
 # Fail loudly and early if the backend is missing, rather than after the queue wait.
-python -c "import diffrax, cma; print('[fit] diffrax', diffrax.__version__, 'cma', cma.__version__)"
+"$PYTHON_EXE" -c "import diffrax, cma; print('[fit] diffrax', diffrax.__version__, 'cma', cma.__version__)"
 
 # Gate every gradient run on the gradient actually being real. This is cheap next to the fit
 # and it is the check whose absence let hazard 1 invalidate a table in input_screen.
-python -m fit.cost --gradcheck --model "$MODEL" --target "$TARGET" --backend diffrax
+"$PYTHON_EXE" -m fit.cost --gradcheck --model "$MODEL" --target "$TARGET" --backend diffrax
 
 case "$WHAT" in
-  recover) python -m fit.recover --model "$MODEL" --target "$TARGET" --eps "$EPS" \
+  recover) "$PYTHON_EXE" -m fit.recover --model "$MODEL" --target "$TARGET" --eps "$EPS" \
                                  --seed "$SEED" --tag "$TAG" ;;
-  radial)  python -m fit.radial  --model "$MODEL" --target "$TARGET" \
+  radial)  "$PYTHON_EXE" -m fit.radial  --model "$MODEL" --target "$TARGET" \
                                  --optimizer "$OPT" --n-phase 20 --n-dose 14 \
                                  --max-factor 8.0 --seed "$SEED" --tag "$TAG" ;;
   *) echo "unknown mode '$WHAT' (want recover|radial)" >&2; exit 2 ;;

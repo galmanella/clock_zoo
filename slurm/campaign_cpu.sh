@@ -1,46 +1,85 @@
 #!/bin/bash
 #SBATCH --job-name=cz-campaign
-#SBATCH --output=slurm-%A_%a.out
-#SBATCH --cpus-per-task=16
+#SBATCH --output=/central/home/galmanel/slurmout/clock_zoo/campaign_%A_%a.out
+#SBATCH --error=/central/home/galmanel/slurmout/clock_zoo/campaign_%A_%a.err
+#SBATCH --cpus-per-task=32
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
 #
 # Usage:
-#   python -m fit.campaign --config campaigns/genes.json --dry-run     # ALWAYS do this first
+#   mkdir -p /central/home/galmanel/slurmout/clock_zoo      # ONCE -- sbatch will not create it
+#   $PYTHON_EXE -m fit.campaign --config campaigns/genes.json --dry-run   # ALWAYS first
 #   sbatch --array=0-3 slurm/campaign_cpu.sh campaigns/genes.json
 #
-#   ONE ARRAY TASK PER CONFIGURATION. --dry-run prints the exact --array range to use, and
-#   validates every entry before a queue slot is spent; a 24-task array that dies at task 0 on
-#   a typo has cost an hour of queue for nothing.
+#   ONE ARRAY TASK PER CONFIGURATION. --dry-run prints the exact --array range and validates
+#   every entry before a queue slot is spent; a 24-task array that dies at task 0 on a typo has
+#   cost an hour of queue for nothing.
 #
-# CPUS-PER-TASK IS THE CMA POPULATION WIDTH, AND IT IS NOT FREE
+# KEEP --cpus-per-task AND `popsize` MATCHED
 #   Each task parallelises its CMA population across $SLURM_CPUS_PER_TASK processes
-#   (fit/parallel.py). MEASURE IT ON THIS NODE BEFORE TRUSTING A NUMBER: on the development
-#   laptop -- an Intel Core Ultra 7 268V, 4 P-cores + 4 E-cores sharing 12 MB L3 -- each
-#   evaluation ran 5.7x SLOWER under 8-way concurrency, so 8 workers bought only ~2.4x. That is
-#   a property of a hybrid laptop part, not of the code, and a homogeneous node should do
-#   better. It should NOT be assumed to.
+#   (fit/parallel.py). The campaign files set `popsize` EXPLICITLY to the core count, so one
+#   member runs per core. If you change --cpus-per-task, change popsize with it.
 #
-#   The population is oversubscribed to the worker count by default (~4.1x, see
-#   recommend_popsize) so that fast members fill the gaps behind a slow one; evaluation times
-#   span 0.76 s to 15 s. Set `popsize` explicitly in the config to override.
+#   Do not be tempted by a much larger population: `recommend_popsize` oversubscribes ~4.1x to
+#   hide the straggler, which minimises wall-clock PER GENERATION but starves the search at a
+#   fixed budget. CMA converges in GENERATIONS -- 8000 evaluations is 250 generations at
+#   popsize 32 and only 61 at popsize 131, against the ~334 RAD03 needed at popsize 12.
+#
+# MEASURE THE NODE BEFORE TRUSTING A CORE COUNT
+#   Every parallel number in this repo came from a hybrid-core laptop (Core Ultra 7 268V,
+#   4 P-cores + 4 E-cores, 12 MB shared L3) where each evaluation ran 5.7x SLOWER under 8-way
+#   concurrency, so 8 workers bought only ~2.4x. That is a property of that part, not of the
+#   code. A homogeneous node should do better -- it should not be ASSUMED to.
 #
 # WHAT EACH TASK WRITES
-#   out/<model>/fit_radial/<campaign>/<what-varies>/seed<N>/ ... one directory per seed, plus a
-#   seeds_*.npz comparing them. The resolved RunConfig is stored inside every .npz as cfg_json,
-#   so a result carries its own definition and never has to be reconstructed from a filename.
-set -euo pipefail
+#   out/<model>/fit_radial/<campaign>__<what-varies>__seed<N>/ ... one directory per seed, plus
+#   seeds_*.npz comparing the seeds that share a task and viability_*.npz recording the
+#   rejection sampling. The resolved RunConfig is stored inside every .npz as cfg_json, so a
+#   result carries its own definition and never has to be reconstructed from a filename.
+#
+#   `out/` is gitignored: results do NOT travel back through git. rsync them.
+set -uo pipefail
 CONFIG="${1:?usage: sbatch --array=0-N slurm/campaign_cpu.sh <campaign.json>}"
 
 cd "$(dirname "$0")/.."
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+
+# ENVIRONMENT: the same interpreter Mirsky uses, by ABSOLUTE PATH.
+#
+# `python` on a compute node is whatever the login shell happened to put first on PATH, which
+# need not be the environment this code was tested against. A job that silently runs against
+# the wrong interpreter fails hours later -- or worse, succeeds with different numerics.
+# Override with PYTHON_EXE=... sbatch ... if the env moves.
+PYTHON_EXE="${PYTHON_EXE:-/home/galmanel/miniconda3/envs/mirsky/bin/python}"
+[ -x "$PYTHON_EXE" ] || { echo "ERROR: no python at $PYTHON_EXE"; exit 1; }
+
+# ONE THREAD PER PROCESS. The population is parallelised across PROCESSES, so letting each also
+# spawn a full thread pool only makes them contend. MEASURED: a single evaluation is no faster
+# at 4 threads than at 1 (1.552 s vs 1.298 s -- it is slower).
+export JAX_PLATFORMS=cpu JAX_ENABLE_X64=1
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export CLOCKZOO_STRICT_PROVENANCE=1
-export JAX_ENABLE_X64=1                      # long-horizon circadian integration needs f64
-export JAX_PLATFORMS=cpu
 
-# Fail before the science if a dependency is missing, not three hours in.
-python -c "import diffrax, cma, pybobyqa; print('[campaign] backends present')"
+echo "host=$(hostname)  start=$(date)  config=$CONFIG  task=${SLURM_ARRAY_TASK_ID:-0}"
+echo "python=$PYTHON_EXE  cores=${SLURM_CPUS_PER_TASK:-1}"
 
-python -m fit.campaign --config "$CONFIG" \
-       --index "${SLURM_ARRAY_TASK_ID:-0}" \
-       --workers "${SLURM_CPUS_PER_TASK:-1}"
+# Fail before the science if a dependency is missing, not three hours in. Required vs optional
+# is deliberate: pybobyqa/matplotlib/cmocean matter only for non-CMA optimizers and figures,
+# and a campaign of CMA fits should not be blocked by their absence.
+"$PYTHON_EXE" - <<'PY'
+import importlib.util as u, sys
+req = ['jax', 'numpy', 'scipy', 'diffrax', 'cma']
+opt = ['pybobyqa', 'matplotlib', 'cmocean']
+miss = [m for m in req if u.find_spec(m) is None]
+if miss:
+    sys.exit(f"ERROR: missing REQUIRED package(s): {miss}  "
+             f"-> pip install {' '.join(miss)}")
+lack = [m for m in opt if u.find_spec(m) is None]
+print("[campaign] required backends present"
+      + (f"; optional missing (figures/non-CMA only): {lack}" if lack else ""))
+PY
+rc=$?
+[ $rc -eq 0 ] || exit $rc
+
+"$PYTHON_EXE" -u -m fit.campaign --config "$CONFIG" --index "${SLURM_ARRAY_TASK_ID:-0}" --workers "${SLURM_CPUS_PER_TASK:-1}"
+echo "done=$(date)"

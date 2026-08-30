@@ -19,8 +19,11 @@ export CLOCKZOO_STRICT_PROVENANCE=1
 export JAX_ENABLE_X64=1                      # long-horizon circadian integration needs f64
 unset JAX_PLATFORMS                          # let JAX pick the GPU
 export XLA_PYTHON_CLIENT_PREALLOCATE=false   # play nicely with other jobs on the card
+PYTHON_EXE="${PYTHON_EXE:-/home/galmanel/miniconda3/envs/mirsky/bin/python}"
+[ -x "$PYTHON_EXE" ] || { echo "ERROR: no python at $PYTHON_EXE"; exit 1; }
 
-python -c "import jax; print('[gpu] devices:', jax.devices())"
-python -m analysis.ptc_sens --model "$MODEL" --target "$TARGET" --mode "$MODE"
-python -m analysis.lc_sens  --model "$MODEL"
-python -m analysis.coupling --model "$MODEL" --target "$TARGET" --mode "$MODE"
+
+"$PYTHON_EXE" -c "import jax; print('[gpu] devices:', jax.devices())"
+"$PYTHON_EXE" -m analysis.ptc_sens --model "$MODEL" --target "$TARGET" --mode "$MODE"
+"$PYTHON_EXE" -m analysis.lc_sens  --model "$MODEL"
+"$PYTHON_EXE" -m analysis.coupling --model "$MODEL" --target "$TARGET" --mode "$MODE"

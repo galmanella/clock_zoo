@@ -181,7 +181,21 @@ class OrbitSolver:
         largest of the REST -- it sets how fast an off-cycle perturbation relaxes back, i.e.
         how long you must wait before an "asymptotic" phase reading is actually asymptotic.
         """
-        ev = np.linalg.eigvals(np.asarray(self.monodromy(P, y0, T)))
+        M = np.asarray(self.monodromy(P, y0, T))
+        # A NON-FINITE MONODROMY IS A RESULT, NOT AN EXCEPTION.
+        #
+        # The monodromy integrates the variational equation over one period, so its entries
+        # grow like exp(lambda*T) and CAN overflow float64 even when the cycle itself solved
+        # cleanly -- a strongly contracting direction over a long period is enough. numpy then
+        # raises LinAlgError("Array must not contain infs or NaNs") from eigvals, which killed
+        # a completed BMAL1 fit during its post-hoc diagnosis and discarded hours of work.
+        #
+        # NaN is the honest answer: the multiplier is not measurable here. Callers already
+        # treat `not (0 < mu < 0.99)` as degenerate, so this flows into the existing verdict
+        # instead of terminating the run.
+        if not np.isfinite(M).all():
+            return float('nan'), np.full(M.shape[0], np.nan, dtype=complex)
+        ev = np.linalg.eigvals(M)
         mag = np.abs(ev)
         drop = int(np.argmin(np.abs(mag - 1.0)))       # the one closest to 1 == the phase mode
         rest = np.delete(mag, drop)

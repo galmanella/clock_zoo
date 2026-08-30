@@ -51,6 +51,50 @@ from fit.doses import fit_dose_grid
 from fit import search
 
 
+def _diagnose_safe(model, C, v, label):
+    """`_diagnose`, but a failure DEGRADES the report instead of destroying the run.
+
+    REPO_MAP hazard 7, violated by this very function. Diagnosis happens AFTER the optimizer
+    has finished, so an exception here throws away the whole fit -- and it did: a completed
+    BMAL1 campaign task died in `solver.floquet` on a non-finite monodromy
+    (LinAlgError: Array must not contain infs or NaNs) and hours of compute went with it.
+
+    The fit result is the expensive, irreplaceable thing; twist and Floquet numbers are
+    commentary on it. So a broken diagnosis returns NaNs and an `error` string, the verdict
+    says the diagnosis failed, and the raw surfaces and parameters are still written to disk.
+    """
+    try:
+        return _diagnose(model, C, v, label)
+    except Exception as exc:
+        import traceback
+        print(f"{chr(10)}  DIAGNOSIS FAILED for '{label}': "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc()
+        print("  The FIT ITSELF is unaffected and will still be saved; only the derived "
+              "twist / S_crit / Floquet numbers are missing.", flush=True)
+        n_ph, n_d = len(C['old']), len(C['doses'])
+        nan2 = np.full((n_ph, n_d), np.nan)
+        try:
+            zz, aa, am = C['surface'](v)
+            ptc = np.where(aa, (np.angle(zz) / (2 * np.pi)) % 1.0, np.nan)
+        except Exception:
+            ptc, aa, am = nan2, np.zeros((n_ph, n_d), bool), nan2
+        try:
+            parts = C['parts'](v)
+        except Exception:
+            parts = {}
+        return dict(label=label, ptc=ptc, alive=aa, amp=am,
+                    twist=np.full(n_d, np.nan), ptc_target=nan2,
+                    k_target=float('nan'), psi_target=float('nan'),
+                    cyc=np.zeros((0, 0)), obs=[], total_twist=float('nan'),
+                    S_crit=float('nan'), phi_sing=float('nan'), n_sing=-1,
+                    amp_lc=parts.get('amp_lc', float('nan')),
+                    period=parts.get('period', float('nan')), mu=float('nan'),
+                    quality_pass=False, scramble=float('nan'), winding_set=[],
+                    parts=parts, q={'passed': False, 'failures': [f'diagnosis failed: {exc}']},
+                    error=f'{type(exc).__name__}: {exc}')
+
+
 def _diagnose(model, C, v, label):
     """Everything needed to tell a real improvement from a dying clock."""
     from analysis import winding as W
@@ -187,7 +231,7 @@ def run(cfg, seed=None, tag=None, v_start=None):
     C = make_cost(model, target, doses, tgt, n_phase=n_phase, mode=mode,
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp,
                   pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout)
-    before = _diagnose(model, C, C['v0'], 'base')
+    before = _diagnose_safe(model, C, C['v0'], 'base')
     # The BASE surface has to be usable or nothing downstream means anything. A run was allowed
     # to proceed from a base that failed the gate (scramble 0.0563 at 16x10) and its "before"
     # twist and S_crit were therefore not measurements.
@@ -251,7 +295,7 @@ def run(cfg, seed=None, tag=None, v_start=None):
         runs = [search.lbfgs(C, C['v0'], bound=bound, maxiter=maxiter, label='nominal')]
     best = runs[0] if optimizer in ('cma', 'bobyqa') else min(runs, key=lambda r: r['f'])
     secs = time.time() - t0
-    after = _diagnose(model, C, best['v'], 'fitted')
+    after = _diagnose_safe(model, C, best['v'], 'fitted')
 
     print(f"\n{'=' * 78}\nRADIALIZATION -- {model_name}/{target} ({mode})\n{'=' * 78}")
     _report(before, C['amp_base'])
@@ -319,7 +363,11 @@ def run(cfg, seed=None, tag=None, v_start=None):
     print(f"\n  residual {before['parts']['c_ptc']:.4f} -> {after['parts']['c_ptc']:.4f}"
           f"   twist {before['total_twist']:.4f} -> {after['total_twist']:.4f}"
           f"   amplitude {before['amp_lc']:.3f} -> {after['amp_lc']:.3f}")
-    if collapsed:
+    if after.get('error'):
+        print(f"  VERDICT: FIT SAVED, DIAGNOSIS INCOMPLETE -- {after['error']}. The fitted "
+              f"parameters and surfaces are on disk; the twist / S_crit / Floquet numbers "
+              f"are not available for this run.")
+    elif collapsed:
         print("  VERDICT: DEGENERATE -- there is no self-sustained oscillation (see above). "
               "Any twist or residual improvement is an artefact of fitting a "
               "different dynamical object, not radialization.")

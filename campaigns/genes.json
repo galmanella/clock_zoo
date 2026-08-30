@@ -1,0 +1,15 @@
+{
+  "notes": "Radialize each gene in turn, four seeds each, to ask (a) which genes can be radialized at all and (b) whether each gene's landscape is multimodal.",
+  "tag": "genes",
+  "model": "almeida",
+  "target": ["BMAL1", "PER", "CRY", "REV"],
+  "mode": "instant",
+  "section": "PER",
+  "readout": "REV",
+  "n_phase": 20,
+  "n_dose": 14,
+  "optimizer": "cma",
+  "maxfev": 4000,
+  "seeds": [0, 1, 2, 3],
+  "workers": 8
+}

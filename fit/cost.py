@@ -369,7 +369,8 @@ class RadialTarget:
 # --------------------------------------------------------------------------- #
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
-              param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0):
+              param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0, pulse=8.0,
+              readout_ref=None):
     """Build the objective.
 
     Returns a dict with
@@ -384,8 +385,12 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     n_free = B.shape[1]
     Bj, zbj = jnp.asarray(B), jnp.asarray(z_base)
 
+    # `pulse` and `readout_ref` reach the PTC from here so that a run can set them. Before
+    # this they were make_ptc defaults that no caller could change: a pulse experiment was
+    # locked to 8 h, and the phase observable was whatever the model happened to declare.
     f, solver = make_ptc(model, target_state, mode=mode, readout='raw', skip_p=skip_p,
-                         dt=dt, track_min=True, backend=backend, grad_mode=grad_mode)
+                         dt=dt, track_min=True, backend=backend, grad_mode=grad_mode,
+                         pulse=pulse, readout_ref=readout_ref)
     guess = make_guess_fn(model)
     ph, dz = grid_points(n_phase, doses)
     nd, npz = len(doses), n_phase

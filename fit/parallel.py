@@ -90,7 +90,7 @@ _W = {}
 
 def cost_spec(model_name, target, doses, n_phase, mode='instant', backend='diffrax', dt=0.02,
               w_osc=0.2, w_amp=1.0, target_k=None, target_psi=None, section=None,
-              readout=None):
+              readout=None, pulse=8.0, skip_p=None):
     """A picklable description of a cost, sufficient to rebuild it in a worker.
 
     Everything here is a primitive or an array. `section`/`readout` are carried explicitly
@@ -103,7 +103,8 @@ def cost_spec(model_name, target, doses, n_phase, mode='instant', backend='diffr
                 backend=str(backend), dt=float(dt), w_osc=float(w_osc), w_amp=float(w_amp),
                 target_k=None if target_k is None else float(target_k),
                 target_psi=None if target_psi is None else float(target_psi),
-                section=section, readout=readout)
+                section=section, readout=readout, pulse=float(pulse),
+                skip_p=None if skip_p is None else int(skip_p))
 
 
 def build_cost(spec):
@@ -121,7 +122,9 @@ def build_cost(spec):
            if spec['target_k'] is not None else RadialTarget())
     return make_cost(model, spec['target'], spec['doses'], tgt, n_phase=spec['n_phase'],
                      mode=spec['mode'], backend=spec['backend'], dt=spec['dt'],
-                     w_osc=spec['w_osc'], w_amp=spec['w_amp'])
+                     w_osc=spec['w_osc'], w_amp=spec['w_amp'],
+                     pulse=spec.get('pulse', 8.0), skip_p=spec.get('skip_p'),
+                     readout_ref=spec.get('readout'))
 
 
 def _init_worker(spec, barrier=None):

@@ -1,0 +1,13 @@
+{
+  "notes": "Tiny end-to-end validation of the config/campaign/multi-seed path. Not science.",
+  "tag": "SMOKECAMP",
+  "target": "BMAL1",
+  "section": "PER",
+  "readout": "REV",
+  "n_phase": 8,
+  "n_dose": 5,
+  "optimizer": ["cma", "bobyqa"],
+  "maxfev": 60,
+  "seeds": [0, 1],
+  "workers": 1
+}

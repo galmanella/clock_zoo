@@ -1,0 +1,12 @@
+{
+  "notes": "Instant kick vs pulses of increasing duration. Tests whether the perturbation MODE changes what is identifiable, which instant-only runs cannot answer.",
+  "tag": "pulse",
+  "target": "BMAL1",
+  "section": "PER",
+  "readout": "REV",
+  "mode": ["instant", "pulse"],
+  "pulse": [2.0, 8.0],
+  "optimizer": "cma",
+  "seeds": [0, 1],
+  "workers": 8
+}

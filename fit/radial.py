@@ -39,12 +39,13 @@ THE FAILURE MODE THIS DRIVER IS BUILT TO DETECT
     result.
 """
 import argparse
-import os
+import json
 import time
 
 import numpy as np
 
 import paths
+from fit.config import RunConfig, describe, start_points
 from fit.cost import make_cost, RadialTarget
 from fit.doses import fit_dose_grid
 from fit import search
@@ -105,14 +106,39 @@ def _report(d, amp_base):
           f"quality={'PASS' if d['quality_pass'] else 'FAIL'} (scramble {d['scramble']:.4f})")
 
 
-def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose=10,
-        max_factor=6.0, backend='diffrax', dt=0.02, seed=0, n_starts=1, maxiter=300,
-        bound=3.0, w_osc=0.2, w_amp=1.0, optimizer='lbfgs', tag=None, workers=1,
-        pin_target=True):
+def run(cfg, seed=None, tag=None, v_start=None):
+    """One radialization at ONE seed, fully described by `cfg` (see fit/config.RunConfig).
+
+    Everything the run depends on comes from `cfg` and nothing is read from a module default,
+    so two runs with equal configs are the same experiment and the .npz records which one it
+    was. `seed` overrides cfg for the multi-seed loop in `run_seeds`.
+    """
     from models import get_model
+
+    cfg.validate()
+    model_name, target, mode = cfg.model, cfg.target, cfg.mode
+    n_phase, backend, dt = cfg.n_phase, cfg.backend, cfg.dt
+    bound, w_osc, w_amp = cfg.bound, cfg.w_osc, cfg.w_amp
+    optimizer, workers = cfg.optimizer, cfg.workers
+    seed = cfg.seed_list[0] if seed is None else int(seed)
+    n_starts, maxiter = 1, max(4, cfg.maxfev // 10)
+    max_factor = cfg.max_factor
+    pin_target = cfg.target_mode != 'profiled'
+
     model = get_model(model_name)
-    doses, s_crit = fit_dose_grid(model_name, target, mode, max_factor, n_dose)
-    tag = paths.run_tag(tag)
+    # the observable is part of the run, not of whatever the model currently defaults to
+    if cfg.section:
+        model.reference_variable = cfg.section
+    if cfg.readout:
+        model.readout_variable = cfg.readout
+    section = str(model.reference_variable)
+    readout = str(getattr(model, 'readout_variable', None) or model.reference_variable)
+
+    doses, s_crit = fit_dose_grid(model_name, target, mode, cfg.max_factor, cfg.n_dose,
+                                  lo_factor=cfg.lo_factor)
+    tag = paths.run_tag(cfg.tag if tag is None else tag)
+    if cfg.verbose:
+        print(describe(cfg), flush=True)
 
     from parallel import announce
     announce(analysis='fit.radial', model=model_name, target=target, mode=mode,
@@ -133,12 +159,21 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     # twist while holding the defect where it already is -- and is what input_screen's
     # radialize.py did (`make_radial_target(S_crit, phi_sing, ...)`).
     C_probe = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
-                        backend=backend, dt=dt, w_osc=0.0, w_amp=0.0)
+                        backend=backend, dt=dt, w_osc=0.0, w_amp=0.0,
+                        pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout)
     _zb, _ab, _amb = C_probe['surface'](C_probe['v0'])
     from analysis import winding as _W
     _ptc_b = np.where(_ab, (np.angle(_zb) / (2 * np.pi)) % 1.0, np.nan)
     S_seed, phi_seed, _ns = _W.detect_grid(np.asarray(C_probe['old']), doses, _ptc_b)
-    if pin_target and np.isfinite(S_seed) and np.isfinite(phi_seed):
+    if cfg.target_mode == 'explicit':
+        # The user placed the target by hand. Useful for asking whether a gene CAN be
+        # radialized toward a singularity somewhere other than its own -- a question the
+        # pinned default cannot express.
+        tgt = RadialTarget.from_singularity(cfg.target_scrit, cfg.target_phi)
+        print(f"[radial] target EXPLICIT: S_crit={cfg.target_scrit:.4g}, "
+              f"phi*={cfg.target_phi:.3f}  (seed's own is S={S_seed:.4g}, "
+              f"phi*={phi_seed:.3f})", flush=True)
+    elif pin_target and np.isfinite(S_seed) and np.isfinite(phi_seed):
         tgt = RadialTarget.from_singularity(S_seed, phi_seed)
         print(f"[radial] target PINNED to the seed singularity: "
               f"S_crit={S_seed:.4g}, phi*={phi_seed:.3f}  "
@@ -150,7 +185,8 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
               f"model; read the fit accordingly", flush=True)
 
     C = make_cost(model, target, doses, tgt, n_phase=n_phase, mode=mode,
-                  backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp)
+                  backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp,
+                  pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout)
     before = _diagnose(model, C, C['v0'], 'base')
     # The BASE surface has to be usable or nothing downstream means anything. A run was allowed
     # to proceed from a base that failed the gate (scramble 0.0563 at 16x10) and its "before"
@@ -175,23 +211,25 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     if optimizer == 'cma':
         # anneal, not ipop -- see fit/search.cma. The obstacle here is small-scale ruggedness,
         # not distinct basins, so a contracting sigma is what is called for.
-        ev, ps = None, None
+        ev, ps = None, cfg.popsize
         if workers and workers > 1:
             from fit.parallel import PoolEvaluator, cost_spec, recommend_popsize
-            ps = recommend_popsize(C['n_free'], workers)
+            # an EXPLICIT popsize always wins; the recommendation only fills a blank
+            ps = cfg.popsize or recommend_popsize(C['n_free'], workers)
             ev = PoolEvaluator(cost_spec(
                 model_name, target, doses, n_phase, mode=mode, backend=backend, dt=dt,
                 target_k=(tgt.k if tgt.k is not None else None),
                 target_psi=(tgt.psi if tgt.k is not None else None),
-                section=str(model.reference_variable),
-                readout=str(getattr(model, 'readout_variable', None)
-                            or model.reference_variable)), workers)
+                section=section, readout=readout,
+                pulse=cfg.pulse, skip_p=cfg.skip_p), workers)
             print(f"[radial] population parallelism: {workers} workers, popsize {ps} "
                   f"(oversubscribed so fast members fill the gaps behind a straggler)",
                   flush=True)
         try:
-            runs = [search.cma(C, bound=bound, seed=seed, mode='anneal',
-                               popsize=ps, evaluator=ev)]
+            runs = [search.cma(C, v0=v_start, bound=bound, seed=seed, mode=cfg.cma_mode,
+                               sigma0=cfg.sigma0, maxfev=cfg.maxfev,
+                               restarts=cfg.restarts, popsize=ps, evaluator=ev,
+                               log_every=cfg.log_every, verbose=cfg.verbose)]
         finally:
             if ev is not None:
                 ev.close()
@@ -205,7 +243,8 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
         # region fits a quadratic through interpolation points spread across a region wide
         # enough to average over the fine-scale ruggedness that stalls a gradient and that CMA
         # can only sample through.
-        runs = [search.bobyqa(C, C['v0'], bound=bound, maxfev=maxiter * 10, seek_global=True)]
+        runs = [search.bobyqa(C, C['v0'], bound=bound, maxfev=cfg.maxfev,
+                              seek_global=True, verbose=cfg.verbose)]
     elif n_starts > 1:
         runs = search.multistart(C, n_starts=n_starts, bound=bound, maxiter=maxiter, seed=seed)
     else:
@@ -231,7 +270,6 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     # longer a circadian PTC. Escaping UPWARD is just as degenerate as collapsing, and mu -> 1
     # means the orbit solver is not returning a stable limit cycle in the first place. So every
     # bound is now two-sided and stability is checked explicitly.
-    amp_ratio = after['amp_lc'] / max(before['amp_lc'], 1e-12)
     per_ratio = after['period'] / max(before['period'], 1e-12)
 
     # DEGENERATE == NOT OSCILLATING, decided by which side of the Hopf bifurcation the
@@ -312,6 +350,8 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
                 # surface as "the target".
                 # THE OBSERVABLE IS PART OF THE RUN. Without it a re-plot silently adopts
                 # whatever the model default happens to be today -- see REPO_MAP hazard 14.
+                cfg_json=json.dumps(cfg.to_dict(), sort_keys=True),
+                cfg_label=cfg.label(), seed_used=int(seed),
                 section=str(model.reference_variable),
                 readout=str(getattr(model, 'readout_variable', None)
                             or model.reference_variable),
@@ -345,31 +385,82 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     return blob
 
 
+def run_seeds(cfg):
+    """Every seed in `cfg.seeds`, then a comparison across them.
+
+    SEEDS ARE THE UNIT OF THE MULTIMODALITY QUESTION. One seed says how good an optimum the
+    search found; several independent seeds say whether the landscape has ONE good optimum or
+    many at comparable cost -- which is the global-identifiability question this project is
+    aimed at and which no single run can answer. So they are a first-class part of a run
+    rather than something to be assembled by hand from separate jobs afterwards.
+    """
+    cfg.validate()
+    seeds = cfg.seed_list
+    base_tag = paths.run_tag(cfg.tag)
+    # n_free is a property of the model's gauge quotient, so it can be had without building a
+    # cost; the starts are then a joint design over the whole seed list (see start_points).
+    from fit.cost import quotient_basis
+    from models import get_model
+    _m = get_model(cfg.model)
+    n_free = quotient_basis(_m)[0].shape[1]
+    starts = start_points(cfg, n_free)
+    if cfg.start != 'base':
+        D = np.array([[np.linalg.norm(starts[a] - starts[b]) for b in seeds] for a in seeds])
+        off = D[np.triu_indices(len(seeds), 1)] if len(seeds) > 1 else np.array([0.0])
+        print(f"[radial] start='{cfg.start}' radius {cfg.start_radius}: seed starts are "
+              f"{off.min():.2f}-{off.max():.2f} apart (mean {off.mean():.2f})", flush=True)
+    out = []
+    for i, sd in enumerate(seeds):
+        if len(seeds) > 1:
+            print(f"{chr(10)}{'=' * 78}{chr(10)}SEED {sd}  ({i + 1} of {len(seeds)})"
+                  f"{chr(10)}{'=' * 78}", flush=True)
+        # `__`, not `/`: paths.py requires a tag to be a PLAIN NAME, so the run tag
+        # stays one directory level and carries its structure in the name instead.
+        tag = base_tag if len(seeds) == 1 else f"{base_tag}__seed{sd}"
+        out.append(run(cfg, seed=sd, tag=tag, v_start=starts[sd]))
+    if len(seeds) > 1:
+        _compare_seeds(cfg, seeds, out, base_tag)
+    return out
+
+
+def _compare_seeds(cfg, seeds, results, tag):
+    """Do independent seeds find the SAME optimum or different ones?
+
+    Compared in the gauge quotient, because two parameter sets differing only by a gauge motion
+    are the same model and would otherwise read as distinct basins (REPO_MAP hazard 6).
+    """
+    v = np.array([np.asarray(r['v_fit']) for r in results])
+    f = np.array([float(r['fit__parts_total']) for r in results])
+    D = np.linalg.norm(v[:, None, :] - v[None, :, :], axis=-1)
+    print(f"{chr(10)}{'=' * 78}{chr(10)}SEEDS -- one optimum or several?{chr(10)}{'=' * 78}")
+    print(f"  {'seed':>6s} {'cost':>10s}   distance to the best solution")
+    b = int(np.argmin(f))
+    for i, sd in enumerate(seeds):
+        print(f"  {sd:6d} {f[i]:10.6f}   {D[i, b]:8.3f}"
+              + ("   <- best" if i == b else ""))
+    off = D[np.triu_indices(len(seeds), 1)]
+    print(f"{chr(10)}  cost spread {f.max() - f.min():.6f}"
+          f"   pairwise distance: min {off.min():.3f} median "
+          f"{np.median(off):.3f} max {off.max():.3f}")
+    print("  Distinct solutions at comparable cost = MULTIMODAL; one cluster = the search is "
+          "finding a single optimum.")
+    paths.savez(paths.out_path(cfg.model, 'fit_radial',
+                               f'seeds_{cfg.target}_{cfg.mode}.npz', tag),
+                seeds=np.array(seeds), v=v, cost=f, dist=D,
+                cfg_json=json.dumps(cfg.to_dict(), sort_keys=True))
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description='T3 radial-isochron fit')
-    ap.add_argument('--model', default=os.environ.get('MODEL', 'almeida'))
-    ap.add_argument('--target', default=os.environ.get('TARGET', 'BMAL1'))
-    ap.add_argument('--mode', default='instant', choices=('pulse', 'instant'))
-    ap.add_argument('--n-phase', type=int, default=16)
-    ap.add_argument('--n-dose', type=int, default=10)
-    ap.add_argument('--max-factor', type=float, default=6.0)
-    ap.add_argument('--backend', default='diffrax', choices=('rk4', 'diffrax'))
-    ap.add_argument('--dt', type=float, default=0.02)
-    ap.add_argument('--seed', type=int, default=0)
-    ap.add_argument('--starts', type=int, default=1)
-    ap.add_argument('--maxiter', type=int, default=300)
-    ap.add_argument('--optimizer', default='lbfgs',
-                    choices=('lbfgs', 'cma', 'bobyqa', 'lm'))
-    ap.add_argument('--workers', type=int, default=1,
-                    help='processes for the CMA population (1 = serial). Each worker '
-                         'rebuilds the cost and compiles once; use with --optimizer cma.')
-    ap.add_argument('--profile-target', action='store_true',
-                    help='re-profile the target (k, psi) at every evaluation instead of pinning them to the seed singularity. The target then moves with the model -- see fit.cost.RadialTarget.')
-    ap.add_argument('--tag', default=None)
+    ap = argparse.ArgumentParser(
+        description='Radial-isochron fit. Every setting is a flag or a --config key; '
+                    'see fit/config.py for the full list and its defaults.')
+    RunConfig.add_arguments(ap)
     a = ap.parse_args(argv)
-    run(a.model, a.target, a.mode, a.n_phase, a.n_dose, a.max_factor, a.backend, a.dt,
-        a.seed, a.starts, a.maxiter, optimizer=a.optimizer, tag=a.tag,
-        workers=a.workers, pin_target=not a.profile_target)
+    cfg = RunConfig.from_args(a).validate()
+    if getattr(a, 'print_config', False):
+        print(describe(cfg))
+        return 0
+    run_seeds(cfg)
     return 0
 
 

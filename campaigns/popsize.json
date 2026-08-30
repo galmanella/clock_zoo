@@ -1,0 +1,12 @@
+{
+  "notes": "Does a larger CMA population find better optima at equal evaluation budget, or only cost more? One gene, one seed set, popsize varied.",
+  "tag": "popsize",
+  "target": "BMAL1",
+  "section": "PER",
+  "readout": "REV",
+  "optimizer": "cma",
+  "popsize": [12, 24, 48, 96],
+  "maxfev": 6000,
+  "seeds": [0, 1],
+  "workers": 8
+}

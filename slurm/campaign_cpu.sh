@@ -8,8 +8,15 @@
 #
 # Usage:
 #   mkdir -p /central/home/galmanel/slurmout/clock_zoo      # ONCE -- sbatch will not create it
+#
+#   cd <repo root>                                          # NOT slurm/, NOT the parent.
 #   $PYTHON_EXE -m fit.campaign --config campaigns/genes.json --dry-run   # ALWAYS first
 #   sbatch --array=0-3 slurm/campaign_cpu.sh campaigns/genes.json
+#
+#   `python -m` puts the CURRENT DIRECTORY on sys.path, so the dry-run finds `fit` only from
+#   the repo root -- from anywhere else it is `ModuleNotFoundError: No module named 'fit'`, and
+#   no PYTHONPATH-free invocation fixes it. `sbatch` is immune: this script cds to its own
+#   parent and exports PYTHONPATH, so it can be submitted from anywhere.
 #
 #   ONE ARRAY TASK PER CONFIGURATION. --dry-run prints the exact --array range and validates
 #   every entry before a queue slot is spent; a 24-task array that dies at task 0 on a typo has

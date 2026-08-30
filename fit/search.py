@@ -162,7 +162,7 @@ def multistart(cost, n_starts=8, bound=3.0, sigma=0.8, maxiter=300, seed=0,
 
 def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
         restarts=2, popsize_factor=2.0, gens_per_run=None, verbose=True, log_every=10,
-        mode='ipop', sigma_factor=0.45):
+        mode='ipop', sigma_factor=0.45, evaluator=None):
     """CMA-ES with IPOP-style restarts. The cross-check, not the default.
 
     Ported in structure from input_screen/fit_jax.py:run_cma_points -- growing-popsize restarts
@@ -217,7 +217,16 @@ def cma(cost, v0=None, bound=3.0, sigma0=0.5, maxfev=4000, popsize=None, seed=0,
         t_gen = time.time()
         while not es.stop():
             U = es.ask()
-            vals = [f(u) for u in U]
+            if evaluator is None:
+                vals = [f(u) for u in U]
+            else:
+                # THE ONE PARALLEL LINE. Members of a generation are mutually independent by
+                # construction, so this is identical to the serial comprehension above --
+                # asserted bit-for-bit in fit/parallel's self-test, not assumed.
+                vals = [float(x) for x in evaluator(U)]
+                for _u, _val in zip(U, vals):     # keep the trace the serial path would build
+                    trace['v'].append(np.asarray(_u, float).copy())
+                    trace['f'].append(_val)
             es.tell(U, vals)
             used += len(U); gen += 1
             # Progress EVERY `log_every` generations. Without this a CMA run is silent until its

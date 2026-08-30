@@ -107,7 +107,7 @@ def _report(d, amp_base):
 
 def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose=10,
         max_factor=6.0, backend='diffrax', dt=0.02, seed=0, n_starts=1, maxiter=300,
-        bound=3.0, w_osc=0.2, w_amp=1.0, optimizer='lbfgs', tag=None,
+        bound=3.0, w_osc=0.2, w_amp=1.0, optimizer='lbfgs', tag=None, workers=1,
         pin_target=True):
     from models import get_model
     model = get_model(model_name)
@@ -175,7 +175,26 @@ def run(model_name='almeida', target='BMAL1', mode='instant', n_phase=16, n_dose
     if optimizer == 'cma':
         # anneal, not ipop -- see fit/search.cma. The obstacle here is small-scale ruggedness,
         # not distinct basins, so a contracting sigma is what is called for.
-        runs = [search.cma(C, bound=bound, seed=seed, mode='anneal')]
+        ev, ps = None, None
+        if workers and workers > 1:
+            from fit.parallel import PoolEvaluator, cost_spec, recommend_popsize
+            ps = recommend_popsize(C['n_free'], workers)
+            ev = PoolEvaluator(cost_spec(
+                model_name, target, doses, n_phase, mode=mode, backend=backend, dt=dt,
+                target_k=(tgt.k if tgt.k is not None else None),
+                target_psi=(tgt.psi if tgt.k is not None else None),
+                section=str(model.reference_variable),
+                readout=str(getattr(model, 'readout_variable', None)
+                            or model.reference_variable)), workers)
+            print(f"[radial] population parallelism: {workers} workers, popsize {ps} "
+                  f"(oversubscribed so fast members fill the gaps behind a straggler)",
+                  flush=True)
+        try:
+            runs = [search.cma(C, bound=bound, seed=seed, mode='anneal',
+                               popsize=ps, evaluator=ev)]
+        finally:
+            if ev is not None:
+                ev.close()
     elif optimizer == 'lm':
         runs = [search.levenberg_marquardt(C, C['v0'], bound=bound, maxiter=maxiter)]
     elif optimizer == 'bobyqa':
@@ -341,13 +360,16 @@ def main(argv=None):
     ap.add_argument('--maxiter', type=int, default=300)
     ap.add_argument('--optimizer', default='lbfgs',
                     choices=('lbfgs', 'cma', 'bobyqa', 'lm'))
+    ap.add_argument('--workers', type=int, default=1,
+                    help='processes for the CMA population (1 = serial). Each worker '
+                         'rebuilds the cost and compiles once; use with --optimizer cma.')
     ap.add_argument('--profile-target', action='store_true',
                     help='re-profile the target (k, psi) at every evaluation instead of pinning them to the seed singularity. The target then moves with the model -- see fit.cost.RadialTarget.')
     ap.add_argument('--tag', default=None)
     a = ap.parse_args(argv)
     run(a.model, a.target, a.mode, a.n_phase, a.n_dose, a.max_factor, a.backend, a.dt,
         a.seed, a.starts, a.maxiter, optimizer=a.optimizer, tag=a.tag,
-        pin_target=not a.profile_target)
+        workers=a.workers, pin_target=not a.profile_target)
     return 0
 
 

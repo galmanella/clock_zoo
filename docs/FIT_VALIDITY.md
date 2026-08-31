@@ -96,7 +96,7 @@ predicts it well enough that it does not belong in the inner loop at all.
 
   So the honest reading is not "two seeds are under-resolved" but **the phase grid was too
   coarse for almost the whole population** — seeds 1 and 4 are merely where it becomes visible
-  as a discontinuity. 0.25 (a quarter of the cycle's extent between neighbours) flags 12 of 15;
+  as a discontinuity. 0.25 (a quarter of the cycle's extent between neighbours) flags 13 of 16;
   pick it, or another value, deliberately — but then refine `n_phase` until it passes at the
   search box corners, and do **not** resample the phase axis non-uniformly (see §4).
 * **C5** — `DEAD_AMP = 0.01` was chosen to mean "not literally zero". It does not mean "carries
@@ -276,17 +276,30 @@ Measured on `bmal1seeds`; a correct implementation must reproduce these exactly.
 cheapest test in the plan and it pins every threshold at once:
 
     C1 orbit          {3}
-    C2 attractor      {1, 4, 5, 11, 14}
+    C2 attractor      {1, 4, 5, 11, 14}                             post hoc
     C3 dose-0 ident   {3, 4, 5, 11, 14}
-    C4 phase res      {0, 1, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15}     12 of 15
+    C4 phase res      {0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15}  13 of 16
     C5 aliveness      {2, 5, 11, 14}
-    C6 bracketing     all but {2}                                   15 of 16
+    C6 bracketing     ALL                                           16 of 16
+
+**Two of these moved when the checks were implemented, and both times the loose definition
+used to derive the original number was the wrong one.** Recorded rather than quietly updated,
+because silently moving a fixture to match new code defeats the fixture.
+
+* **C4: 12 → 13.** The 12 counted only the 15 candidates with a finite cycle. Seed 3 has none,
+  so it fails C4 as well as C1.
+* **C6: 15 → 16.** The 15 came from `detect_grid`'s `n_sing`, which does find seed 2's
+  singularity. But seed 2's winding changes between dose ROW 0 and ROW 1 — a single row of
+  type-1 at the very bottom of the window — and the extended rescan shows its real structure
+  runs from 0.02 up to ~8, i.e. mostly *below* the window. A transition sitting on the boundary
+  row is not a bracketed window, so C6 requires an INTERIOR change. **Every one of the 16 fails
+  it**, which strengthens rather than weakens the point below.
 
 Two things to read off it before writing code.
 
-**C6 fails almost everywhere.** Only seed 2 kept a transition inside its own fit window — which
-is why P2 is high and why the bracketing *barrier* was cut: the problem is the window, not a
-missing penalty.
+**C6 fails everywhere — all 16.** Not one candidate kept a transition properly inside its own
+fit window. That is why P2 is high and why the bracketing *barrier* was cut: the problem is the
+window, not a missing penalty. A penalty term cannot help when no candidate satisfies it.
 
 **C3 predicts C2 at ~1/1000 the cost.** They differ by one element each way: one dose-0 row
 anticipates a 24-period integration on 4 of 5 failures. That is the redundancy that keeps the

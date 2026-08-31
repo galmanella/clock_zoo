@@ -75,7 +75,7 @@ def radial_phase(old, doses, k, psi):
     return (jnp.angle(radial_z(old, doses, k, psi)) / (2 * jnp.pi)) % 1.0
 
 
-def circ_cost(zm, zt, alive):
+def circ_cost(zm, zt, alive, soft=None, w=None):
     """Mean circular residual between two unit-phase fields, with dead cells at the MAXIMUM.
 
         per cell = (1 - cos(2*pi*(phi_model - phi_target))) / 2   in [0, 1]
@@ -88,13 +88,40 @@ def circ_cost(zm, zt, alive):
     while destroying the clock. Here, degrading the oscillation makes cells dead and each dead
     cell costs the maximum, so the collapse is the worst point in the space rather than the
     best.
+
+    TWO MODIFIERS, AND THEY ARE NOT INTERCHANGEABLE. Getting this backwards re-creates exactly
+    the degeneracy above, so the distinction is structural rather than stylistic:
+
+    `soft` -- a per-cell number in [0, 1] derived from the MODEL (how much oscillation survived
+        the perturbation). It blends the cell's value TOWARD 1.0, the maximum:
+
+            per_eff = soft * per + (1 - soft) * 1.0
+
+        so a cell whose oscillation is dying stops contributing its (meaningless) PHASE while
+        its DEADNESS costs the maximum, smoothly, before the hard `alive` gate ever fires. It
+        must never be used as a weight: down-weighting a model-dependent quantity would let the
+        optimizer discount a cell by killing it, which is the Mirsky failure with extra steps.
+
+    `w` -- a per-cell weight derived from the TARGET only. A weighted mean, and safe precisely
+        because the optimizer cannot move it: `w` is a property of the data being fitted to, not
+        of the candidate. Use it to say "the target carries no phase information at this dose"
+        (REPO_MAP hazard 17).
+
+    Both default to None, which reproduces the original expression exactly.
     """
     # Sanitize BEFORE the select: jnp.where propagates NaN through the UNSELECTED branch in
     # reverse mode, so a NaN left in `zm` would poison the gradient even where alive is False.
     fin = jnp.isfinite(zm.real) & jnp.isfinite(zm.imag)
     zs = jnp.where(fin, zm, 1.0 + 0j)
     per = 0.5 * (1.0 - jnp.real(zs * jnp.conj(zt)))
-    return jnp.mean(jnp.where(alive, per, 1.0))
+    per = jnp.where(alive, per, 1.0)
+    if soft is not None:
+        s = jnp.clip(soft, 0.0, 1.0)
+        per = s * per + (1.0 - s)
+    if w is None:
+        return jnp.mean(per)
+    ww = jnp.broadcast_to(jnp.clip(w, 0.0, None), per.shape)
+    return jnp.sum(ww * per) / jnp.maximum(jnp.sum(ww), 1e-30)
 
 
 def profile(zm, alive, old, doses, n_k=48, n_psi=48, k_lo=None, k_hi=None, refine=2):

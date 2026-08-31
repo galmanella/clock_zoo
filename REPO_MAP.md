@@ -97,6 +97,8 @@ until the tasks are joined.
 | `aggregate.py` | **ENTRY. Joins a campaign's array tasks into one result** -- the 16-seed comparison that no single task can see -- and re-derives the unsaturated twist metrics. Refuses to join runs that are not the same experiment. |
 | `stability.py` | **ENTRY. The stability guard.** Perturb the fitted cycle and integrate: does it come back, run away, or settle on a point? Measures each orbit's own numerical FLOOR first, because that spans five orders across a campaign and a perturbation below it measures noise (hazard 19). |
 | `rescan.py` | ENTRY. Re-renders a campaign's fitted PTCs finer and down to dose 0, with the dose-0 identity row as the readout-calibration control. Pins the run's gauge basis (hazard 18). |
+| `contract.py` | **ENTRY. The six-check surface validity contract** (orbit / attractor / dose-0 calibration / phase resolution / aliveness / bracketing), pinned to a regression fixture. Five of six are free from what `_surface` already computes. |
+| `probe_window.py` | ENTRY. Decision probe: is a dose window anchored to the candidate's own transition continuous in parameters? (Yes, where an orbit exists -- PROJECT_SUMMARY 5.13b.) |
 | `figures.py` | Pure read. `--which radial\|recover` for one run; `seeds\|genes\|cycles\|rescan` for a campaign. |
 | `benchmark.py`, `multires.py` | Optimizer head-to-head; multi-resolution helpers. |
 

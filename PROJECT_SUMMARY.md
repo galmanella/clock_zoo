@@ -1431,6 +1431,68 @@ quotients with `include_time=True`, projecting out a direction its own data can 
 instant-mode results (5.4b, 5.10, 5.11) are unaffected, but the pulse-mode identifiability counts
 in 3.x sit on a quotient one dimension too small and should be re-derived. In REPO_MAP Open.
 
+### 5.13 The two directions, measured
+
+Both were implemented and probed before being adopted. One is in the code and off by default;
+the other is cleared of the objection that was holding it back.
+
+#### 5.13a A bracketing barrier works, and the observable is not the singularity
+
+`make_cost(..., w_brack=...)`. Keeps the type-1 -> type-0 transition inside the dose window
+rather than widening the window to chase it -- 16 of 16 Aug-30 fits ended with it outside.
+
+THE OBSERVABLE IS PER-ROW CIRCULAR DISPERSION, `1 - |mean resultant|` over old phase, not a
+located singularity. A type-1 row sweeps the circle (dispersion ~1); a type-0 row is nearly
+constant (~0). Three reasons, each ruling out an alternative tried first:
+
+  * `soft_singularity` reads the amplitude dip, so it cannot see a defect that has ALREADY LEFT
+    the grid -- which is exactly the state being penalised;
+  * dispersion is DIRECTION-AWARE, and the campaign needs that: 13 fits escaped downward and
+    seed 0 upward;
+  * it is smooth. `detect_grid` is a staircase and `circ_span` is a max.
+
+Validated against the independent extended-grid S_crit on all 16: every run it reads as type-0
+throughout has a rescanned S* of 0.01-4.0 against a floor of 12.5, and seed 0 reads as type-1
+throughout with S* = 363 against a ceiling of 200.
+
+**Two things the first version got wrong, both caught before adoption.** It read only the
+bottom and top ROWS and AMPLIFIED the known gradient pathology -- |grad| at seed 0 went
+3.0e10 -> 6.1e11 -- because `c_ptc` averages 280 cells so per-cell non-smoothness damps out,
+while two rows of 20 give it 14x less room to cancel. Aggregating over the whole window
+separates the cases just as cleanly (base 0.512, the fourteen collapsed 0.000-0.162, seed 0
+0.764) and the amplification drops to 1.07-1.39. Separately, an all-dead surface has resultant
+0 on every row, so dispersion reads 1.0 and it looked exactly like "transition above the
+ceiling"; the barrier is now gated on the alive fraction, so a dead surface is charged by
+`c_ptc` alone.
+
+It is EXACTLY 0.0 at base and at every healthy displacement tested -- required, or it moves the
+global minimum, which is the mistake 5.3 records twice. Its own gradient against central
+differences, h refined 3e-4 -> 3e-2: 3.2e-2, 1.2e-2, 1.6e-3, 7.5e-4, 3.9e-3 -- falling then
+turning up, the noise-dominated-at-small-h signature, so it is right to ~0.08%.
+
+#### 5.13b A RELATIVE dose window is not unstable -- the objection does not survive measurement
+
+`fit/probe_window.py`. The worry was that anchoring the window to each candidate's own S* makes
+the cost discontinuous, because the anchor jumps. Measured along the path from base to seed 6,
+33 points:
+
+    contiguous stretch t = 0.500 .. 1.000     S* slides 29.93 -> 9.93
+    per-step |dlog10 S*|   median 0.026   max 0.085   ratio 3.3
+
+That is smooth. **Where an orbit exists, the anchor moves smoothly and a relative window would
+give a continuous cost.**
+
+**14 of 33 points could not be located at all, and the orbit residual says why: 362, 670, 3000,
+and several degenerate solves.** The straight line between the base point and a healthy fitted
+optimum passes through parameter sets WITH NO LIMIT CYCLE. That breaks the fixed-window cost
+exactly as badly -- it scores 1.0 there -- so it is a property of the landscape, not of the
+scheme. It is also independent evidence for 5.10a: the optima are separated by a region with no
+clock in it, which is a concrete reason local search stalls.
+
+**One caveat that must travel with the method.** The dispersion crossing is a PROXY: at base it
+reads 71.8 where the singularity-based S_crit is 32.79, a consistent factor 2.2. Fine as the
+anchor of a relative window; never to be reported as S_crit.
+
 ## 5b. Next
 
 **Reordered by 5.10.** The top three now all come from the cluster campaigns, and they are

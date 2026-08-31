@@ -20,6 +20,7 @@ Everything runs as a module from the repo root: `python -m engine.orbit`,
 | `fixtures/` | anything a later run DEPENDS on, S_crit above all. Tracked, promoted deliberately -- see hazard 16. |
 | `slurm/` | cluster templates. Thin: the drivers already shard. |
 | `out/` | results, `out/<model>/<analysis>/<tag>/`. Git-ignored; each npz carries a `.meta.json` provenance sidecar. |
+| `docs/` | `FIT_VALIDITY.md` -- the surface validity contract every fit must satisfy, and the plan to enforce it. Read before changing `fit/cost.py`. |
 | `docs/figures/` | ONLY figures explicitly cited by PROJECT_SUMMARY. Not a gallery, not a dumping ground -- see the figure rule under Hazards. |
 
 ## "What do I run for…?"

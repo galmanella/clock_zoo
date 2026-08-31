@@ -1318,13 +1318,92 @@ the stored `theta_fit`. **`theta_fit` is the parameter set; `v` is a search coor
 Making `quotient_basis` deterministic is the real fix and has NOT been made: it would silently
 change what `v` means for every stored result, which should be a deliberate commit.
 
+### 5.12 READING THE RESCANNED SURFACES: six oddities, five mechanisms
+
+The extended-grid surfaces (5.11) show structure the fit window hid. Each oddity below was
+traced to a measured cause, and the causes are the failure catalogue that
+[`docs/FIT_VALIDITY.md`](docs/FIT_VALIDITY.md) is built around.
+
+**No clean type-1 even extended down (all but seeds 0, 2, 6, 9, 10).** Range, not depth. For
+eight seeds the extended grid's own floor sits at exactly **2.00 x their S\***, so only ONE
+dose row has winding 1 and their reported `S_crit = 0.00999` is the bottom row, an edge
+artefact. Four decades is not enough; their transition is genuinely below 0.02.
+
+**A sharp discontinuity at old phase ~0.9 (seeds 1, 4).** The old-phase axis does not resolve
+the cycle. Those fits are strongly relaxation-like -- **47% of the cycle's arc length lies
+inside 10% of the phase axis**, peaking at phase 0.891 and 0.895, exactly where the
+discontinuity is -- so on the 20-phase grid the fit used, **consecutive PTC columns start from
+states 0.82 and 0.87 cycle diameters apart**. Adjacent columns are not neighbours in state
+space, and the surface jumps between them because the underlying initial conditions do. Clean
+seeds sit at 0.12-0.22.
+
+**Seed 2: type-1, then a noisy band, then a "really flat type-0".** The flat region is not
+type-0. Up to dose 8.1 the readout amplitude is `|z| = 1.00` and the winding is a clean 1; from
+dose 12.1 **`|z|` collapses to 0.028-0.14 and stays there**. The perturbation has extinguished
+the oscillation, and the flat green sheet is the Fourier phase of a dead clock. The noisy band
+at dose 6.6-14.8 is the death transition -- which is where the impossible windings (-4, +2)
+come from, the readout tumbling as the amplitude collapses. It is not a phase singularity and
+not a resolution problem.
+
+**Seed 5: "noise" around dose 10.** Same mechanism, earlier: `|z|` falls to 0.016 from dose 1.1
+upward. The whole visible surface above that is dead. Seed 5 also has the campaign's worst
+numerical floor (7.6e-2), so its orbit is fragile independently.
+
+**Seed 11: circular contours that never span the colour map.** `|z| = 0.003-0.28` over the
+ENTIRE grid -- nothing survives any dose. Seed 11 is one of the two runs that DECAYS TO A FIXED
+POINT, and its dose-0 identity error is 0.50 cyc, so the readout is not calibrated there even
+at zero perturbation. The contours are level sets of a decaying transient, which is why they
+occupy a narrow phase band instead of wrapping.
+
+**Seed 0: no singularity, needs extending UP.** Correct, and it is the only one in that
+direction: rescanned four decades upward, seed 0's singularity is at **S\* = 363**, against a
+fit-window ceiling of 199.8, with `|z| = 1.00` throughout. So the window fails to bracket the
+transition in BOTH directions across the campaign -- eleven fits pushed it below the floor, one
+pushed it above the ceiling.
+
+#### 5.12a These are VALIDITY failures, not reward hacking
+
+The natural reading is that the optimizer found cheap corners. Measured, it did not:
+
+    corr(cost, fraction of cells where the clock was killed)   -0.14
+    corr(cost, phase under-resolution)                         -0.17
+    corr(cost, cycle diameter)                                 +0.09
+    corr(cost, period)                                         +0.04
+
+n = 15; none of these drives the cost ranking, and the three cheapest fits have healthy readout
+amplitude -- one of them has the best phase resolution in the set. So for a large minority of
+candidates `c_ptc` is simply computed on something that is not a PTC, and the optimizer is
+neither helped nor hindered: it is handed noise and asked to minimise it.
+
+That is why the plan is a **validity contract first, penalty terms second** -- six checks
+(orbit, attractor, dose-0 calibration, phase resolution, aliveness, bracketing), none of which
+mentions a model, a gene or a task. `docs/FIT_VALIDITY.md` has the contract, the thresholds and
+the reasons each is a measurement rather than a preference, plus the ordering that keeps the
+objective-changing edits in one commit.
+
+One constraint worth stating here because it rules out the obvious fixes: **the grid cannot be
+adapted per candidate.** It is the experiment. Two candidates scored on different grids have
+incomparable costs -- the same objection that made the target pinned rather than re-profiled
+(5.4c). So the window must be COMMISSIONED once, wide enough to bracket everything the search
+can reach, and a candidate whose transition leaves it must be penalised rather than re-gridded.
+For the same reason the old-phase axis stays uniform in phase: it is *when the pulse was
+applied*, so F3 is a resolution requirement, never a reparametrisation.
+
 ## 5b. Next
 
 **Reordered by 5.10.** The top three now all come from the cluster campaigns, and they are
 about the OBJECTIVE, not about the search: the searches worked, and what they optimised turned
 out not to be what was wanted.
 
-0. **Fix what 5.10 exposed, before running another radialization.** In order:
+0. **THE SURFACE VALIDITY CONTRACT comes first** -- [`docs/FIT_VALIDITY.md`](docs/FIT_VALIDITY.md)
+   has the full plan, ordered by information gained over risk of invalidating what exists. In
+   brief: emit and store a per-evaluation validity vector (orbit / attractor / dose-0
+   calibration / phase resolution / aliveness / bracketing) before touching the objective;
+   commission the grid per (model, target, mode) rather than inheriting it; then land the
+   objective-changing terms as ONE commit with ONE re-run. 5.12a is why that order and not the
+   other: these are validity failures, not reward hacking, so penalty terms alone would treat
+   a symptom.
+1. **Fix what 5.10 exposed, before running another radialization.** In order:
    a. *Weight the cost toward the doses where the target is informative*, or cap `max_factor`
       so the window does not run 9 rows deep into the flat asymptote. As it stands two thirds
       of the cells are nearly free (5.10c, hazard 17).
@@ -1338,7 +1417,7 @@ out not to be what was wanted.
       4.7x and anchor the window and the target to different doses (5.10e).
    Only (c) is free; (a), (b) and (d) all change the objective, so the 20 completed runs are a
    BASELINE against the current cost rather than results to build on.
-1. **Map recovery against displacement.** T1 is done at eps = 0.3 (fails) and eps = 0 (passes).
+2. **Map recovery against displacement.** T1 is done at eps = 0.3 (fails) and eps = 0 (passes).
    The distance at which it breaks is the quantitative version of "from-distance locality",
    which was never measured on Mirsky, and `fit/recover.py --eps` sweeps it directly. 5.10b
    adds a data point from the other direction: 16 starts at `|v| = 4.2 - 7.7` all did WORSE

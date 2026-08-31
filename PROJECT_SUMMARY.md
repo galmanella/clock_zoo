@@ -1430,14 +1430,35 @@ in 3.x sit on a quotient one dimension too small and should be re-derived. In RE
 about the OBJECTIVE, not about the search: the searches worked, and what they optimised turned
 out not to be what was wanted.
 
-0. **THE SURFACE VALIDITY CONTRACT comes first** -- [`docs/FIT_VALIDITY.md`](docs/FIT_VALIDITY.md)
-   has the full plan, ordered by information gained over risk of invalidating what exists. In
-   brief: emit and store a per-evaluation validity vector (orbit / attractor / dose-0
-   calibration / phase resolution / aliveness / bracketing) before touching the objective;
-   commission the grid per (model, target, mode) rather than inheriting it; then land the
-   objective-changing terms as ONE commit with ONE re-run. 5.12a is why that order and not the
-   other: these are validity failures, not reward hacking, so penalty terms alone would treat
-   a symptom.
+0. **THE SURFACE VALIDITY CONTRACT comes first** -- [`docs/FIT_VALIDITY.md`](docs/FIT_VALIDITY.md),
+   pruned to five items after the redundancies were found:
+
+   * **P0** contract vector (C1-C6) computed, stored, reported. FREE -- every input is already
+     computed by `_surface` -- and it stops wrong numbers being quoted while the rest is decided.
+   * **P1** raise the aliveness threshold off `DEAD_AMP = 0.01` and make it a ramp. One constant;
+     removes the 4 of 16 surfaces that are noise.
+   * **P2** extend the dose window DOWN. Measured to be FREE (32x48 over [0.01, 8] S* is 20.9 s
+     against 24.7 s over [0.5, 8] -- low doses integrate quickly), and it is the failure that hit
+     15 of 16.
+   * **P3** weight each dose row by the TARGET's own old-phase span. Most likely to move the
+     optimum, and it subsumes the bracketing barrier.
+   * **P4** dose resolution per gene. The only expensive item -- see the budget note below.
+
+   CUT, as redundant: a period term (gauge, 5.12b); a bracketing/singularity barrier (subsumed
+   by P3, and non-differentiable); a stability cost term (C3 -- one dose row -- flags the same
+   runs as a 24-period walk, differing by one element each way); and repairing
+   `make_growth_fn` (no caller once the stability term is cut; `fit.stability.measure`
+   supersedes it, so delete it and `w_stab` rather than maintain two implementations of one idea).
+
+   **THE BUDGET CONSTRAINT.** A contract-compliant grid costs ~10x per evaluation (20x14: 2.5 s;
+   32x48: 24.7 s; 40x64: 35.3 s), so the campaign as run does not survive a naive refinement --
+   16 CPU-hours per seed becomes ~160. Dose rows are the expensive axis and roughly linear.
+   `fit/multires.py` already implements search-coarse/score-fine but LOST its benchmark (0.0968
+   vs cma-anneal's 0.0198 at equal evaluations) with a finest stage of 24x16. Decide the budget
+   before P4; P0-P3 are unaffected.
+
+   5.12a is why this order: these are validity failures, not reward hacking, so penalty terms
+   alone would treat a symptom.
 1. **Fix what 5.10 exposed, before running another radialization.** In order:
    a. *Weight the cost toward the doses where the target is informative*, or cap `max_factor`
       so the window does not run 9 rows deep into the flat asymptote. As it stands two thirds

@@ -64,14 +64,18 @@ discontinuity** in seeds 1 and 4 — those columns are not neighbours in state s
 
 ## 2. The contract
 
-A surface is **scoreable** only if all six hold. Each is model-agnostic, each is cheap relative
-to the surface itself, and each returns a number rather than a boolean so it can also be
-*reported*.
+A surface is **scoreable** only if all six hold. Each is model-agnostic, and each returns a
+number rather than a boolean so it can also be *reported*.
+
+**Five of the six are free.** C1, C4, C5 and C6 are functions of things `fit.cost._surface`
+already computes — the orbit, the cycle, `amp`, the surface — and C3 costs one extra dose row.
+Only **C2 is expensive** (~7 s: a 24-period walk over an epsilon ladder), and §6 shows C3
+predicts it well enough that it does not belong in the inner loop at all.
 
 | check | quantity | rule | catches |
 |---|---|---|---|
 | **C1 orbit** | BVP residual, period band, positivity, amplitude | already in `fit.cost._surface` | hazard 2 |
-| **C2 attractor** | per-period growth measured ABOVE the orbit's own numerical floor | `growth < 1`; UNRESOLVED if no perturbation clears the floor | F4 |
+| **C2 attractor** | per-period growth measured ABOVE the orbit's own numerical floor | `growth < 1`; UNRESOLVED if no perturbation clears the floor | F4 — **post hoc only**, C3 is its in-loop proxy (§6) |
 | **C3 calibration** | dose-0 identity residual | `< 1e-2 cyc` | F5 |
 | **C4 phase resolution** | max arc-length between adjacent phase samples / cycle diameter | `< 0.25` | F3 |
 | **C5 aliveness** | readout amplitude `\|z\|` per cell | see §3 — a weight, not a gate | F2 |
@@ -103,40 +107,38 @@ to the surface itself, and each returns a number rather than a boolean so it can
 
 ---
 
-## 3. Cost changes
+## 3. Cost changes, after pruning
 
-Split deliberately into changes that **do not** alter the objective (so the Aug-30 results stay
-comparable) and changes that **do** (so they must be a separate, deliberate commit and a
-re-run).
+The first draft listed eight. Four survive. What was cut and why is §3d — the cuts matter more
+than the additions, because three of them were two implementations of one idea.
 
 ### 3a. No change to the objective — reporting and gating only
 
 1. **Emit the contract vector with every evaluation and store it with every result.** `c_ptc`
-   alone is not a reportable number; `(c_ptc, C1…C6)` is.
+   alone is not a reportable number; `(c_ptc, C1…C6)` is. **Everything C1–C6 needs is already
+   computed by `fit.cost._surface`** — the orbit, the cycle, `amp`, the surface — so this is
+   bookkeeping, not new computation. Pinned by the regression fixture in §6.
 2. **`fit.aggregate` refuses to rank runs that fail the contract**, the way it already refuses
-   to join runs with different bases.
-3. **Fix `make_growth_fn`'s epsilon** (climb the ladder as `fit.stability.measure` does). This
-   is a bug fix, not a design change: at `eps=1e-4` it misclassifies 6 of 16.
+   to join runs with different gauge bases.
 
 ### 3b. Changes the objective — one commit, one re-run, one control
 
-4. **Weight the pointwise phase residual by aliveness.** Replace the hard `alive` mask with a
-   smooth weight `w = min(|z_model|, |z_target|)` clipped into `[0, 1]`, and charge the
-   amplitude deficit as its own explicit term. Rationale: a cell where the clock is dead
-   carries no *phase* information, but "you killed the clock" is real information and belongs
-   in a term that has a gradient. The current hard mask conflates the two and, at
-   `DEAD_AMP = 0.01`, admits 4 of 16 surfaces that are essentially noise.
-5. **Weight by target informativeness.** A Poincaré target's old-phase span falls from 0.5
-   below S\* to 0.05 at 6×S\* (hazard 17), and on a log window most cells are up there. Weight
-   each dose row by the *target's own* old-phase span so the cost measures agreement where the
-   target has something to say. This is the single change most likely to move the answer.
-6. **A bracketing term, not a fine-alignment term.** §5.4c showed a singularity-location term
-   saturates once the defect is on target and contributes no gradient there. Its useful job is
-   different: keep S\* *inside the window*. Use `fit.target.soft_singularity` as a one-sided
-   barrier on `log(S*/S_window_lo)` and `log(S_window_hi/S*)`, active only near the edges.
-7. **A stability term**, once (3) is fixed: penalise `growth` above ~0.9, one-sided.
-**None of 4–7 mentions the target, the gene, or the model.** They are properties of "a PTC
-surface scored against another PTC surface".
+3. **Raise the aliveness threshold and make it a ramp.** `DEAD_AMP = 0.01` means "not literally
+   zero", not "carries phase information": at `|z| = 0.05` the post-perturbation oscillation is
+   5% of the intact clock and its Fourier phase is noise. Weight each cell's phase residual by a
+   smooth ramp in `|z|` instead of the current hard mask.
+
+   This is **one constant and a ramp**, not a restructuring — the hard mask already scores dead
+   cells at the maximum, so the behaviour is unchanged in kind. It removes the 4 of 16 surfaces
+   that are currently scored as PTCs and are not.
+
+4. **Weight each dose row by the TARGET's own old-phase span.** A Poincaré target goes
+   phase-blind above its S\*: span 0.5 below, 0.05 at 6×S\* (hazard 17). On a log window most
+   rows are up there, and measured on the campaign the residual below S\* went 0.199 → 0.181–0.221
+   (no better) while above it went 0.276 → 0.035–0.057 (all of the gain).
+
+   **This is the change most likely to move the optimum**, and it also subsumes the bracketing
+   barrier — see §3d.
 
 ### 3c. NOT a cost term: the period
 
@@ -176,6 +178,15 @@ re-derived with `include_time=False`. In REPO_MAP Open.
 
 ---
 
+### 3d. What was cut, and why
+
+| cut | why |
+|---|---|
+| **a period term** | period is GAUGE — §3c. Constrains the representative, identifies nothing. |
+| **a bracketing / singularity-location barrier** | **subsumed by 3b.4.** Weighting by the target's own span already punishes a model whose S\* has left the window: it is flat exactly where the target has structure, so it mismatches exactly where the weight is. The barrier would add a `detect_grid` call — quantised, non-differentiable — to do the same job worse, and §5.4c already measured that a singularity-location term saturates and stops contributing gradient. Keep C6 as a REPORTED check, not a term. |
+| **a stability cost term** | **subsumed by C3 at ~1/1000 the cost.** C3 (one dose row) and C2 (a 24-period integration) flag the same runs but for one element each way — see §6. Screen with C3 in the loop; confirm with `fit/stability.py` post hoc, where it already exists. |
+| **fixing `make_growth_fn`'s epsilon** | with no stability term there is no caller. `fit.stability.measure` supersedes it and is cross-checked against the published Floquet multiplier. Two implementations of one idea, one known broken, is how REPO_MAP says a directory becomes a museum — **delete `make_growth_fn` and `w_stab`** rather than repair them. |
+
 ## 4. Two constraints that rule out the obvious fixes
 
 **You cannot adapt the evaluation grid per candidate.** The (phase, dose) grid is *the
@@ -196,50 +207,73 @@ must be wide enough to bracket every candidate the search can reach — which is
 
 ---
 
-## 5. Commissioning: what to run once per (model, target, mode)
+## 5. Commissioning: one tool, run once per (model, target, mode)
 
-Before any fit, and re-derived rather than inherited — the repo's most-repeated lesson is that
-scale-bearing constants do not transfer (§5.1, §5.3).
+The first draft listed five steps. Four of them are `fit/rescan.py` with different arguments, so
+this is one command run at the corners of the search box rather than a procedure:
 
-1. `analysis.scrit` → S\_crit and the integrator step. *(exists)*
-2. **Dose window**: `[S_crit / 10^a, S_crit * 10^b]` with `a, b` chosen so the window still
-   brackets the transition at the extremes of the search box, plus an explicit dose-0 row.
-   Measure `a, b` by rescanning the base point displaced to the box corners — do not guess.
-3. **Dose resolution**: refine `n_dose` until `accumulated_twist` converges (§5.9b: BMAL1 needs
-   ≥48; REV converges at 12 — it is per gene and varies 16×).
-4. **Phase resolution**: refine `n_phase` until C4 passes at the box corners, not just at base.
-5. **Record the commissioned grid as a fixture** (hazard 16), so every fit of that
-   (model, target, mode) uses the same one and results stay comparable.
+    python -m fit.rescan --model M --tag <commissioning> --n-phase P --n-dose D --decades A
 
-`fit/rescan.py` already does 2–4 for a finished campaign; the same code run on displaced base
-points is the commissioning tool.
+Rescan the base point AND the box corners, and read off: does the window bracket the transition
+(C6)? does the twist converge (§5.9b — per gene, and it varies 16×: BMAL1 needs ≥48 dose
+samples, REV converges at 12)? does C4 pass? Then **record the resulting grid as a fixture**
+(hazard 16) so every fit of that (model, target, mode) uses the same one and costs stay
+comparable.
+
+Re-derive it per model and per target. That is the repo's most-repeated lesson (§5.1, §5.3), and
+§5.9d is the direct evidence: there is no globally safe resolution.
 
 ---
 
-## 6. Order of work
+## 6. Priorities
 
-Ordered by (information gained) / (risk of invalidating what exists).
+### The constraint that sets them: a contract-compliant grid costs ~10× per evaluation
 
-| # | step | changes objective? | how you know it worked |
-|---|---|---|---|
-| 1 | `make_growth_fn` epsilon ladder | no | its verdict matches `fit.stability` on all 16 seeds |
-| 2 | contract vector C1–C6 computed and stored per evaluation | no | re-scoring the 16 seeds reproduces the sets below exactly |
-| 3 | `fit.aggregate` / `fit.figures` report the contract beside the cost | no | no run is ranked on a surface that fails it |
-| 4 | commission the grid for Almeida/BMAL1/instant (§5) | no (new fixture) | base point brackets at the box corners |
-| 5 | aliveness weighting + amplitude term (3b.4) | **yes** | `--selftest`: a surface with `\|z\| = 0.05` everywhere scores ≈ 1.0, not ≈ 0.1 |
-| 6 | informativeness weighting (3b.5) | **yes** | the residual split at S\* stops being 0.18/0.05 and becomes comparable |
-| 7 | bracketing barrier (3b.6) | **yes** | no fit ends with `n_sing = 0` in its own window |
-| 8 | stability term (3b.7) | **yes** | T1 self-recovery still passes from the truth |
-| 9 | re-run T1 per target, then the campaign | — | 3 of 16 pathological orbits should not recur |
+Measured, same parameter set, `total(v)` wall time:
 
-Steps 5–8 change the objective, so they land as **one** commit with **one** re-run, and the
-Aug-30 campaign becomes the labelled baseline rather than something to compare against
-piecemeal.
+    20 x 14   [0.5, 8] S*      2.5 s      today
+    32 x 24   [0.5, 8] S*     11.7 s      x4.7
+    32 x 48   [0.5, 8] S*     24.7 s      x9.8
+    40 x 64   [0.01, 8] S*    35.3 s      x14
 
-### The regression fixture for step 2
+Two things fall out, and they drive the whole ordering:
 
-Measured on `bmal1seeds`, these are the exact sets a correct implementation must reproduce.
-They are the cheapest test in the whole plan and they pin every threshold at once:
+* **Dose ROWS are the expensive axis, and roughly linear** — 24 → 48 rows doubled the time.
+* **Extending the window DOWN is free.** 32×48 over `[0.5, 8]` took 24.7 s; the same grid over
+  `[0.01, 8]` took **20.9 s**. Low doses integrate quickly, so the fix for F1/C6 in the
+  direction that actually failed costs nothing.
+
+*(The phase-axis scaling came out non-monotonic over three repetitions and is NOT established —
+measure it before budgeting on it.)*
+
+So the campaign as run (8000 evals × 16 seeds ≈ 16 CPU-hours per seed) does **not** survive a
+naive grid refinement: it becomes ~160. Either the evaluation budget drops ~10×, or the search
+grid and the scoring grid are decoupled. `fit/multires.py` already implements the second, but
+it **lost its benchmark** — 0.0968 against cma-anneal's 0.0198 at equal evaluations — with a
+finest stage of 24×16, coarser than the contract wants. That is an open question, not a
+solution.
+
+### The order
+
+| P | do | changes objective? | cost | why here |
+|---|---|---|---|---|
+| **P0** | contract vector C1–C6 computed, stored, reported (3a.1–2) | no | ~0 — all inputs already computed | Free, and it stops wrong numbers being quoted while everything else is decided. Pinned by the fixture below. |
+| **P1** | aliveness threshold + ramp (3b.3) | **yes** | one constant | Removes the 4 of 16 surfaces that are noise. Highest value per line changed. |
+| **P2** | extend the dose window down (C6) | **yes** (grid) | **free — measured** | The failure that hit 15 of 16, fixed at no compute cost. |
+| **P3** | informativeness weighting (3b.4) | **yes** | ~0 per eval | The one most likely to move the optimum, and it subsumes the bracketing barrier. |
+| **P4** | dose resolution per gene (§5) | **yes** (grid) | **~linear, the real bill** | Needs the budget decision above. Do it last because it is the only expensive item. |
+| **P5** | stability + rescan per campaign | no | already built | Post hoc, unchanged: `fit.stability`, `fit.rescan`. |
+
+**P1–P4 all change the objective, so they land as ONE commit and ONE re-run**, with the Aug-30
+campaign as the labelled baseline. P0 and P5 are independent and can land immediately.
+
+**A separate thread, not on this list:** `include_time=False` for the pulse-mode identifiability
+counts (§3c). It touches `analysis/`, not the fit, and blocks nothing here.
+
+### The regression fixture for P0
+
+Measured on `bmal1seeds`; a correct implementation must reproduce these exactly. It is the
+cheapest test in the plan and it pins every threshold at once:
 
     C1 orbit          {3}
     C2 attractor      {1, 4, 5, 11, 14}
@@ -248,15 +282,15 @@ They are the cheapest test in the whole plan and they pin every threshold at onc
     C5 aliveness      {2, 5, 11, 14}
     C6 bracketing     all but {2}                                   15 of 16
 
-Two things are worth reading off this table before writing any code.
+Two things to read off it before writing code.
 
-**C6 fails almost everywhere.** Only seed 2 kept a transition inside its own fit window. That is
-§5.10c restated as a gate, and it means the bracketing barrier (3b.6) is not a corner case —
-it is the common case.
+**C6 fails almost everywhere.** Only seed 2 kept a transition inside its own fit window — which
+is why P2 is high and why the bracketing *barrier* was cut: the problem is the window, not a
+missing penalty.
 
-**C3 predicts C2 at a fraction of the cost.** They differ by one element each way ({3} vs {1}):
-a single dose-0 row anticipates a 24-period integration on 4 of 5 failures. Compute C3 first and
-short-circuit.
+**C3 predicts C2 at ~1/1000 the cost.** They differ by one element each way: one dose-0 row
+anticipates a 24-period integration on 4 of 5 failures. That is the redundancy that keeps the
+stability measurement out of the inner loop entirely.
 
 ---
 

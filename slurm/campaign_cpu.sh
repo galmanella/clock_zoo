@@ -106,4 +106,21 @@ rc=$?
 [ $rc -eq 0 ] || exit $rc
 
 "$PYTHON_EXE" -u -m fit.campaign --config "$CONFIG" --index "${SLURM_ARRAY_TASK_ID:-0}" --workers "${SLURM_CPUS_PER_TASK:-1}"
+rc=$?
 echo "done=$(date)"
+
+# WHAT TO DO NEXT, printed in every task's log because that is where someone looks.
+#
+# A task compares only the seeds IT ran -- that is all it can see. The campaign-level
+# comparison does not exist until the tasks are joined, and reading a per-task seeds_*.npz as
+# though it were the campaign is how 16 seeds in four clusters look like one cluster of four.
+CAMPAIGN_TAG=$("$PYTHON_EXE" -c "import json,sys;print(json.load(open(sys.argv[1])).get('tag','campaign'))" "$CONFIG" 2>/dev/null)
+MODEL=$("$PYTHON_EXE" -c "import json,sys;print(json.load(open(sys.argv[1])).get('model','almeida'))" "$CONFIG" 2>/dev/null)
+cat <<EOF
+
+  ONCE THE WHOLE ARRAY HAS FINISHED, join it before reading anything:
+      python -m fit.aggregate --model ${MODEL:-almeida} --tag ${CAMPAIGN_TAG:-campaign}
+      python -m fit.figures   --model ${MODEL:-almeida} --which seeds --tag ${CAMPAIGN_TAG:-campaign}
+  (a one-gene-per-task campaign uses --kind genes / --which genes)
+EOF
+exit $rc

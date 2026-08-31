@@ -1,0 +1,2 @@
+copied from out\almeida\fit_radial\genes\genes_instant.png
+script fit/figures.py @ c9e7909, tag genes

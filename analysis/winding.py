@@ -317,8 +317,58 @@ def circ_rms(a, b):
 
 
 def total_twist(tw):
-    """Total isochron shear across the dose axis: the circular span of the twist curve."""
+    """Total isochron shear across the dose axis: the circular span of the twist curve.
+
+    SATURATES AT 0.5, AND THAT IS A REAL LIMITATION. `circ_span` is the largest pairwise
+    circular distance, so it cannot exceed half a cycle by construction: it reads 0.5 whether
+    the isochrons wind half a turn across the dose axis or fifty. Almeida's BMAL1 base sits at
+    0.4999 -- pinned to the ceiling -- so every twist comparison against that base is measuring
+    a saturated quantity. Use `accumulated_twist` when the magnitude matters.
+    """
     return circ_span(tw)
+
+
+def accumulated_twist(tw):
+    """Total UNWRAPPED phase travelled along the dose axis, in cycles. Not bounded.
+
+    Sums the shortest-arc step between successive doses, so a spiral that winds three times
+    reads ~3 rather than saturating at 0.5. This is what makes an aliasing check possible:
+    refine the dose sampling and watch this number. Aliasing does NOT look like noise -- an
+    under-sampled spiral looks like a smooth, slower twist -- so a value that keeps CLIMBING as
+    resolution improves means the isochron winding is still faster than the sampling, and every
+    twist measured so far is a lower bound. A value that plateaus means the sampling has passed
+    the winding rate.
+
+    The unwrapping itself assumes adjacent samples differ by less than half a cycle, which is
+    exactly the Nyquist condition being tested; that is why the CONVERGENCE is the evidence,
+    not any single value.
+    """
+    a = np.asarray(tw, float)
+    a = a[np.isfinite(a)]
+    if len(a) < 2:
+        return 0.0
+    d = np.diff(a) % 1.0
+    d = np.where(d > 0.5, d - 1.0, d)          # shortest arc per step
+    return float(np.sum(np.abs(d)))
+
+
+def signed_twist(tw):
+    """Net SIGNED unwrapped phase travelled along dose, in cycles: the winding DIRECTION.
+
+    Separate from `accumulated_twist` because aliasing reverses direction before it destroys
+    magnitude. If the true advance per dose sample lies between 0.5 and 1.0 cycles, the
+    shortest arc is NEGATIVE and a counter-clockwise spiral is measured as clockwise -- the
+    wagon-wheel effect. So a sign flip between two sampling rates is direct evidence of
+    under-sampling, and a winding set containing -1 or -2 (topologically impossible for a real
+    PTC) is the same artefact seen through the winding number instead of the twist.
+    """
+    a = np.asarray(tw, float)
+    a = a[np.isfinite(a)]
+    if len(a) < 2:
+        return 0.0
+    d = np.diff(a) % 1.0
+    d = np.where(d > 0.5, d - 1.0, d)
+    return float(np.sum(d))
 
 
 def _selftest():

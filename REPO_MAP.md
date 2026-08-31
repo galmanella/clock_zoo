@@ -15,6 +15,9 @@ Everything runs as a module from the repo root: `python -m engine.orbit`,
 | `engine/` | limit-cycle solver, perturbations, the PTC, and an INDEPENDENT adaptive-solver reference. Model-agnostic throughout. |
 | `analysis/` | the drivers that produce results. Headless, shardable, provenance-stamped. |
 | `gauge/` | the exact unit-rescaling symmetry, derived per model. **Read before comparing any two parameter sets.** |
+| `fit/` | the radialization pipeline: target, cost, search, dose window, campaigns, aggregation, figures. |
+| `campaigns/` | one JSON per campaign. List-valued fields expand to a SLURM array; the file IS the experiment's record. |
+| `fixtures/` | anything a later run DEPENDS on, S_crit above all. Tracked, promoted deliberately -- see hazard 16. |
 | `slurm/` | cluster templates. Thin: the drivers already shard. |
 | `out/` | results, `out/<model>/<analysis>/<tag>/`. Git-ignored; each npz carries a `.meta.json` provenance sidecar. |
 | `docs/figures/` | ONLY figures explicitly cited by PROJECT_SUMMARY. Not a gallery, not a dumping ground -- see the figure rule under Hazards. |
@@ -31,9 +34,17 @@ Everything runs as a module from the repo root: `python -m engine.orbit`,
 | How much does each parameter move the PTC? | `python -m analysis.ptc_sens --model M --target T` |
 | **Are the LC and the PTC coupled?** (the batch-1 question) | `python -m analysis.coupling --model M --target T` |
 | Is the gauge declaration right? | `python -m gauge.validate [identity\|algebra\|invariance]` |
+| Launch a campaign (after `--dry-run`) | `sbatch --array=0-N slurm/campaign_cpu.sh campaigns/<c>.json` |
+| **Join a finished campaign's tasks into one result** | `python -m fit.aggregate --model M --tag <c> [--kind genes]` |
+| The campaign figures (pure read of that npz) | `python -m fit.figures --which seeds\|genes --tag <c>` |
+| One run's figure | `python -m fit.figures --which radial --tag <run-tag>` |
 
 Order matters: `scrit` derives the dose grid and the integrator step that `characterize` and
 `ptc_sens` consume, and `coupling` is a pure read of `lc_sens` + `ptc_sens`.
+
+Order matters for a campaign too: **aggregate before plotting**. `fit.figures --which seeds`
+reads the JOINED npz, not the per-task ones, because the comparison it draws does not exist
+until the tasks are joined.
 
 ## Index
 
@@ -65,6 +76,23 @@ Order matters: `scrit` derives the dose grid and the integrator step that `chara
 | `lc_sens.py` | ENTRY. Per-parameter limit-cycle sensitivity. Target-independent: runs once per model. |
 | `ptc_sens.py` | ENTRY. Per-parameter PTC sensitivity on a FIXED base dose grid. Saves every raw grid. |
 | `coupling.py` | ENTRY. Objective (b): the scatter, the gauge-quotiented principal angles, and the shortlist to confirm. Pure read. |
+
+### `fit/`
+| File | Role |
+|---|---|
+| `config.py` | `RunConfig`: every setting a run depends on, in one dataclass. Two runs with equal configs ARE the same experiment, and the npz records which one. |
+| `target.py` | The radial (Poincare) target, its `(k, psi)` registration, and the smooth `soft_singularity`. |
+| `cost.py` | **CORE.** The pointwise surface cost, the gauge quotient (`quotient_basis`), the amplitude floor and the Hopf barrier. `--selftest` asserts the anti-degeneracy invariant. |
+| `doses.py` | The FIT dose window -- capped at `max_factor * S_crit`, which is what keeps the gradient finite (hazard 11) -- plus `--promote` for the S_crit fixture (hazard 16). |
+| `search.py` | L-BFGS, multistart, CMA-ES (anneal / ipop), BOBYQA, LM. BOBYQA is the measured winner (PROJECT_SUMMARY 5.6). |
+| `parallel.py` | Population-parallel evaluation for CMA. The cluster buys THROUGHPUT, not latency (5.8). |
+| `viability.py` | Rejection-sampling for `start='viable'`: draw random parameter sets, keep the healthy circadian clocks. Its rejects are a free viability map. |
+| `radial.py` | ENTRY. One radialization (`run`), a seed set (`run_seeds`), the degeneracy checks and the verdict. |
+| `recover.py` | ENTRY. T1, the self-recovery control: fit an IN-CLASS target whose answer is known. |
+| `campaign.py` | ENTRY. One config with list-valued fields -> a matrix of runs, indexed for a SLURM array. `--dry-run` validates every entry at submission time. |
+| `aggregate.py` | **ENTRY. Joins a campaign's array tasks into one result** -- the 16-seed comparison that no single task can see -- and re-derives the unsaturated twist metrics. Refuses to join runs that are not the same experiment. |
+| `figures.py` | Pure read. `--which radial\|recover` for one run; `seeds\|genes` for a campaign. |
+| `benchmark.py`, `multires.py` | Optimizer head-to-head; multi-resolution helpers. |
 
 ### Root
 | File | Role |
@@ -270,6 +298,47 @@ tracking.
         mv fixtures/scrit/almeida /tmp/ && python -c "from fit.doses import fit_dose_grid;
         fit_dose_grid('almeida','BMAL1','instant',8.0,14)"    # must raise, not succeed
 
+17. **A LOW RESIDUAL AGAINST A RADIAL TARGET IS MOSTLY A STATEMENT ABOUT WHERE THE DOSE
+    WINDOW SITS.**
+
+    A Poincare target carries old-phase structure only BELOW its own singularity. Above it the
+    target resets to nearly one phase whatever the old phase was: measured on Almeida/BMAL1,
+    its old-phase span falls from the ceiling 0.50 below S\* (a full sweep of the phase circle)
+    to **0.05 at 6x S\***. `fit_dose_grid`
+    spans `0.5x` to `max_factor x S_crit` LOG-spaced, so at `max_factor = 8` most of the rows
+    -- 9 of 14 -- lie in that flat asymptote, and a pointwise cost weights them equally with
+    the informative ones.
+
+    The 16-seed BMAL1 campaign is what this looks like when it happens (PROJECT_SUMMARY 5.10c).
+    Cost 0.428 -> ~0.10, verdict RADIALIZED on 12 of 16 -- and split by dose:
+
+        rms residual BELOW S*  (5 doses)   base 0.199 -> fits 0.181 - 0.221    <- no better
+        rms residual ABOVE S*  (9 doses)   base 0.276 -> fits 0.035 - 0.057    <- all of it
+
+    Eleven of the twelve pushed their singularity out of the window entirely (`n_sing = 0`), so
+    they do not even share the target's TOPOLOGY. And five reached a PTC that does not resolve
+    old phase at all (range < 0.05 cyc; one is constant to four decimals) -- a phaseless
+    surface, which has zero twist by construction and therefore satisfies `less_twist`
+    trivially while carrying no phase information whatever. Measure that span with
+    `analysis.winding.circ_span`, not a peak-to-peak about an arithmetic mean: phase wraps,
+    and the naive version read 4 informative dose rows for REV against a true 1. It passes every guard the cost has:
+    alive, `Re(lambda) > 0`, `mu` healthy, amplitude in range.
+
+    This is a THIRD degeneracy route, after the dead oscillator (hazard 10) and the bad
+    observable (hazard 14), and it is the one a radial target invites -- a flat PTC *is* the
+    target's own high-dose asymptote.
+
+    Three rules follow:
+
+      * **quote the residual split at S\*, never the pooled `c_ptc` alone.** `fig_seeds` panel
+        (f) and `fit.aggregate.report` do this; a number without it is not interpretable.
+      * **check that the fitted surface still resolves old phase** before reading any twist
+        number off it. Zero twist on a phaseless surface is not radial isochrons.
+      * **costs from different targets are not comparable.** Each gene's window comes from its
+        FIXTURE `S_crit` while its target is pinned to the base surface's MEASURED singularity,
+        and the two disagree by up to 4.7x (PER: 37.75 vs 178.2). REV therefore had 1 of 14
+        doses below its defect and won the campaign on cost with the least demanding fit.
+
 ## Open
 
 - `analysis/characterize.py` and `ptc_sens.py` have not yet been run for Korencic or
@@ -278,3 +347,5 @@ tracking.
   (BMAL1 is the cleanest surface in the project); not yet swept through `ptc_sens`/`coupling`.
 - Fitting (`fit/`) is in progress: target, cost and search are built and self-tested; the T1
   self-recovery control has not yet been run.
+- `fit/radial._diagnose` still solves the orbit with `solver.guess` where the cost uses `make_guess_fn` -- hazard 15's first bullet, fixed in `figures._backfill` but not here. It cost three runs of the Aug-30 campaign their verdict (PROJECT_SUMMARY 5.10f). One line; not changed yet because it re-opens finished fits.
+- The radialization cost has no term requiring the fitted surface to RESOLVE OLD PHASE, and no weighting toward the doses where the target is informative. Both are what hazard 17 is about.

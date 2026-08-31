@@ -62,7 +62,7 @@ import numpy as np
 import jax
 jax.config.update('jax_enable_x64', True)
 import jax.numpy as jnp
-from jax import lax
+from jax import lax, vmap
 
 from engine.orbit import OrbitSolver, make_guess_fn
 from engine.ptc import make_ptc, grid_points, DEAD_AMP, NEG_TOL
@@ -171,6 +171,57 @@ def _mre_jvp(primals, tangents):
         (jax.ShapeDtypeStruct((), J.dtype), jax.ShapeDtypeStruct(J.shape, J.dtype)),
         J, vmap_method='sequential')
     return val, jnp.sum(G * dJ)
+
+
+def make_growth_fn(model, backend='diffrax', eps=1e-4, k=8, ndir=4, m=256):
+    """`growth(P, y0, T) -> r`, the per-period growth of a small deviation from the cycle.
+
+    WHY NOT THE FLOQUET MULTIPLIER. mu is the textbook answer and it is not usable here: it
+    needs the monodromy, which integrates the variational equation over a period, so its
+    entries grow like exp(lambda*T) and OVERFLOW -- it returned a non-finite matrix on BMAL1
+    (killing a completed fit), reported 2.35e6 for a PER optimum, and 0.5146 for the SAME point
+    on recompute. It is also a numpy `pure_callback` into `eig`, so it blocks forward-mode
+    autodiff and serialises under vmap.
+
+    THIS instead perturbs the cycle and watches, which is power iteration on the monodromy
+    without ever forming it: successive periods amplify the leading direction, so
+    (d_k/d_0)^(1/k) approaches mu_lead. Distance is measured to the CYCLE (a min over sampled
+    points), which quotients out the neutral phase direction that would otherwise floor the
+    ratio at 1.
+
+    BENCHMARKED, and the settings are not arbitrary:
+      * eps=1e-4 -- at 1e-7 the probe sits AT the integrator's rtol and measures solver noise,
+        which produced a 6x spread in the value. Three orders of headroom fixes it.
+      * ndir=4 -- one random direction is a noisy lower bound; the geometric mean is stabler.
+      * k=8 -- more iterations, better convergence to the leading direction.
+    On the known points: base 0.816, REV optimum 0.552 (both attracting), PER optimum 1.437
+    (repelling -- confirmed independently by direct perturbation, 204x growth over 8 periods,
+    where mu claimed 0.51). Continuity along viable paths: steps of 0.001-0.002 away from
+    bifurcations, rising sharply only where the orbit is about to cease to exist.
+
+    Costs ~32 periods of integration against the PTC's ~3080, i.e. about 1%.
+    """
+    from engine.flow import make_window_sampler
+    sampler = make_window_sampler(model, backend=backend)
+    solver = OrbitSolver(model)
+    g = np.random.default_rng(12345)
+    U = g.normal(size=(int(ndir), int(model.n_states)))
+    U = jnp.asarray(U / np.linalg.norm(U, axis=1, keepdims=True))
+
+    def growth(P, y0, T):
+        cyc = solver.cycle(P, y0, T, m)
+        scale = jnp.maximum(cyc.max(0) - cyc.min(0), 1e-12)
+
+        def one(u):
+            pert = y0 + eps * scale * u
+            d0 = jnp.min(jnp.linalg.norm(cyc - pert, axis=1))
+            tr = sampler(pert, 2, k * T / 2, P)
+            dk = jnp.min(jnp.linalg.norm(cyc - tr[-1], axis=1))
+            return jnp.log(jnp.maximum(dk, 1e-300)) - jnp.log(jnp.maximum(d0, 1e-300))
+
+        return jnp.exp(jnp.mean(vmap(one)(U)) / k)
+
+    return growth
 
 
 def make_osc_penalty(model, w=0.2, k=200.0, margin=0.015, n_iter=40, reg=1e-9):
@@ -370,7 +421,7 @@ class RadialTarget:
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
               param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0, pulse=8.0,
-              readout_ref=None):
+              readout_ref=None, w_stab=0.0, r_max=0.98):
     """Build the objective.
 
     Returns a dict with
@@ -420,6 +471,8 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     def _theta(v):
         return jnp.exp(zbj + Bj @ v)
 
+    growth_fn = make_growth_fn(model, backend=backend) if w_stab else None
+
     def _surface(v):
         P = model.jax_apply(_theta(v), names)
         x0 = guess(P, y_seed)
@@ -456,10 +509,13 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         # a bad orbit kills every cell, so the whole surface scores the maximum
         alive = fin & (amp > DEAD_AMP) & (ymin >= NEG_TOL) & ok_orbit
         zu = zs / (amp + eps)
-        return P, zu, alive, amp, amp_lc, T
+        # per-period growth of a deviation from the cycle; > 1 means the orbit REPELS, so the
+        # asymptotic phase the whole PTC is built on does not exist there
+        r = growth_fn(P, y0, T) if growth_fn is not None else jnp.array(jnp.nan)
+        return P, zu, alive, amp, amp_lc, T, r
 
     def _parts(v):
-        P, zu, alive, amp, amp_lc, T = _surface(v)
+        P, zu, alive, amp, amp_lc, T, r_grow = _surface(v)
         zt, aux = tgt(zu, alive, old, doses)
         c_ptc = circ_cost(zu, zt, alive)
         # one-sided quadratic floor: 0 when healthy, rising as the cycle shrinks. Quadratic
@@ -469,10 +525,26 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
             b, re, res = osc(P, y_fp_seed)
         else:
             b = jnp.array(0.0); re = jnp.array(jnp.nan); res = jnp.array(jnp.nan)
-        total = c_ptc + w_osc * b + w_amp * a
+        # STABILITY. Softplus on log r so the term is exactly 0 for a comfortably attracting
+        # cycle and rises smoothly as the fit approaches r = 1. Penalising the APPROACH rather
+        # than only the crossing is the point: a hard gate at r > 1 gives the optimizer no
+        # gradient telling it which way is safe, which is how the PER fit walked onto a
+        # repelling orbit while every existing check reported healthy.
+        # SQUARED HINGE, NOT SOFTPLUS. Softplus has an exponential tail that never reaches
+        # zero: at the base point (growth 0.857, r_max 0.95) it still charged 0.006, which is
+        # FIFTEEN TIMES the T1 recovery optimum of 0.000392. A penalty whose tail dwarfs the
+        # signal would have made the regression test meaningless. The hinge is exactly 0 below
+        # r_max, C1 at the knee, and quadratic above -- the same shape the amplitude floor
+        # uses a few lines up.
+        if w_stab and growth_fn is not None:
+            st = jnp.maximum(0.0, jnp.log(jnp.maximum(r_grow, 1e-12))
+                             - jnp.log(r_max)) ** 2
+        else:
+            st = jnp.array(0.0)
+        total = c_ptc + w_osc * b + w_amp * a + w_stab * st
         return dict(total=total, c_ptc=c_ptc, osc=b, amp_pen=a, amp_lc=amp_lc, period=T,
                     alive_frac=jnp.mean(alive.astype(jnp.float64)), re_lambda=re,
-                    fp_res=res, **aux)
+                    fp_res=res, stab=st, growth=r_grow, **aux)
 
     def _residual(v):
         """The cost as a RESIDUAL VECTOR r with |r|^2 == total.
@@ -497,7 +569,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
             osc/amp  sqrt(w * term), one entry each.
             ridge    sqrt(ridge) * v, one entry per free direction (see `ridge` below).
         """
-        P, zu, alive, amp, amp_lc, T = _surface(v)
+        P, zu, alive, amp, amp_lc, T, _r = _surface(v)
         zt, aux = tgt(zu, alive, old, doses)
         fin = jnp.isfinite(zu.real) & jnp.isfinite(zu.imag)
         zs = jnp.where(fin, zu, 1.0 + 0j)
@@ -544,7 +616,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     _surface_j = jax.jit(_surface)
 
     def surface(v):
-        P, zu, alive, amp, amp_lc, T = _surface_j(jnp.asarray(v, jnp.float64))
+        P, zu, alive, amp, amp_lc, T, _r = _surface_j(jnp.asarray(v, jnp.float64))
         return np.asarray(zu), np.asarray(alive), np.asarray(amp)
 
     def residual(v):

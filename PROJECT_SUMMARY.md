@@ -17,7 +17,13 @@ distance*. That "from-distance locality" blocked the actual scientific question.
 the model, not the optimizer, and re-ask it on models small enough to optimise.
 
 **Status.** The stack is built and gated. Objectives (a) and (b) are answered for Almeida,
-across three perturbation targets (BMAL1, CRY, PER).
+across three perturbation targets (BMAL1, CRY, PER). The first cluster campaigns have run --
+20 radialization searches, ~550 CPU-hours (§5.10) -- and their outcome is a finding about the
+OBJECTIVE rather than about the search: the landscape is genuinely multimodal (12 usable
+solutions within 1.6x in cost, a median of 9.89 apart in a box of radius 3), and the cost
+reduction they achieved lies almost entirely in the part of the dose window where the radial
+target carries no phase information. Read §5.10c and hazard 17 before quoting any `c_ptc` from
+a radial fit.
 
 **The headline scientific result so far:** for Almeida at base, there IS a parameter
 combination that the PTC constrains and the limit cycle leaves ~11x freer -- confirmed by
@@ -767,8 +773,10 @@ Two details worth keeping:
 ### 5.5b Status
 
 `fit/` is built and self-tested: `target.py`, `cost.py`, `search.py` (L-BFGS, multistart,
-CMA-ES), `doses.py`, `recover.py` (T1, with `--start truth` and `--optimizer`), `radial.py`
-(T3, unrun), `figures.py`. T0 and T0.5 pass; T1 fails from a distance and passes from the truth.
+CMA-ES, BOBYQA), `doses.py`, `recover.py` (T1, with `--start truth` and `--optimizer`),
+`radial.py`, `viability.py`, `campaign.py`, `aggregate.py`, `figures.py`. T0 and T0.5 pass; T1
+fails from a distance and passes from the truth. T3 (radial) has now RUN on the cluster, twice
+-- see 5.10, which is also where the reasons not to trust its headline numbers are.
 
 ### 5.6 Optimizer head-to-head: a model-based trust region wins
 
@@ -847,11 +855,304 @@ XLA's CPU backend does not parallelise the vmap across cells. So:
   the slowest cell. Estimated 3-10x for a single evaluation, 10-30x for a batched generation --
   to be MEASURED before it is believed.
 
+### 5.9 THE TWIST METRIC SATURATED, AND THE DOSE AXIS WAS ALIASED
+
+Two independent measurement faults, found together, and between them they qualify every twist
+number this project has reported.
+
+#### 5.9a `total_twist` is capped at 0.5, and Almeida's base sits at 0.4999
+
+`total_twist` is `circ_span` -- the largest pairwise circular distance among the twist curve's
+values -- which cannot exceed half a cycle by construction. Almeida's BMAL1 base measures
+0.4999: PINNED TO THE CEILING. The metric returns 0.5 whether the isochrons wind half a turn
+across the dose axis or fifty.
+
+Consequences:
+  * every "twist 0.49 -> 0.18" style comparison was measured against a SATURATED reference. The
+    reductions are real (the fitted values sit well below the cap) but the starting twist is
+    unknown, so the FACTOR of improvement is not a measurement;
+  * per-gene twists cannot be ranked against each other anywhere near 0.5;
+  * a faster spiral is INVISIBLE, which is why the first convergence test looked reassuringly
+    flat -- a saturated quantity cannot change.
+
+`accumulated_twist` (analysis/winding) sums the unwrapped shortest-arc steps along dose and is
+unbounded, so a triple winding reads ~3. On the same BMAL1 base it reads **4.77 cycles**, not
+0.5 -- the saturated metric was reporting a tenth of the real winding.
+
+#### 5.9b The dose axis was under-sampled, and aliasing does not look like noise
+
+Holding the dose RANGE fixed and refining only the sampling, on BMAL1 base:
+
+    n_dose      12       24       48       96
+    accum    2.8996   3.9716   4.7712   4.7717
+    change       --   +37.0%   +20.1%    +0.0%     <- converged at 48
+    scramble 0.0130   0.0117   0.0111   0.0114     <- PASSES the gate at every resolution
+
+The measured twist climbs 65% before it converges, and the quality gate never notices: an
+under-sampled spiral is not incoherent, it is a SMOOTH, PLAUSIBLE, WRONG twist. Scramble
+detects incoherence between neighbours, not a coherent alias. Refining the PHASE axis instead
+changes nothing (4.743 -> 4.782 from 16 to 64), so the aliasing is entirely on DOSE -- which
+matches the geometry, the spiral's pitch being in dose.
+
+    THE CAMPAIGN USED 14 DOSE SAMPLES. THE SURVEY USED 24. BMAL1 NEEDS 48.
+
+#### 5.9c Aliasing reverses direction before it destroys magnitude
+
+A synthetic spiral of known winding (+12 cycles CCW), sampled at various rates:
+
+    samples      8       12       16       24       25       48
+    adv/samp 1.714    1.091    0.800    0.522    0.500    0.255
+    signed  -2.000   +1.000   -3.000  -11.000  +12.000  +12.000
+
+At 24 samples the MAGNITUDE is 92% correct while the DIRECTION is inverted -- a clockwise
+reading of a counter-clockwise spiral, the wagon-wheel effect. At 12 it reads +1.0: right
+direction, one twelfth of the truth, i.e. "looks almost radial". Both failure modes matter here
+because FLATNESS IS THE SUCCESS CRITERION -- an aliased fast spiral and a genuine radial PTC
+are the same picture.
+
+`signed_twist` is therefore reported separately from `accumulated_twist`: a SIGN FLIP between
+two sampling rates is direct evidence of under-sampling, and it appears at coarser sampling
+than the magnitude error does.
+
+#### 5.9d The required resolution is per-gene and varies 16x -- REV's re-entrancy is REAL
+
+    gene    accumulated twist    dose samples needed
+    BMAL1        4.77 cycles     >= 48  (reads 2.90 at 12: a 40% under-read)
+    REV          0.30 cycles     12 is ample
+
+So there is no globally safe resolution. It has to be set per gene from its own convergence
+check -- and re-checked on FITTED surfaces, since the winding rate moves with the parameters.
+
+This also settles a hypothesis worth recording as refuted. REV's base shows THREE singularities
+at doses 129 / 754 / 2660, all near phase 0.5, with charges +1 / -1 / +1, and the natural guess
+was a thin spiral being badly sampled. It is not: across an 8x dose refinement the count, the
+charges, the accumulated twist (0.296) and the signed twist (-0.192) are IDENTICAL to three
+decimals. REV genuinely has re-entrant resetting -- winding 1 -> 0 -> 1 -> 0 as dose rises, the
++/- charges being the defects at each re-entry, with the winding SET staying [0, 1] throughout.
+Compare the `PER1 re-entrant` outlier noted in the Mirsky work.
+
+Note also what this does NOT license: the negative winding numbers seen elsewhere ([-1, 0, 1]
+under pulse, [-2, -1, 0, 1] for PER at high dose) were speculated to be the same artefact. For
+REV that speculation is now disproved, and it has not been tested for the others.
+
+### 5.10 THE FIRST CLUSTER CAMPAIGNS -- and the residual fell almost entirely in the part of the target that carries no information
+
+Two campaigns, 20 CMA searches at 8000 evaluations each, commit `c9e7909`. Summed per-search
+wall time 17.1 h (0.45-1.70 h each) at 32 workers per task, so ~550 CPU-hours; elapsed was a
+quarter of that, the tasks being an array. All 20 completed.
+
+- **`campaigns/bmal1_seeds.json`** -- BMAL1/instant, 16 independent seeds, each started from a
+  rejection-sampled *healthy circadian clock* (`start='viable'`), run as 4 array tasks of 4.
+  The multimodality question.
+- **`campaigns/genes.json`** -- one radialization per gene (BMAL1, PER, CRY, REV) from BASE,
+  one seed each. Which probes can be radialized at all.
+
+**Aggregation was missing and is now `fit/aggregate.py`.** `run_seeds` compares only the seeds
+that share one array task, which is all one task can see, so a 16-seed campaign split four ways
+produced four 4-seed comparisons and no 16-seed one -- and 16 seeds in four separate clusters
+look exactly like one cluster of four when every distance measured is within a task. The
+aggregator joins the per-seed `radial_*.npz` (not the per-task summaries, which carry only
+`v` and `cost`), refuses to join runs that disagree on the experiment or the dose grid or the
+pinned target, and writes one fat npz with the raw surfaces. Figures: `fit/figures.py
+--which seeds | genes`.
+
+![16 BMAL1 seeds](docs/figures/almeida_seeds_BMAL1_instant.png)
+![every fitted surface](docs/figures/almeida_seeds_BMAL1_instant_surfaces.png)
+![the four genes](docs/figures/almeida_genes_instant.png)
+
+#### 5.10a The landscape is MULTIMODAL, and not marginally
+
+| | |
+|---|---|
+| usable runs (RADIALIZED / PARTIAL) | **12 of 16** |
+| their cost | 0.0900 - 0.1431 -- a **1.59x** spread |
+| their pairwise gauge-quotient distance | min 1.72, **median 9.89**, max 13.32 |
+| the search box | `bound = 3` per axis in 16 dimensions (max possible separation 24) |
+| per-parameter disagreement | 0.81 - 3.19 **decades**, median 2.15 |
+| parameters agreed to within +-26% | **0 of 18** |
+
+Twelve searches that all pass the liveness and quality gates and land within a factor 1.6 in
+cost sit a median of 9.89 apart in a box of radius 3 -- 41% of the largest separation the box
+allows. §5.1 measured that a **+-26%** Almeida is distinguishable from nominal by one gene's
+PTC; these solutions differ by one to two orders of magnitude in individual parameters. That is
+not a flat floor being wandered, it is distinct optima.
+
+**The four non-usable runs are THREE different failures, and they must not be pooled.** One
+genuinely dead clock (seed 3: `Re(lambda) = -2.5e-07`, i.e. the stable side of the Hopf
+bifurcation, `alive_frac 0.000`, cost pinned at the maximum 1.208 -- the cost's degeneracy
+guard working exactly as designed). One surface failing the PTC quality gate (seed 0). And two
+whose *diagnosis* failed, which is a different claim entirely -- see 5.10e.
+
+#### 5.10b A random viable start is WORSE than base, by 3.7x
+
+Best viable-start seed **0.0900**; the from-base single-seed BMAL1 run **0.0245**. Sixteen
+independent searches from dispersed healthy clocks, at 8000 evaluations each, none of them
+reached what one search from nominal reached. The viable starts sit at `|v| = 4.2 - 7.7` and
+the fits end at `|v| = 6.8 - 10.0`, so they did not converge back toward the base region at
+all. This is §5.4's from-distance locality again, now measured with 16 starts instead of one:
+dispersing the start does not buy the search anything.
+
+#### 5.10c WHERE THE RESIDUAL FELL IS NOT WHERE IT MATTERS
+
+This is the finding that qualifies every cost number in both campaigns.
+
+A Poincare (radial) target is only *informative* below its own singularity. At dose >> S* it
+resets to nearly the same phase whatever the old phase was, so its old-phase structure decays
+away. Measured on the BMAL1 grid -- the CIRCULAR span of each dose row, which ceilings at 0.5
+because 0.5 already means "sweeps the whole phase circle":
+
+    dose/S*  0.38  0.47  0.58  0.72  0.89 | 1.11  1.37  1.69  2.10  2.60  3.21  3.98  4.92  6.09
+    span     0.49  0.50  0.50  0.49  0.50 | 0.36  0.26  0.20  0.16  0.13  0.10  0.08  0.07  0.05
+
+The fit window runs 0.38x to 6.09x S*, log-spaced, so **9 of its 14 dose rows are in the flat
+asymptote and only 5 carry isochron geometry.**
+
+(That span has to be circular. Written first with an arithmetic mean subtracted, it read 4
+informative rows for REV against a true 1, because REV's target sits at `psi = 0.975` and its
+rows straddle the 0/1 wrap. `analysis.winding.circ_span` is the house function for this and is
+what `fit/figures._span_vs_dose` now calls.)
+
+Split the residual on that line, over the 12 usable seeds:
+
+| | base | fitted |
+|---|---|---|
+| rms residual **below** S* (5 doses -- informative) | 0.1986 | **0.1808 - 0.2206** |
+| rms residual **above** S* (9 doses -- nearly featureless) | 0.2755 | **0.0352 - 0.0573** |
+
+**Below the singularity the fits are no better than the base, and several are worse.** The
+entire drop from 0.428 to ~0.10 was bought in the region where almost any strongly resetting
+surface scores well. Pooled into one `c_ptc` this is invisible; it is `fig_seeds` panel (f).
+
+The mechanism is visible in the surfaces (`seeds_BMAL1_instant_surfaces.png`): **11 of the 12
+usable fits have no phase singularity left anywhere in the dose window** (`n_sing = 0`) --
+they pushed the type-1 -> type-0 transition below the window's floor, making every sampled
+dose supercritical. The target HAS a defect at S = 32.79 by construction, so those fits do not
+match its topology at all. "The isochrons went flat" and "the transition moved out of the
+window" score alike under a pointwise cost.
+
+#### 5.10d A degeneracy that passes every existing guard: the phaseless PTC
+
+**5 of the 12 usable fits have a PTC that does not depend on old phase** (seeds 5, 7, 13, 14,
+15: mean old-phase span < 0.05 cyc, against 0.5 for a full sweep; seed 14's is *constant to
+four decimals*). Such a surface carries no phase information at
+all -- the perturbation resets the clock to the same place whenever it is applied -- and it has
+zero twist by construction, so `less_twist` is satisfied trivially and the verdict reads
+RADIALIZED.
+
+It passes everything the cost defends: the oscillator is alive (`Re(lambda) > 0`), the fixed
+point converged, the Floquet multiplier is healthy (0.624, 0.666, 0.753, 0.758, 0.784), the
+amplitude is within range. §5.2 built the cost against a *dead* oscillator and §5.7 against a *bad observable*;
+this is a third route, and it is the one a radial target invites, because a flat PTC IS the
+target's own high-dose asymptote. **A twist of zero is only evidence of radial isochrons if the
+surface still resolves old phase.** Nothing currently checks that.
+
+#### 5.10e The gene ranking is an artefact of where each target's defect landed
+
+| gene | c_ptc | doses below S* | verdict | reading |
+|---|---|---|---|---|
+| REV | 0.3612 -> **0.0071** | **1 of 14** | RADIALIZED | target nearly featureless -- close to vacuous |
+| PER | 0.1379 -> **0.0184** | **11 of 14** | DEGENERATE | the demanding target, but the orbit REPELS (growth 1.437; see 5.10f) |
+| BMAL1 | 0.4285 -> **0.0245** | **5 of 14** | (diagnosis failed) | a real fit; see below |
+| CRY | 0.4379 -> **0.0653** | **3 of 14** | RADIALIZED | mostly featureless; also `T -> 9.7 h` |
+
+**Costs from different genes are not comparable**, because each target was pinned to its own
+gene's singularity while each dose window came from that gene's *fixture* S_crit -- and those
+two numbers disagree, by up to 4.7x (PER: fixture 37.75, measured 178.2). The window is anchored
+to one and the target to the other. For REV that puts 13 of 14 doses above the defect, which is
+why the cheapest number in the campaign belongs to the least demanding fit. Read the "doses
+below S*" column before the cost column.
+
+The honest ordering, once that is accounted for, is that **BMAL1 is the only one of the four
+that both faced a structured target and produced a healthy oscillator** -- and even it stretched
+the period 24.83 -> 35.99 h (x1.45, outside the circadian band).
+
+#### 5.10f A DIAGNOSTIC BUG COST THREE VERDICTS -- hazard 15, still live
+
+`fit/radial._diagnose` re-solves the orbit with `solver.guess` (the numpy peak-hunt) while
+`fit/cost._surface` uses `make_guess_fn` (the jittable relaxation). REPO_MAP hazard 15 names
+exactly this discrepancy, and it was fixed in `fit/figures._backfill` but not in the diagnosis
+path. Consequences in this campaign: three runs (genes/BMAL1, seeds 1 and 4) returned
+`period = NaN` and `mu = NaN` with an all-NaN stored cycle, `collapsed` fired on the NaN mu,
+and all three were reported **DEGENERATE -- there is no self-sustained oscillation**.
+
+Re-solved along the production path, all three are genuine periodic orbits -- and they are not
+all equally healthy, which is worth separating:
+
+| run | BVP residual | period | state spread | readout REV |
+|---|---|---|---|---|
+| genes/BMAL1 | 6.4e-14 | 35.99 h | **3 decades** | 96.8 - 164 |
+| seed 1 | 1.3e-13 | 38.94 h | **22 decades** (BMAL1 -> 3.2e-20) | 7.5 - 303 |
+| seed 4 | 1.6e-12 | 38.01 h | **54 decades** (ROR -> 4.1e-51) | 64.1 - 3.6e+03 |
+| *seed 6, the best usable, for scale* | 4.9e-13 | 21.81 h | 4 decades | 134 - 243 |
+
+So genes/BMAL1 was simply mis-verdicted: a clean 36 h cycle, three decades of state, every
+species positive (`out/almeida/fit_radial/genes__target-BMAL1/radial_BMAL1_instant_cma.png`).
+Seeds 1 and 4 also have real orbits, but at 22 and 54 decades of state spread they are the
+hazard-14 pathology itself -- which is *why* `solver.guess`, a numpy peak-hunt, cannot find
+them while the relaxation can. Their orbits are valid; their parameter sets are numerically
+extreme, and no feature should be read off them without checking the scales first.
+
+One thing does hold across all three, and it is §5.7's fix earning its keep: **the readout
+species REV stays healthy in every one of them** (minimum 7.5 at worst), so the phase carrier
+never entered the collapse even where four other species did.
+
+Two things follow, and both are now in the code. `fit/figures._backfill` re-derives a
+stored-but-all-NaN cycle and the figure says so, so a failed diagnosis renders as *"stability
+unmeasured"* rather than as *"not a circadian oscillator"*. `fit/aggregate.verdict` splits
+**NO DIAGNOSIS** from **DEGENERATE**, deciding from the cost's own converged quantities
+(`fp_res`, `re_lambda`) before falling back to the Floquet re-solve. `_diagnose` itself has NOT
+been changed -- that would re-open the fits -- so the one-line fix (`make_guess_fn` there too)
+is still outstanding.
+
+Note also that `off_regime` is computed from the same NaN period, so genes/BMAL1's x1.45 period
+stretch went unflagged by the run.
+
+**And the deeper fix is already in the working tree.** `fit/cost.make_growth_fn` (uncommitted
+at the time of writing) replaces the Floquet multiplier with power iteration on the monodromy
+that never forms it: perturb the cycle, measure the distance back to it after k periods, take
+the k-th root. The docstring's own indictment of `mu` is exactly what this campaign ran into --
+a non-finite monodromy on BMAL1 that "killed a completed fit", 2.35e6 on PER, and **0.5146 for
+that same PER point on recompute**. So `mu` here was not merely missing on three runs, it was
+unreliable on a fourth in the other direction.
+
+That matters for 5.10e's PER row: the growth measure puts PER's optimum at **r = 1.437**, i.e.
+genuinely REPELLING, confirmed independently by direct perturbation (204x growth over 8
+periods). The DEGENERATE verdict on PER is right; it just happened to be right for a reason the
+Floquet number could not be trusted to give.
+
+#### 5.10g The viability survey, accumulated for free
+
+3139 rejection-sampling draws across the four tasks, **16 accepted: a hit rate of 0.51%** for a
+random parameter set within `|v| <= 3` being a healthy circadian clock (period 0.7-1.4x nominal,
+amplitude above the floor). The accepted clocks span periods **17.9 - 34.5 h**. Every rejected
+draw is a viability measurement, so a campaign of this size is also a 3000-point map of where
+in Almeida's quotient a clock can exist -- kept in `viability__*` in the aggregated npz.
+
 ## 5b. Next
 
+**Reordered by 5.10.** The top three now all come from the cluster campaigns, and they are
+about the OBJECTIVE, not about the search: the searches worked, and what they optimised turned
+out not to be what was wanted.
+
+0. **Fix what 5.10 exposed, before running another radialization.** In order:
+   a. *Weight the cost toward the doses where the target is informative*, or cap `max_factor`
+      so the window does not run 9 rows deep into the flat asymptote. As it stands two thirds
+      of the cells are nearly free (5.10c, hazard 17).
+   b. *Add a phase-resolution term.* A PTC that does not resolve old phase has zero twist by
+      construction and currently reads RADIALIZED (5.10d). The obvious form is a floor on the
+      surface's old-phase range, charged like the amplitude floor.
+   c. *One line in `fit/radial._diagnose`*: `make_guess_fn`, not `solver.guess` (5.10f) -- and
+      land `make_growth_fn` / `w_stab`, already written, so stability stops being read off a
+      Floquet number that overflows on one run and disagrees with itself on another.
+   d. *Reconcile the fixture `S_crit` with the pinned singularity*, which disagree by up to
+      4.7x and anchor the window and the target to different doses (5.10e).
+   Only (c) is free; (a), (b) and (d) all change the objective, so the 20 completed runs are a
+   BASELINE against the current cost rather than results to build on.
 1. **Map recovery against displacement.** T1 is done at eps = 0.3 (fails) and eps = 0 (passes).
    The distance at which it breaks is the quantitative version of "from-distance locality",
-   which was never measured on Mirsky, and `fit/recover.py --eps` sweeps it directly.
+   which was never measured on Mirsky, and `fit/recover.py --eps` sweeps it directly. 5.10b
+   adds a data point from the other direction: 16 starts at `|v| = 4.2 - 7.7` all did WORSE
+   than one start from nominal.
 2. **Do genes carry independent information?** Rank of stacked multi-gene PTC jacobians. On
    Mirsky the lesson was "vary dose, not gene", but dose variation is already ruled out here
    (5.1), so if Almeida's genes are non-redundant the two models differ in a way that changes
@@ -859,7 +1160,10 @@ XLA's CPU backend does not parallelise the vmap across cells. So:
 3. **T2, basin structure** -- multistart clustered in quotient coordinates. Note the from-truth
    control means any cluster found is about reachability, not about the cost having many
    minima.
-4. **T3 (radial fit) stays parked** until something above changes the picture.
+4. ~~**T3 (radial fit) stays parked**~~ -- **RUN**, on the cluster, 20 searches. See 5.10. It was
+   worth running: it did not answer the radialization question, but it exposed three things
+   about the objective that no amount of parking would have (hazard 17, the phaseless PTC, and
+   the diagnostic bug). The next T3 should wait for item 0.
 4. **Run (a) and (b) for Korencic and Goldbeter.** The complexity ladder 11 -> 18 -> 34 -> 52 ->
    (132) makes "identifiability vs model size" measurable rather than anecdotal. Re-derive, do
    not inherit, every scale-bearing constant.
@@ -887,6 +1191,14 @@ distinguishable batch instead of silently overwriting.
 python -m analysis.figures --model almeida --target BMAL1 --tag batch1 --publish
 ```
 
+A CAMPAIGN's figures need its tasks joined first -- the comparison they draw does not exist
+until then:
+
+```bash
+python -m fit.aggregate --model almeida --tag bmal1seeds          # then --which seeds
+python -m fit.figures   --model almeida --which seeds --tag bmal1seeds
+```
+
 Pure read of the saved npz -- no figure costs compute to rebuild.
 
 ### What each one answers
@@ -901,6 +1213,10 @@ Pure read of the saved npz -- no figure costs compute to rebuild.
 | `directions_BMAL1_pulse` | the combinatorial decoupling: spectrum, parameters vs directions, loadings |
 | `direction_examples_BMAL1_pulse` | one nudge, shown in the LC and in the PTC side by side |
 | `sweep_BMAL1_pulse_<direction>` | a RANGE of nudges along one direction, with the PTC features tracked along it |
+| `radial_<gene>_<mode>_<opt>` | ONE fit: target / base / fitted PTC, both difference maps, both limit cycles in real time, the twist, the numbers |
+| `seeds_<gene>_<mode>` | a SEED CAMPAIGN: cost ranking, the cost-vs-distance funnel (the multimodality test), the pairwise distance matrix, descent traces, twist, **the residual split by dose**, and where the solutions agree in parameter space |
+| `seeds_<gene>_<mode>_surfaces` | every fitted PTC in that campaign beside the base and the target -- whether the far-apart parameter sets are also far-apart phase responses |
+| `genes_<mode>` | a GENE campaign: base / target / fitted PTC and the twist per gene, each on its OWN dose axis, with how much structure that gene's target actually had |
 
 ### Reading a PTC surface
 

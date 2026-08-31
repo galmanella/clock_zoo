@@ -1,2 +1,2 @@
 copied from out\almeida\fit_radial\bmal1seeds\rescan_BMAL1_instant.png
-script fit/figures.py @ f696f9d, tag bmal1seeds
+script fit/figures.py @ bf474ae, tag bmal1seeds

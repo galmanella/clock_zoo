@@ -23,7 +23,9 @@ OBJECTIVE rather than about the search: the landscape is genuinely multimodal (1
 solutions within 1.6x in cost, a median of 9.89 apart in a box of radius 3), and the cost
 reduction they achieved lies almost entirely in the part of the dose window where the radial
 target carries no phase information. Read §5.10c and hazard 17 before quoting any `c_ptc` from
-a radial fit.
+a radial fit. §5.11 then answers the follow-up -- the flat surfaces are mostly
+HEALTHY clocks whose S_crit collapsed three to four decades below the fit window, though 3 of
+the 12 sit on orbits the system does not stay on.
 
 **The headline scientific result so far:** for Almeida at base, there IS a parameter
 combination that the PTC constrains and the limit cycle leaves ~11x freer -- confirmed by
@@ -1184,6 +1186,138 @@ amplitude above the floor). The accepted clocks span periods **17.9 - 34.5 h**. 
 draw is a viability measurement, so a campaign of this size is also a 3000-point map of where
 in Almeida's quotient a clock can exist -- kept in `viability__*` in the aggregated npz.
 
+### 5.11 IS THE FLAT TYPE-0 HEALTHY? Mostly yes -- and answering it took fixing three measurement bugs
+
+5.10d left the campaign's central ambiguity open: twelve fits reached a nearly featureless
+type-0 PTC, five of them with no old-phase dependence at all. Two readings fit that equally
+well -- an ordinary clock whose S_crit fell below the fit window, or a degenerate object with
+no phase structure -- and nothing in the fit window separates them. Two new drivers do.
+
+![fitted cycles and their stability](docs/figures/almeida_cycles_BMAL1_instant.png)
+![rescanned down to dose 0](docs/figures/almeida_rescan_BMAL1_instant.png)
+
+#### 5.11a The answer: the transition moved BELOW the window; it did not disappear
+
+`fit/rescan.py` re-renders each fitted PTC at 32 phase x 48 dose over four decades, plus an
+explicit dose-0 row. **13 of 16 surfaces have a phase singularity on the extended grid**, at
+doses of **0.01 - 4.05** against a fit window whose floor is **12.5**. Below the window the
+surfaces are full of structure -- spirals, full 0.5 phase spans -- and above it they are the
+flat green sheet the campaign saw.
+
+So the flatness is real dynamics, not a broken surface: **the fits collapsed S_crit by three to
+four orders of magnitude**, which makes every dose the optimizer sampled far supercritical.
+That is the mechanism behind 5.10c, now seen directly rather than inferred, and it is why
+`n_sing = 0` in the fit window meant nothing about the clock.
+
+Eight of those thirteen report `S* = 0.00999`, which is the bottom row of the extended grid --
+so for them the singularity is at or below 0.01 and four decades is still not enough. The true
+collapse is larger than measured.
+
+**Three surfaces have no singularity even at dose 0**: seeds 0, 3 and 11. Seed 3 is the dead
+clock, seed 11 decays to a fixed point (5.11c), and seed 0 is the one that already failed the
+PTC quality gate.
+
+#### 5.11b The dose-0 row is a control, and five runs fail it
+
+At dose 0 the perturbation is zero, so new phase MUST equal old phase -- `engine.ptc`
+calibrates the origin there. Measured deviation:
+
+    calibrated  (11/16)   1.0e-04 - 9.4e-04 cyc     the Fourier readout's own resolution
+    NOT         ( 5/16)   4.1e-02 - 5.0e-01 cyc     seeds 3, 4, 5, 11, 14
+
+Two orders clear, so the threshold is not a judgement call. And the five that fail are **the
+same five the stability audit flags** (5.11c) -- which is the useful part: a cheap, one-row
+check on a surface predicts the expensive dynamical verdict. Where it fails, nothing else on
+that surface is a measurement.
+
+#### 5.11c The stability guard: 10 of 16 orbits actually attract
+
+`fit/stability.py`. A converged BVP says `phi_T(y0) = y0` to machine precision and says nothing
+about whether a trajectory ever goes there; an attracting cycle, a repelling one, and a cycle
+coexisting with a stable fixed point that wins all look identical over one period. So the guard
+integrates instead of doing linear algebra: displace off the cycle, walk 24 periods in
+one-period blocks, and watch the transverse distance, the amplitude and `|rhs|`.
+
+| verdict | n | which |
+|---|---|---|
+| **ATTRACTING** | **10** | growth 0.31 - 0.76 per period |
+| DECAYS TO FIXED POINT | 2 | seeds 1, 11 -- amplitude to 1e-20 of the cycle's, `\|rhs\|` to 1e-21 |
+| DIVERGES | 1 | seed 14 -- 10.3 cycle diameters out |
+| UNRESOLVED | 2 | seeds 4, 5 -- see 5.11d |
+| NOT AN ORBIT | 1 | seed 3 |
+
+**Restricted to the 12 the campaign called usable: 9 attract**, seed 11 decays to a point, seed
+14 diverges, seed 5 is unmeasurable. So the answer to "is the flat type-0 healthy" is *mostly
+yes, and specifically not for three of them*.
+
+Seeds 1 and 11 are exactly the failure mode this was run to look for: a solved orbit that is
+real, plotted, circadian and positive, which the system nonetheless abandons for a fixed point.
+The cycle panels alone cannot show it; panel (g) of the cycles figure -- amplitude over 24
+periods, diving to 1e-20 -- can.
+
+**Flatness and instability turn out to be largely independent** (cycles figure, panel h). The
+flattest surfaces include both healthy attractors (seeds 2, 7, 13, 15: span < 0.05, growth
+0.31 - 0.76) and the diverging seed 14. The one surface with a full 0.5 span, seed 0, attracts
+at 0.539. A flat PTC is therefore not a stability diagnosis, and neither is a structured one --
+they have to be measured separately, which is why there are now two drivers rather than one.
+
+#### 5.11d THREE MEASUREMENT BUGS, AND THE FIRST TWO REVERSED THE ANSWER
+
+Recorded because the first version of this audit reported **10 of 16 REPELLING** -- the
+opposite conclusion -- and every step of it looked reasonable.
+
+1. **`fit.cost.make_growth_fn`'s default `eps = 1e-4` sits below many orbits' numerical floor.**
+   Walk from `y0` with NO perturbation at all: the trajectory starts exactly on the cycle, so
+   whatever distance it accumulates is pure integration error. That floor is **8e-9** of the
+   cycle diameter at the base point and **7.6e-2** at the seed-5 optimum -- seven orders apart,
+   same integrator, same tolerances. Below it, "growth" is the ratio of two noise measurements.
+
+   The tell is that it is not eps-independent, which a dynamical quantity must be:
+
+        eps            1e-4    1e-3    1e-2    3e-2    1e-1
+        base           0.857   0.857   0.871   0.824   0.695     <- a plateau: real
+        seed 4         1.714   1.431   1.127   0.968   0.839     <- no plateau: noise
+        PER optimum    1.386   1.063   0.808   0.729   0.659     <- no plateau: noise
+
+   `measure()` now walks the floor first, climbs an epsilon ladder until the perturbation
+   clears it by 30x, and returns UNRESOLVED rather than a number when no rung does. That is
+   what seeds 4 and 5 are: not unstable, unmeasurable.
+
+2. **Distance was measured to the cycle's VERTICES, not its segments.** The reference cycle is a
+   polyline, so vertex distance cannot fall below half a sample spacing -- 5e-4 diameters even
+   at 2048 points. A decaying deviation stops decaying there, and a fit through the flat tail
+   returned **0.727 for an orbit whose Floquet multiplier is 0.546**. `_dist_to_cycle` now
+   measures to the segments, and the fit is capped at the leading two decades.
+
+3. And a third, which produced no wrong number only because it failed loudly: **the
+   gauge-quotient basis is not reproducible** -- see 5.11e.
+
+**The guard is now cross-checked where it can be.** `--selftest` asserts the walk recovers the
+base point's published Floquet multiplier: it measures **0.549 against 0.546, 0.6% apart**. The
+assertion is on the VALUE, not merely on the sign, because the tail-contaminated version would
+have passed a sign test. `make_growth_fn` at its default still lands on the other side of the
+threshold for **6 of the 16** runs, so **`w_stab` must not be switched on until its epsilon is
+fixed** -- it would penalise orbits for the integrator's error.
+
+#### 5.11e `v` IS A MACHINE-LOCAL COORDINATE (REPO_MAP hazard 18)
+
+`quotient_basis` takes the SVD of a PROJECTOR, whose nonzero singular values are all exactly 1
+-- `[1]*16` then `[0,0]` for Almeida. Any orthonormal basis of that subspace is a valid SVD, so
+LAPACK's choice is not defined by the mathematics.
+
+Found the hard way: re-deriving the basis and evaluating the campaign's own stored `v_fit`
+reconstructed parameter sets up to **3.0 decades** from the `theta_fit` in the same file, and
+every rescanned surface came back uniformly dead. Nothing was wrong with the fits; the
+coordinate had been read in the wrong basis.
+
+Every run of this campaign shares one basis -- **checked, and `fit/aggregate` now RAISES if a
+future one does not** -- so 5.10a's distances stand. `make_cost` gained a `basis=` argument,
+`fit/rescan` pins the run's own and refuses to proceed unless `exp(z_base + B v)` reproduces
+the stored `theta_fit`. **`theta_fit` is the parameter set; `v` is a search coordinate.**
+
+Making `quotient_basis` deterministic is the real fix and has NOT been made: it would silently
+change what `v` means for every stored result, which should be a deliberate commit.
+
 ## 5b. Next
 
 **Reordered by 5.10.** The top three now all come from the cluster campaigns, and they are
@@ -1273,6 +1407,8 @@ Pure read of the saved npz -- no figure costs compute to rebuild.
 | `seeds_<gene>_<mode>` | a SEED CAMPAIGN: cost ranking, the cost-vs-distance funnel (the multimodality test), the pairwise distance matrix, descent traces, twist, **the residual split by dose**, and where the solutions agree in parameter space |
 | `seeds_<gene>_<mode>_surfaces` | every fitted PTC in that campaign beside the base and the target -- whether the far-apart parameter sets are also far-apart phase responses |
 | `genes_<mode>` | a GENE campaign: base / target / fitted PTC and the twist per gene, each on its OWN dose axis, with how much structure that gene's target actually had |
+| `cycles_<gene>_<mode>` | every fitted LIMIT CYCLE with its period and amplitude, plus the stability walk: step off the orbit and watch whether it comes back, runs away, or settles on a point |
+| `rescan_<gene>_<mode>` | the fitted PTCs re-rendered finer and down to DOSE 0 -- where the singularity really went, and the dose-0 identity control |
 
 ### Reading a PTC surface
 

@@ -183,6 +183,19 @@ def collect(model, tag, analysis='fit_radial', key='seed'):
         for r in runs:
             if not np.allclose(np.asarray(r['doses'], float), d0):
                 raise SystemExit(f"cannot aggregate: {r['_file']} uses a different dose grid.")
+            # THE GAUGE-QUOTIENT BASIS MUST BE THE SAME ONE, and it is not guaranteed to be.
+            # `quotient_basis` SVDs a projector whose nonzero singular values are all exactly 1,
+            # so any orthonormal basis of that subspace is a valid answer and LAPACK's choice is
+            # not reproducible. Two runs with different B put their `v` in different coordinates,
+            # and a distance between them is then meaningless -- measured, the same `v` under a
+            # re-derived basis reconstructs parameters up to 3.0 decades away. Every run of the
+            # Aug-30 campaign happens to share one basis; that is checked here, not assumed.
+            if 'B' in r and 'B' in ref and not np.allclose(np.asarray(r['B']),
+                                                           np.asarray(ref['B'])):
+                raise SystemExit(
+                    f"cannot aggregate: {r['_file']} used a DIFFERENT gauge-quotient basis. "
+                    f"Its `v` is in different coordinates, so distances across these runs would "
+                    f"not mean anything. Compare `theta_fit` instead, or re-run them together.")
             for kk in ('k_used', 'psi_used'):
                 a, b = _f(r, kk), _f(ref, kk)
                 if np.isfinite(a) != np.isfinite(b) or (np.isfinite(a)
@@ -269,6 +282,12 @@ def build(model, tag, analysis='fit_radial', key='seed'):
     v = blob['v']
     blob['dist'] = (np.linalg.norm(v[:, None, :] - v[None, :, :], axis=-1) if key == 'seed'
                     else np.full((n, n), np.nan))
+    # the basis and origin the runs actually used -- without them a saved `v` cannot be
+    # turned back into parameters by anything but the machine that wrote it
+    if 'B' in ref:
+        blob['B'] = np.asarray(ref['B'])
+    if 'z_base' in ref:
+        blob['z_base'] = np.asarray(ref['z_base'])
     blob['cfg_json'] = np.asarray(str(ref['cfg_json']) if 'cfg_json' in ref else '')
     return blob
 

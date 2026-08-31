@@ -469,6 +469,7 @@ def fig_recover(z):
 # --------------------------------------------------------------------------- #
 from analysis.winding import circ_span
 from fit.aggregate import VERDICT_COLOR, VERDICTS, USABLE, best_index
+from fit.rescan import ID_TOL
 
 #: a dose row whose old-phase span reaches this is sweeping the whole phase circle -- type-1,
 #: and the part of a radial target that actually constrains anything. Below S* the measured
@@ -925,6 +926,357 @@ def _load(model, analysis, pattern, tag=None):
     return dict(np.load(fs[-1], allow_pickle=True)), tag
 
 
+def _spans_for(z):
+    """The fitted PTCs' old-phase spans, matched to a stability audit BY LABEL.
+
+    Returns None when the aggregated seeds npz is not beside the stability one, so the panel is
+    simply omitted rather than the figure failing. Matched by label and not by position: the
+    two files are written by different drivers and there is no guarantee they order their runs
+    the same way -- silently zipping them would mislabel every point on the panel.
+    """
+    d = paths.out_dir(_CTX['model'], _CTX['analysis'], _CTX['tag'], create=False)
+    fs = sorted(glob.glob(os.path.join(d, 'seeds_*.npz')))
+    if not fs:
+        return None
+    a = dict(np.load(fs[-1], allow_pickle=True))
+    if 'ptc_fit' not in a or 'labels' not in a:
+        return None
+    by = {str(l): i for i, l in enumerate(a['labels'])}
+    out = np.full(len(z['labels']), np.nan)
+    for k, l in enumerate(z['labels']):
+        j = by.get(str(l))
+        if j is not None:
+            out[k] = float(np.nanmean(_span_vs_dose(np.asarray(a['ptc_fit'][j], float))))
+    return out
+
+
+def fig_cycles(z):
+    """THE LIMIT CYCLE PER RUN, plus what happens when you step off it.
+
+    A PTC is a statement about asymptotic phase, and asymptotic phase only exists on an
+    ATTRACTING orbit. So the cycle panels alone are not the diagnostic -- one period of a
+    repelling orbit, of an orbit that decays to a fixed point, and of a healthy clock look
+    identical, all three with a circadian period, a full amplitude and positive concentrations
+    (fit/stability, THE FAILURE THIS EXISTS TO CATCH). Panel (b) is what separates them: the
+    transverse distance from a perturbed start back to the cycle, period by period, on a log
+    axis. Decaying lines attract; flat or rising lines do not.
+
+    Every trace is scaled to its own [min, max] with the absolute range in the legend, for the
+    reason fig_radial gives: Almeida's species differ by up to fifty decades at an optimizer's
+    parameter set, and shared axes render all but the largest as a flat line at zero, which
+    reads as "the clock stopped" whether or not it did.
+    """
+    from fit.stability import VERDICT_COLOR as SC, VERDICTS as SV, FLOOR_FRAGILE
+    lab = [str(x) for x in z['labels']]
+    obs = [str(x) for x in z['obs']]
+    n = len(lab)
+    T, growth, verd = z['period'], z['growth'], z['verdict']
+    order = np.argsort(np.where(np.isfinite(T), T, np.inf))
+    cols = [SC.get(str(v), '0.5') for v in verd]
+
+    ncol = 4
+    nrow_c = int(np.ceil(n / ncol))
+    fig = plt.figure(figsize=(4.6 * ncol, 3.0 * nrow_c + 13.0))
+    gs = fig.add_gridspec(nrow_c + 4, ncol, hspace=0.78, wspace=0.28,
+                          height_ratios=[1] * nrow_c + [1.25, 1.25, 1.15, 1.25])
+
+    # --- (a) one period of every fitted limit cycle ---------------------------------- #
+    for j, i in enumerate(order):
+        ax = fig.add_subplot(gs[j // ncol, j % ncol])
+        cyc = np.asarray(z['cyc'][i], float)
+        if not np.isfinite(cyc).all() or not np.isfinite(T[i]):
+            ax.axis('off')
+            ax.text(0.5, 0.5, f"{z['key']} {lab[i]}\n{verd[i]}", ha='center', va='center',
+                    color=cols[i], fontsize=9)
+            continue
+        t = np.linspace(0, T[i], cyc.shape[0])
+        for k in range(cyc.shape[1]):
+            y = cyc[:, k]
+            lo, hi = float(y.min()), float(y.max())
+            sp = hi - lo
+            ax.plot(t, (y - lo) / sp if sp > 0 else np.zeros_like(y), lw=1.1,
+                    label=f'{obs[k]} [{lo:.2g}, {hi:.2g}]')
+        # MEDIAN relative amplitude across species, not the max. `amp_lc` is range/|mean| on
+        # ONE species, and a species whose baseline falls toward zero inflates it without the
+        # oscillation growing at all -- the measurement that wrongly declared RAD03 degenerate
+        # (PROJECT_SUMMARY 5.7). The max over species inherits that defect; the median does not,
+        # so both are shown and the median is the one to read.
+        rr = np.asarray(z['relamp_species'][i], float)
+        rr = rr[np.isfinite(rr)]
+        rmed = float(np.median(rr)) if rr.size else np.nan
+        rmax = float(np.max(rr)) if rr.size else np.nan
+        ax.set_title(f"{z['key']} {lab[i]}   T = {T[i]:.2f} h\n"
+                     f"diam {z['amp_cycle'][i]:.3g}   rel amp {rmed:.2f} (max {rmax:.1f})\n"
+                     f"growth {growth[i]:.3f}   {verd[i]}", fontsize=8, color=cols[i])
+        ax.set_xlabel('time (h)', fontsize=8)
+        ax.set_ylim(-0.05, 1.05)
+        ax.tick_params(labelsize=7)
+        if j % ncol == 0:
+            ax.set_ylabel('each species on its own scale', fontsize=8)
+        if j == 0:
+            ax.legend(fontsize=5.2, ncol=2, loc='upper right', framealpha=0.85)
+
+    # --- (b) THE STABILITY PANEL ------------------------------------------------------ #
+    ax = fig.add_subplot(gs[nrow_c, 0:2])
+    for i in range(n):
+        d = np.asarray(z['walk_dist'][i], float) / max(float(z['diam'][i]), 1e-30)
+        d = d[np.isfinite(d)]
+        if len(d):
+            ax.plot(np.arange(1, len(d) + 1), d, lw=1.3, color=cols[i], alpha=0.9)
+            ax.annotate(lab[i], (len(d), d[-1]), fontsize=6.5, color=cols[i],
+                        xytext=(3, 0), textcoords='offset points', va='center')
+        f = np.asarray(z['floor_dist'][i], float)
+        f = f[np.isfinite(f)]
+        if len(f):
+            ax.plot(np.arange(1, len(f) + 1), f, lw=0.8, ls=':', color=cols[i], alpha=0.55)
+    ax.set_yscale('log')
+    ax.set_xlabel('periods after a small displacement off the cycle')
+    ax.set_ylabel('distance back to the cycle / cycle diameter')
+    ax.set_title('(b) STEP OFF THE ORBIT AND WATCH. Falling = attracting; flat or rising = not.\n'
+                 'Dotted: the same walk with NO displacement -- that run\'s numerical floor.',
+                 fontsize=9.5)
+    ax.legend(handles=[matplotlib.patches.Patch(facecolor=SC[v], label=v)
+                       for v in SV if np.any(verd == v)], fontsize=7, loc='lower left',
+              ncol=2, framealpha=0.9)
+
+    # --- (c) period vs amplitude, the two measures asked for -------------------------- #
+    ax = fig.add_subplot(gs[nrow_c, 2])
+    for i in range(n):
+        if np.isfinite(T[i]):
+            ax.plot(T[i], z['amp_cycle'][i], 'o', ms=9, mfc=cols[i], mec='k', mew=0.6)
+            ax.annotate(lab[i], (T[i], z['amp_cycle'][i]), fontsize=7, xytext=(4, 3),
+                        textcoords='offset points')
+    ax.axvspan(24.83 * 0.7, 24.83 * 1.4, color='#0969da', alpha=0.08)
+    ax.axvline(24.83, color='#0969da', ls='-.', lw=1.2)
+    ax.text(24.83, 1.0, ' base 24.83 h', color='#0969da', fontsize=7.5, rotation=90,
+            va='bottom', transform=ax.get_xaxis_transform())
+    ax.set_yscale('log')
+    ax.set_xlabel('period (h)'); ax.set_ylabel('cycle amplitude (state-space diameter)')
+    ax.set_title('(c) period vs amplitude\nband = the circadian range', fontsize=9.5)
+
+    # --- (d) the numerical floor, which is a result in its own right ------------------ #
+    ax = fig.add_subplot(gs[nrow_c, 3])
+    o2 = np.argsort(np.where(np.isfinite(z['floor']), z['floor'], -1))
+    ax.barh(range(n), np.maximum(np.asarray(z['floor'])[o2], 1e-12),
+            color=[cols[i] for i in o2], edgecolor='0.25', lw=0.4)
+    ax.axvline(FLOOR_FRAGILE, color='#b31d28', ls='--', lw=1.2)
+    ax.set_yticks(range(n)); ax.set_yticklabels([lab[i] for i in o2], fontsize=7)
+    ax.set_xscale('log'); ax.set_xlabel('numerical floor (cycle diameters)')
+    ax.set_title('(d) how cleanly each orbit\ncan be integrated AT ALL', fontsize=9.5)
+
+    # --- (e) per-species amplitude: which species actually oscillate ------------------- #
+    ax = fig.add_subplot(gs[nrow_c + 1, 0:3])
+    A = np.asarray(z['amp_species'], float)
+    x = np.arange(len(obs))
+    for j, i in enumerate(order):
+        if np.isfinite(A[i]).all():
+            ax.plot(x + (j - n / 2) * 0.012, np.maximum(A[i], 1e-60), 'o', ms=5,
+                    mfc=cols[i], mec='none', alpha=0.85)
+    ax.set_yscale('log'); ax.set_xticks(x); ax.set_xticklabels(obs, rotation=30, ha='right')
+    ax.set_ylabel('absolute amplitude on the cycle')
+    ax.set_title('(e) per-species amplitude. A species pinned at 1e-20 is the hazard-14 '
+                 'collapse -- the orbit is real but the state spans tens of decades',
+                 fontsize=9.5)
+
+    # --- (f) the numbers -------------------------------------------------------------- #
+    ax = fig.add_subplot(gs[nrow_c + 1, 3]); ax.axis('off')
+    lines = [f"{z['campaign_tag']}  ({n} runs)", f"walk: {int(z['n_blocks'])} periods, "
+             f"{int(z['ndir'])} directions", '']
+    for v in SV:
+        c = int(np.sum(verd == v))
+        if c:
+            lines.append(f"{v:<14s} {c:2d}/{n}")
+    good = np.array([str(v) == 'ATTRACTING' for v in verd])
+    if good.any():
+        lines += ['', f"attracting: growth {np.nanmin(growth[good]):.3f}-"
+                      f"{np.nanmax(growth[good]):.3f} /period",
+                  f"periods {np.nanmin(T[good]):.1f}-{np.nanmax(T[good]):.1f} h"]
+    nf = int(np.sum(np.asarray(z['floor']) > FLOOR_FRAGILE))
+    if nf:
+        lines += ['', f"{nf} orbit(s) have a floor above",
+                  f"{FLOOR_FRAGILE:.0e} diameters -- nothing",
+                  "measured on them is precise."]
+    ax.text(0.0, 1.0, "\n".join(lines), family='monospace', fontsize=8.5, va='top',
+            transform=ax.transAxes)
+
+    # --- (g) amplitude over the walk: does the oscillation survive? -------------------- #
+    ax = fig.add_subplot(gs[nrow_c + 2, :])
+    for i in range(n):
+        a = np.asarray(z['walk_amp'][i], float)
+        a = a[np.isfinite(a)]
+        if len(a) and np.isfinite(z['amp_cycle'][i]) and z['amp_cycle'][i] > 0:
+            ax.plot(np.arange(1, len(a) + 1), a / z['amp_cycle'][i], lw=1.3, color=cols[i])
+            ax.annotate(lab[i], (len(a), a[-1] / z['amp_cycle'][i]), fontsize=6.5,
+                        color=cols[i], xytext=(3, 0), textcoords='offset points', va='center')
+    ax.axhline(1.0, color='k', lw=0.8, ls=':')
+    ax.set_yscale('log'); ax.set_xlabel('periods after the displacement')
+    ax.set_ylabel('oscillation amplitude / cycle amplitude')
+    ax.set_title('(g) DOES IT STILL OSCILLATE? A line diving to 1e-20 is a clock that stopped: '
+                 'the solved orbit is real, and the system left it for a fixed point.',
+                 fontsize=9.5)
+
+    # --- (h) IS A FLAT PTC AN UNSTABLE ORBIT? ----------------------------------------- #
+    #
+    # The question the whole audit was run to answer. The campaign's fits are nearly all type-0
+    # with almost no old-phase structure (PROJECT_SUMMARY 5.10d); if that were a stability
+    # artefact, the flattest surfaces would be the unstable ones. Joined here from the
+    # aggregated seeds npz sitting beside this one, so both axes come from saved data and
+    # nothing is recomputed.
+    sp = _spans_for(z)
+    if sp is not None:
+        ax = fig.add_subplot(gs[nrow_c + 3, :])
+        for i in range(n):
+            if not np.isfinite(sp[i]):
+                continue
+            known = np.isfinite(growth[i])
+            gx = growth[i] if known else 1.06
+            ax.plot(sp[i], gx, 'o', ms=11, mec='k', mew=0.7,
+                    mfc=(cols[i] if known else 'white'))
+            ax.annotate(lab[i], (sp[i], gx), fontsize=8, xytext=(6, 5),
+                        textcoords='offset points')
+        ax.axhline(1.0, color='#b31d28', ls='--', lw=1.2)
+        ax.text(0.995, 1.005, 'growth = 1: the stability boundary ', color='#b31d28',
+                fontsize=8.5, ha='right', va='bottom', transform=ax.get_yaxis_transform())
+        ax.axvline(FLAT_SPAN, color='#0969da', ls=':', lw=1.4)
+        ax.text(FLAT_SPAN, 0.93, '  <- phaseless PTC', color='#0969da', fontsize=8.5,
+                transform=ax.get_xaxis_transform(), va='top')
+        ax.set_xlabel("the fitted PTC's mean old-phase span (cyc):  0 = carries no phase "
+                      "information at all,  0.5 = sweeps the full circle")
+        ax.set_ylabel('per-period growth')
+        ax.set_title('(h) THE QUESTION: is the flat type-0 a stability artefact?   '
+                     'Open circles = growth not measurable (drawn at 1.06).', fontsize=10)
+
+    fig.suptitle(f"{z['model']}/{z['target']} ({z['mode']}) -- fitted limit cycles and their "
+                 f"stability  [{z['campaign_tag']}]", fontsize=13)
+    return _save(fig, f"cycles_{z['target']}_{z['mode']}", n_runs=int(n),
+                 attracting=int(np.sum(verd == 'ATTRACTING')))
+
+
+def fig_rescan(z):
+    """Every fitted surface again, FINER and reaching down to dose 0.
+
+    WHAT THIS SETTLES. In the fit window nearly every fit looked flat and singularity-free, and
+    that has two completely different explanations which the window cannot separate: the
+    transition moved BELOW the window (an ordinary clock with a small S_crit) or the surface
+    carries no phase information at all (a degeneracy -- PROJECT_SUMMARY 5.10d). Extending down
+    decides it, because as dose -> 0 the PTC must approach the identity: a healthy clock has to
+    become type-1 somewhere, wherever its S_crit sits.
+
+    THE BOTTOM ROW IS THE CONTROL. The dose-0 row is the identity by construction (engine.ptc
+    calibrates the phase origin there), so its deviation measures whether the readout was
+    calibrated AT ALL at that parameter set. Where it is not, nothing else on that surface is a
+    measurement -- and it is not a coincidence which runs fail it.
+
+    The fit window is shaded on every panel, so what the optimizer actually saw is never
+    confused with what the clock actually does.
+    """
+    old = np.asarray(z['old'])
+    lab = [str(x) for x in z['labels']]
+    n = len(lab)
+    order = np.argsort([float(x) if str(x).lstrip('-').isdigit() else 0.0 for x in lab])
+    ncol = 6
+    nrow = int(np.ceil(n / ncol))
+    fig = plt.figure(figsize=(3.25 * ncol, 3.5 * nrow + 8.0))
+    gs = fig.add_gridspec(nrow + 2, ncol, hspace=0.62, wspace=0.24,
+                          height_ratios=[1] * nrow + [1.35, 1.35])
+
+    im = None
+    for j, i in enumerate(order):
+        ax = fig.add_subplot(gs[j // ncol, j % ncol])
+        d = np.asarray(z['doses'])[i]
+        p = np.asarray(z['ptc'])[i]
+        # dose 0 cannot go on a log axis; it is drawn as the bottom row at the grid's own floor
+        pos = d > 0
+        im = ax.pcolormesh(old, d[pos], np.ma.masked_invalid(p[:, pos].T), cmap=phase_cmap(),
+                           vmin=0, vmax=1, shading='nearest')
+        ax.set_yscale('log')
+        fd = np.asarray(z['fit_doses'])[i]
+        ax.axhspan(float(np.min(fd)), float(np.max(fd)), color='w', alpha=0.0)
+        for yv in (float(np.min(fd)), float(np.max(fd))):
+            ax.axhline(yv, color='w', ls='-', lw=1.6, alpha=0.9)
+        s = float(z['S_crit'][i])
+        if np.isfinite(s) and s > 0:
+            ax.axhline(s, color='w', ls=':', lw=1.4)
+        ie = float(z['identity_err'][i])
+        col = '#b31d28' if (not np.isfinite(ie) or ie > ID_TOL) else 'k'
+        ax.set_title(f"{z['key']} {lab[i]}   S*={s:.3g}   n_sing={int(z['n_sing'][i])}\n"
+                     f"accum twist {z['accum'][i]:.2f} cyc   id-err {ie:.1e}",
+                     fontsize=8, color=col)
+        ax.tick_params(labelsize=6.5)
+        if j % ncol == 0:
+            ax.set_ylabel('dose', fontsize=8)
+        if j // ncol == nrow - 1:
+            ax.set_xlabel('old phase', fontsize=8)
+    if im is not None:
+        fig.colorbar(im, ax=[fig.axes[k] for k in range(min(n, len(fig.axes)))],
+                     fraction=0.012, pad=0.01, label='new phase (cyc)')
+
+    # --- where the singularity actually is, against the window that was fitted --------- #
+    ax = fig.add_subplot(gs[nrow, 0:3])
+    for j, i in enumerate(order):
+        fd = np.asarray(z['fit_doses'])[i]
+        ax.plot([j, j], [float(np.min(fd)), float(np.max(fd))], lw=7, color='#0969da',
+                alpha=0.30, solid_capstyle='butt')
+        s = float(z['S_crit'][i])
+        if np.isfinite(s) and s > 0:
+            ax.plot(j, s, 'o', ms=9, mfc='#1a7f37', mec='k', mew=0.6, zorder=4)
+        else:
+            ax.plot(j, float(np.min(np.asarray(z['doses'])[i][np.asarray(z['doses'])[i] > 0])),
+                    'x', ms=10, mec='#b31d28', mew=2.2, zorder=4)
+    ax.set_yscale('log')
+    ax.set_xticks(range(n)); ax.set_xticklabels([lab[i] for i in order], fontsize=7.5)
+    ax.set_xlabel(str(z['key'])); ax.set_ylabel('dose')
+    ax.set_title('the singularity vs the window it was fitted in\n'
+                 'blue band = the fit window;  dot = S* found on the extended grid;  '
+                 'x = still none', fontsize=9.5)
+
+    # --- the dose-0 identity control --------------------------------------------------- #
+    ax = fig.add_subplot(gs[nrow, 3:])
+    ie = np.asarray(z['identity_err'], float)[order]
+    ax.bar(range(n), np.where(np.isfinite(ie), np.maximum(ie, 1e-12), 1.0),
+           color=['#b31d28' if (not np.isfinite(v) or v > ID_TOL) else '#1a7f37' for v in ie],
+           edgecolor='0.25', lw=0.5)
+    ax.axhline(ID_TOL, color='#b31d28', ls='--', lw=1.2)
+    ax.set_yscale('log')
+    ax.set_xticks(range(n)); ax.set_xticklabels([lab[i] for i in order], fontsize=7.5)
+    ax.set_xlabel(str(z['key'])); ax.set_ylabel('|new phase - old phase| at dose 0 (cyc)')
+    ax.set_title('THE CONTROL: dose 0 must return the identity.\n'
+                 'Red = the phase readout is not calibrated at that parameter set',
+                 fontsize=9.5)
+
+    # --- twist, now on a grid fine enough to measure it -------------------------------- #
+    ax = fig.add_subplot(gs[nrow + 1, 0:3])
+    for i in order:
+        d = np.asarray(z['doses'])[i]
+        pos = d > 0
+        ax.plot(*broken(d[pos], np.asarray(z['twist'])[i][pos]), lw=1.1, alpha=0.85)
+    ax.set_xscale('log'); ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel('dose'); ax.set_ylabel('stable FP phase')
+    ax.set_title(f"twist on {int(z['n_dose'])} dose samples over {float(z['decades']):g} "
+                 f"decades -- the campaign measured it on 14 over 1.2", fontsize=9.5)
+
+    ax = fig.add_subplot(gs[nrow + 1, 3:]); ax.axis('off')
+    ns = np.asarray(z['n_sing'])
+    okid = np.isfinite(ie) & (ie <= ID_TOL)
+    lines = [f"{z['campaign_tag']}   {n} runs",
+             f"grid  {int(z['n_phase'])} phase x {int(z['n_dose'])} dose, "
+             f"{float(z['decades']):g} decades + dose 0", '',
+             f"has a singularity on the extended grid : {int(np.sum(ns > 0)):2d}/{n}",
+             f"still none, even down to dose 0        : {int(np.sum(ns == 0)):2d}/{n}", '',
+             f"dose-0 identity holds (<{ID_TOL:g} cyc)       : {int(np.sum(okid)):2d}/{n}",
+             f"readout NOT calibrated there           : {int(np.sum(~okid)):2d}/{n}", '',
+             'A surface with no singularity even at',
+             'dose 0 is not a clock with a small S*.',
+             'It carries no phase information at all.']
+    ax.text(0.0, 1.0, "\n".join(lines), family='monospace', fontsize=9, va='top',
+            transform=ax.transAxes)
+
+    fig.suptitle(f"{z['model']}/{z['target']} ({z['mode']}) -- fitted PTCs re-rendered finer "
+                 f"and down to dose 0  [{z['campaign_tag']}]", fontsize=13)
+    return _save(fig, f"rescan_{z['target']}_{z['mode']}", n_runs=int(n),
+                 n_phase=int(z['n_phase']), n_dose=int(z['n_dose']))
+
+
 #: --which -> (analysis dir, npz glob, plotter(s)). The GLOB MATTERS: a campaign tag directory
 #: holds more than one npz (seeds_*, viability_*), and `_load` takes the LAST match, so a bare
 #: '*.npz' would hand fig_radial a viability record and fail somewhere unhelpful.
@@ -933,6 +1285,8 @@ _WHICH = {
     'recover': ('fit_recover', '*.npz', (lambda z: [fig_recover(z)])),
     'seeds': ('fit_radial', 'seeds_*.npz', (lambda z: [fig_seeds(z), fig_seed_surfaces(z)])),
     'genes': ('fit_radial', 'genes_*.npz', (lambda z: [fig_genes(z)])),
+    'cycles': ('fit_radial', 'stability_*.npz', (lambda z: [fig_cycles(z)])),
+    'rescan': ('fit_radial', 'rescan_*.npz', (lambda z: [fig_rescan(z)])),
 }
 
 

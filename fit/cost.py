@@ -421,7 +421,7 @@ class RadialTarget:
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
               param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0, pulse=8.0,
-              readout_ref=None, w_stab=0.0, r_max=0.98):
+              readout_ref=None, w_stab=0.0, r_max=0.98, basis=None):
     """Build the objective.
 
     Returns a dict with
@@ -431,8 +431,27 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         total(v)  -> the scalar to minimize (jit-compiled)
         grad(v)   -> its gradient
         surface(v)-> (z_unit, alive, amp) for plotting
+
+    `basis` pins the gauge-quotient basis instead of re-deriving it -- REQUIRED when
+    re-evaluating a `v` saved by an earlier run. See the comment on it below.
     """
     names, z_base, B, g = quotient_basis(model, param_names)
+    # A CALLER MAY PIN THE BASIS, AND ANYTHING RE-EVALUATING A SAVED `v` MUST.
+    #
+    # `quotient_basis` takes the SVD of the projector I - QQ^T, whose nonzero singular values
+    # are ALL EXACTLY 1 -- a 16-fold degenerate subspace for Almeida. Any orthonormal basis of
+    # it is a valid SVD, so LAPACK's choice is not reproducible across builds or even calls,
+    # and `v` is therefore a MACHINE-LOCAL coordinate, not a portable one.
+    #
+    # MEASURED, not feared: re-deriving the basis here and evaluating the Aug-30 campaign's own
+    # stored `v_fit` reconstructed parameter sets up to 3.0 DECADES away from the `theta_fit`
+    # those runs recorded, and the resulting "surfaces" were uniformly dead. Every run of that
+    # campaign shares one basis, so results within it are sound; re-reading them elsewhere is
+    # not. Pass the run's stored `B` and the coordinate means what it meant.
+    if basis is not None:
+        B = np.asarray(basis, float)
+        if B.shape[0] != len(z_base):
+            raise ValueError(f"basis has {B.shape[0]} rows, expected {len(z_base)}")
     n_free = B.shape[1]
     Bj, zbj = jnp.asarray(B), jnp.asarray(z_base)
 

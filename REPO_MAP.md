@@ -38,6 +38,9 @@ Everything runs as a module from the repo root: `python -m engine.orbit`,
 | **Join a finished campaign's tasks into one result** | `python -m fit.aggregate --model M --tag <c> [--kind genes]` |
 | The campaign figures (pure read of that npz) | `python -m fit.figures --which seeds\|genes --tag <c>` |
 | One run's figure | `python -m fit.figures --which radial --tag <run-tag>` |
+| **Do the fitted orbits actually ATTRACT?** | `python -m fit.stability --model M --tag <c>` (`--selftest` first) |
+| Are the fitted surfaces flat, or is the transition just below the window? | `python -m fit.rescan --model M --tag <c>` |
+| Their figures | `python -m fit.figures --which cycles\|rescan --tag <c>` |
 
 Order matters: `scrit` derives the dose grid and the integrator step that `characterize` and
 `ptc_sens` consume, and `coupling` is a pure read of `lc_sens` + `ptc_sens`.
@@ -91,7 +94,9 @@ until the tasks are joined.
 | `recover.py` | ENTRY. T1, the self-recovery control: fit an IN-CLASS target whose answer is known. |
 | `campaign.py` | ENTRY. One config with list-valued fields -> a matrix of runs, indexed for a SLURM array. `--dry-run` validates every entry at submission time. |
 | `aggregate.py` | **ENTRY. Joins a campaign's array tasks into one result** -- the 16-seed comparison that no single task can see -- and re-derives the unsaturated twist metrics. Refuses to join runs that are not the same experiment. |
-| `figures.py` | Pure read. `--which radial\|recover` for one run; `seeds\|genes` for a campaign. |
+| `stability.py` | **ENTRY. The stability guard.** Perturb the fitted cycle and integrate: does it come back, run away, or settle on a point? Measures each orbit's own numerical FLOOR first, because that spans five orders across a campaign and a perturbation below it measures noise (hazard 19). |
+| `rescan.py` | ENTRY. Re-renders a campaign's fitted PTCs finer and down to dose 0, with the dose-0 identity row as the readout-calibration control. Pins the run's gauge basis (hazard 18). |
+| `figures.py` | Pure read. `--which radial\|recover` for one run; `seeds\|genes\|cycles\|rescan` for a campaign. |
 | `benchmark.py`, `multires.py` | Optimizer head-to-head; multi-resolution helpers. |
 
 ### Root
@@ -339,6 +344,99 @@ tracking.
         and the two disagree by up to 4.7x (PER: 37.75 vs 178.2). REV therefore had 1 of 14
         doses below its defect and won the campaign on cost with the least demanding fit.
 
+18. **`v` IS A MACHINE-LOCAL COORDINATE. THE GAUGE-QUOTIENT BASIS IS NOT REPRODUCIBLE.**
+
+    `fit/cost.quotient_basis` builds `B` from `np.linalg.svd(I - QQ^T)`. That matrix is a
+    PROJECTOR, so its nonzero singular values are **all exactly 1** -- for Almeida, `[1]*16`
+    then `[0, 0]`. Every orthonormal basis of that 16-dimensional subspace is a valid SVD, so
+    which one LAPACK returns is not defined by the mathematics, and `B` can differ between
+    builds, versions, or machines.
+
+    Everything the optimizer stores is in `v`. So a saved `v` only means something alongside
+    the basis that produced it, and nothing in the pipeline used to record that.
+
+    MEASURED, on the Aug-30 campaign's own output: re-deriving the basis in this session and
+    reconstructing `theta = exp(z_base + B v)` from the stored `v_fit` gave parameter sets up
+    to **3.0 decades** away from the `theta_fit` the same npz records. Every surface recomputed
+    that way came back uniformly DEAD -- `alive_frac = 0.000`, `amp_lc = 0` -- which is how it
+    was noticed: a rescan of finished fits produced nothing but dead clocks.
+
+    Two things make this survivable rather than fatal, and both were checked, not assumed:
+
+      * every run of that campaign shares one basis (`fit/aggregate` now verifies it and
+        RAISES otherwise), so the multimodality distances in PROJECT_SUMMARY 5.10a are sound;
+      * every run stores `B`, `z_base` and `theta_fit`, so nothing is lost.
+
+    THE RULES:
+
+      * **`theta_fit` is the parameter set. `v` is a search coordinate.** Report, compare and
+        re-evaluate parameters through `theta`.
+      * Anything re-evaluating a saved `v` must pin the basis: `make_cost(..., basis=B)` with
+        the run's own `B`, and then CHECK the round trip -- `fit/rescan.py` refuses to run if
+        `exp(z_base + B v)` and `theta_fit` disagree by more than 1e-8 decades.
+      * A `v`-space distance is only meaningful WITHIN one basis. Across campaigns, compare in
+        log-theta projected onto the gauge complement instead.
+
+    The deeper fix -- making `quotient_basis` deterministic (a fixed orthonormalisation instead
+    of an SVD of a degenerate spectrum) -- has NOT been made, because it would silently change
+    the meaning of `v` for every stored result. It is in Open.
+
+19. **A PERTURBATION BELOW AN ORBIT'S OWN NUMERICAL FLOOR MEASURES THE INTEGRATOR, NOT THE
+    DYNAMICS -- AND EVERY ORBIT HAS A DIFFERENT FLOOR.**
+
+    Walk an orbit from `y0` with NO perturbation at all. It starts exactly on the cycle, so any
+    distance it accumulates is pure integration error. Measured on Almeida at fixed tolerances:
+    **8e-9 of the cycle diameter at the base point, 7.6e-2 at the seed-5 radialization
+    optimum** -- seven orders of magnitude apart, on the same solver. There is no epsilon that
+    serves both, so a FIXED one is a bug waiting for a pathological parameter set.
+
+    `fit/cost.make_growth_fn` has one: `eps = 1e-4`. That is fine at the base point and far
+    below the floor at half the fitted optima, where its "growth" is the ratio of two noise
+    measurements. The first stability audit of the Aug-30 campaign therefore reported **10 of 16
+    orbits REPELLING**; measured above each orbit's own floor, **10 of 16 ATTRACT**. The
+    conclusion was exactly inverted.
+
+    THE TELL IS EPSILON DEPENDENCE. A dynamical multiplier cannot vary with the size of the
+    probe; a noise floor must:
+
+        eps            1e-4    1e-3    1e-2    3e-2    1e-1
+        base           0.857   0.857   0.871   0.824   0.695     <- a plateau: real
+        seed 4         1.714   1.431   1.127   0.968   0.839     <- no plateau: noise
+
+    `fit/stability.measure` measures the floor, climbs an epsilon ladder until the perturbation
+    clears it by 30x, and returns **UNRESOLVED** rather than a number when no rung does. A guard
+    that cannot measure must say so; guessing is how this went wrong the first time.
+
+    TWO COROLLARIES, both measured:
+
+      * **Distance to a sampled cycle must be to the SEGMENTS, not the vertices.** Vertex
+        distance floors at half a sample spacing -- 5e-4 diameters even at 2048 samples -- so a
+        decaying deviation stops decaying there and a slope fitted through the flat tail
+        returned 0.727 for an orbit whose Floquet multiplier is 0.546.
+      * **Cross-check the walk where Floquet IS trustworthy.** At the base point the monodromy
+        is well conditioned; `python -m fit.stability --selftest` asserts the walk recovers
+        0.546 within 10% (it measures 0.549). Assert the VALUE, not the sign -- the
+        tail-contaminated version passed a sign test.
+
+    DO NOT enable `make_cost(w_stab=...)` until `make_growth_fn` climbs the same ladder. It
+    currently lands on the wrong side of the threshold for 6 of 16 fitted orbits, and the fit
+    would be penalising them for the integrator's error.
+
+20. **DOSE 0 IS A FREE CONTROL ON THE PHASE READOUT. USE IT.**
+
+    `engine/ptc` calibrates the phase origin so that a zero perturbation returns new phase ==
+    old phase. One extra dose row therefore tests, at every parameter set, whether the readout
+    is calibrated AT ALL -- and it is not free-standing pedantry: on the Aug-30 campaign the
+    deviation separates into two clean populations,
+
+        calibrated  (11/16)   1.0e-04 - 9.4e-04 cyc    the Fourier readout's own resolution
+        NOT         ( 5/16)   4.1e-02 - 5.0e-01 cyc    seeds 3, 4, 5, 11, 14
+
+    two orders clear -- and those five are **the same five** the stability walk flags as dead,
+    diverging or unmeasurable. A one-row check predicts a 24-period integration. `fit/rescan.py`
+    puts that row on every surface it renders; `ID_TOL = 1e-2` is where the two populations
+    separate, not a guess.
+
 ## Open
 
 - `analysis/characterize.py` and `ptc_sens.py` have not yet been run for Korencic or
@@ -349,6 +447,8 @@ tracking.
   self-recovery control has not yet been run.
 - `fit/radial._diagnose` still solves the orbit with `solver.guess` where the cost uses `make_guess_fn` -- hazard 15's first bullet, fixed in `figures._backfill` but not here. It cost three runs of the Aug-30 campaign their verdict (PROJECT_SUMMARY 5.10f). One line; not changed yet because it re-opens finished fits.
 - The radialization cost has no term requiring the fitted surface to RESOLVE OLD PHASE, and no weighting toward the doses where the target is informative. Both are what hazard 17 is about.
+- `fit/cost.quotient_basis` is not deterministic (hazard 18). The fix is a fixed orthonormalisation in place of the SVD of a degenerate spectrum; not made, because it changes the meaning of `v` for every stored result and that should be a deliberate commit.
+- `fit/cost.make_growth_fn`'s default `eps=1e-4` sits BELOW the numerical floor of many fitted orbits and reports spurious repulsion (hazard 19). `w_stab` must not be enabled until it climbs an epsilon ladder the way `fit/stability.measure` does.
 - **Nine outputs in `out/` were written by scripts that lived only in a session scratchpad and
   are now gone.** This is the provenance failure `paths.provenance` exists to catch, and the
   guard did catch it -- it printed the warning at write time and recorded

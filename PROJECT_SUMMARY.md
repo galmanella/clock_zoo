@@ -1330,12 +1330,16 @@ dose row has winding 1 and their reported `S_crit = 0.00999` is the bottom row, 
 artefact. Four decades is not enough; their transition is genuinely below 0.02.
 
 **A sharp discontinuity at old phase ~0.9 (seeds 1, 4).** The old-phase axis does not resolve
-the cycle. Those fits are strongly relaxation-like -- **47% of the cycle's arc length lies
+the cycle -- and not only for those two. Those fits are strongly relaxation-like -- **47% of the cycle's arc length lies
 inside 10% of the phase axis**, peaking at phase 0.891 and 0.895, exactly where the
 discontinuity is -- so on the 20-phase grid the fit used, **consecutive PTC columns start from
 states 0.82 and 0.87 cycle diameters apart**. Adjacent columns are not neighbours in state
-space, and the surface jumps between them because the underlying initial conditions do. Clean
-seeds sit at 0.12-0.22.
+space, and the surface jumps between them because the underlying initial conditions do.
+
+Across the whole set that separation is a continuum with no break -- 0.18, 0.21, 0.23, 0.28,
+0.29, 0.32, 0.33, 0.35, 0.59, 0.70, 0.72, 0.77, 0.82, 0.85, 0.87 -- so the honest statement is
+that **20 phase samples were too few for almost the whole population**, and seeds 1 and 4 are
+simply where it becomes visible as a discontinuity rather than as smooth-looking error.
 
 **Seed 2: type-1, then a noisy band, then a "really flat type-0".** The flat region is not
 type-0. Up to dose 8.1 the readout amplitude is `|z| = 1.00` and the winding is a clean 1; from
@@ -1388,6 +1392,37 @@ incomparable costs -- the same objection that made the target pinned rather than
 can reach, and a candidate whose transition leaves it must be penalised rather than re-gridded.
 For the same reason the old-phase axis stays uniform in phase: it is *when the pulse was
 applied*, so F3 is a resolution requirement, never a reparametrisation.
+
+#### 5.12b CORRECTION: the period is GAUGE, so it is not a cost term
+
+An earlier version of the hardening plan proposed adding a period term "because in a real
+experiment the period is data". That is wrong, and `fit/radial.py` had already said so -- *"Period
+is pure GAUGE in parameter space -- freely rescalable"*. Time rescaling is a gauge generator, so
+every model here sits on an orbit containing a one-parameter family of periods and `T` is a
+property of the REPRESENTATIVE the quotient picks, not of the model.
+
+Measured, under a pure time-rescale gauge motion `rho = 1.4191`:
+
+    mode         period                  max |PTC difference|
+    instant      24.83 -> 17.49 h         1.1e-07 cyc      INVARIANT
+    pulse (8 h)  24.83 -> 17.49 h         3.8e-01 cyc      NOT invariant
+
+The period scales exactly as `1/rho`, and **an instant-mode PTC cannot see it at all**. Two
+consequences for results already reported:
+
+  * the fitted periods quoted in 5.10-5.11 (8.4 - 38.9 h) and the `off_regime` flag are
+    GAUGE-DEPENDENT in instant mode. They describe the representative, not the clock. Reading
+    genes/BMAL1's "x1.45 period stretch" (5.10f) as a defect was over-reading -- it is a move
+    along a direction the data cannot see, and 5.10's other conclusions do not rest on it.
+  * period data does not add a constraint inside the quotient; it BREAKS the gauge.
+    `include_time=False` grows the quotient by exactly one direction -- almeida 16 -> 17,
+    korencic 33 -> 34, goldbeter 47 -> 48, goodwin 7 -> 8 -- which the measured period then pins.
+
+**And a corollary that is not about periods.** A pulse whose duration is fixed in HOURS is itself
+a clock, so pulse-mode data breaks the time gauge regardless. Every pulse-mode analysis here
+quotients with `include_time=True`, projecting out a direction its own data can see: the
+instant-mode results (5.4b, 5.10, 5.11) are unaffected, but the pulse-mode identifiability counts
+in 3.x sit on a quotient one dimension too small and should be re-derived. In REPO_MAP Open.
 
 ## 5b. Next
 

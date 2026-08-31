@@ -448,6 +448,14 @@ tracking.
   self-recovery control has not yet been run.
 - `fit/radial._diagnose` still solves the orbit with `solver.guess` where the cost uses `make_guess_fn` -- hazard 15's first bullet, fixed in `figures._backfill` but not here. It cost three runs of the Aug-30 campaign their verdict (PROJECT_SUMMARY 5.10f). One line; not changed yet because it re-opens finished fits.
 - The radialization cost has no term requiring the fitted surface to RESOLVE OLD PHASE, and no weighting toward the doses where the target is informative. Both are what hazard 17 is about.
+- **The time gauge is broken by pulse-mode data, and no driver knows it.** A pulse of duration
+  fixed in HOURS is a clock: under a pure time-rescale gauge motion the instant-mode PTC is
+  invariant to 1.1e-07 cyc but the 8 h-pulse PTC moves 3.8e-01. Every pulse-mode analysis
+  quotients with `include_time=True` and so projects out a direction its own data can see; the
+  identifiability counts in PROJECT_SUMMARY 3.x should be re-derived with `include_time=False`
+  (almeida 16 -> 17 directions). Instant-mode results are unaffected. Same switch is what makes
+  a MEASURED PERIOD usable -- it breaks the gauge rather than adding a constraint inside it, so
+  a period cost term is not the answer (5.12b).
 - `fit/cost.quotient_basis` is not deterministic (hazard 18). The fix is a fixed orthonormalisation in place of the SVD of a degenerate spectrum; not made, because it changes the meaning of `v` for every stored result and that should be a deliberate commit.
 - `fit/cost.make_growth_fn`'s default `eps=1e-4` sits BELOW the numerical floor of many fitted orbits and reports spurious repulsion (hazard 19). `w_stab` must not be enabled until it climbs an epsilon ladder the way `fit/stability.measure` does.
 - **Nine outputs in `out/` were written by scripts that lived only in a session scratchpad and

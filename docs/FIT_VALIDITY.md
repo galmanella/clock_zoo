@@ -49,7 +49,7 @@ generalises: none depends on the model, the target gene, or the fitting task.
 | **F5** | **The phase readout is not calibrated at that parameter set** | dose-0 row is not the identity | 5/16 at **4e-2 – 5e-1 cyc**, against 1e-4 – 9e-4 for the rest |
 | **F6** | **Absolute dose vs candidate-dependent state scale** | the same dose is a wildly different relative kick | cycle diameters span **16 → 4930 (308×)** across the population, all scored on one fixed absolute window |
 | **F7** | **The quality gate is post hoc** | `scramble`, winding set never enter the cost | winding sets `[-4,-1,0,1,2]` and `[-1,0,1]` reached; negative winding is topologically impossible for a real PTC |
-| **F8** | **No period term** | time rescaling is nearly free | fitted periods **8.4 – 38.9 h** from a base of 24.8 |
+| **F8** | **The time unit is unfixed, so a reported period belongs to the REPRESENTATIVE, not the model** | periods scatter with nothing pinning them | **8.4 – 38.9 h** from a base of 24.8 — but see §3c: in `instant` mode this is not a defect to penalise |
 
 **F1 and F6 are the same mechanism seen twice.** Because dose is absolute and the state scale
 is not fixed, moving the clock's scale moves its S\_crit relative to a fixed window. F6 is why
@@ -83,9 +83,18 @@ to the surface itself, and each returns a number rather than a boolean so it can
   measured per orbit (REPO_MAP hazard 19). `fit/stability.measure` already does this.
 * **C3** — the two populations separate by two orders (1e-4…9e-4 vs 4e-2…5e-1), so 1e-2 sits in
   a gap, not on a slope.
-* **C4** — 0.25 is one quarter of the cycle's extent between neighbouring columns. The seeds
-  that show a visible discontinuity sit at 0.82–0.87; the clean ones at 0.12–0.22. Refine
-  `n_phase` until it passes; do **not** resample the phase axis non-uniformly (see §4).
+* **C4** — this one is a DESIGN CHOICE, not a measured gap, and it should be labelled as such.
+  On the 20-phase grid the campaign actually used, adjacent-column separation is a continuum
+  with no break:
+
+        6:0.18  2:0.21  10:0.23  8:0.28  13:0.29  7:0.32  12:0.33  0:0.35
+        15:0.59  9:0.70  11:0.72  14:0.77  4:0.82  5:0.85  1:0.87
+
+  So the honest reading is not "two seeds are under-resolved" but **the phase grid was too
+  coarse for almost the whole population** — seeds 1 and 4 are merely where it becomes visible
+  as a discontinuity. 0.25 (a quarter of the cycle's extent between neighbours) flags 12 of 15;
+  pick it, or another value, deliberately — but then refine `n_phase` until it passes at the
+  search box corners, and do **not** resample the phase axis non-uniformly (see §4).
 * **C5** — `DEAD_AMP = 0.01` was chosen to mean "not literally zero". It does not mean "carries
   phase information": at `|z| = 0.05` the post-perturbation oscillation is 5% of the intact
   clock and its Fourier phase is noise.
@@ -126,11 +135,44 @@ re-run).
    different: keep S\* *inside the window*. Use `fit.target.soft_singularity` as a one-sided
    barrier on `log(S*/S_window_lo)` and `log(S_window_hi/S*)`, active only near the edges.
 7. **A stability term**, once (3) is fixed: penalise `growth` above ~0.9, one-sided.
-8. **A period term when the period is data.** In any real experiment it is. Free identifiability
-   for one number.
-
-**None of 4–8 mentions the target, the gene, or the model.** They are properties of "a PTC
+**None of 4–7 mentions the target, the gene, or the model.** They are properties of "a PTC
 surface scored against another PTC surface".
+
+### 3c. NOT a cost term: the period
+
+An earlier draft of this document proposed "add a period term when the period is data". **That
+is wrong, and `fit/radial.py` already says so** — *"Period is pure GAUGE in parameter space —
+freely rescalable"*. Time rescaling is one of the gauge generators, so every physical model here
+sits on a gauge orbit containing a one-parameter family of periods: `T` is a property of the
+REPRESENTATIVE the quotient happens to pick, not of the model. A period term would constrain the
+representative and identify nothing.
+
+MEASURED, on Almeida under a pure time-rescale gauge motion of `rho = 1.4191`:
+
+    mode         period                  max |PTC difference|
+    instant      24.83 -> 17.49 h         1.1e-07 cyc      INVARIANT
+    pulse (8 h)  24.83 -> 17.49 h         3.8e-01 cyc      NOT invariant
+
+The period scales exactly as `1/rho` in both, and **an instant-mode PTC cannot see it at all**.
+For the mode this campaign used, period is unidentifiable by construction and the scatter in F8
+is not a pathology to penalise.
+
+**What period data does is BREAK the gauge, not add a constraint inside it.** Set
+`include_time=False` and the quotient grows by exactly one direction —
+
+    almeida 16 -> 17     korencic 33 -> 34     goldbeter 47 -> 48     goodwin 7 -> 8
+
+— and the measured period pins that new direction. `gauge.random_gauge` already carries the
+right note (*"the time rescale changes the period, so it is not a symmetry of a
+period-constrained cost"*); what is missing is that no driver ever passes `include_time=False`.
+
+**A corollary that is not about periods at all.** A pulse whose duration is fixed in HOURS is
+itself a clock, so pulse-mode data breaks the time gauge whether or not the period is
+recorded — that is the 0.38 cyc above. Every pulse-mode analysis in this project quotients with
+`include_time=True`, i.e. projects out a direction its own data can see. The instant-mode
+results (§5.4b, §5.10) are unaffected; the pulse-mode ones (§3.x) sit on a quotient one
+dimension smaller than the data can determine, and their identifiability counts should be
+re-derived with `include_time=False`. In REPO_MAP Open.
 
 ---
 
@@ -181,18 +223,40 @@ Ordered by (information gained) / (risk of invalidating what exists).
 | # | step | changes objective? | how you know it worked |
 |---|---|---|---|
 | 1 | `make_growth_fn` epsilon ladder | no | its verdict matches `fit.stability` on all 16 seeds |
-| 2 | contract vector C1–C6 computed and stored per evaluation | no | re-scoring the 16 seeds flags exactly {2,5,11,14} on C5, {1,4} on C4, {1,11,14} on C2, {3,4,5,11,14} on C3 |
+| 2 | contract vector C1–C6 computed and stored per evaluation | no | re-scoring the 16 seeds reproduces the sets below exactly |
 | 3 | `fit.aggregate` / `fit.figures` report the contract beside the cost | no | no run is ranked on a surface that fails it |
 | 4 | commission the grid for Almeida/BMAL1/instant (§5) | no (new fixture) | base point brackets at the box corners |
 | 5 | aliveness weighting + amplitude term (3b.4) | **yes** | `--selftest`: a surface with `\|z\| = 0.05` everywhere scores ≈ 1.0, not ≈ 0.1 |
 | 6 | informativeness weighting (3b.5) | **yes** | the residual split at S\* stops being 0.18/0.05 and becomes comparable |
 | 7 | bracketing barrier (3b.6) | **yes** | no fit ends with `n_sing = 0` in its own window |
-| 8 | stability + period terms (3b.7, 3b.8) | **yes** | T1 self-recovery still passes from the truth |
+| 8 | stability term (3b.7) | **yes** | T1 self-recovery still passes from the truth |
 | 9 | re-run T1 per target, then the campaign | — | 3 of 16 pathological orbits should not recur |
 
 Steps 5–8 change the objective, so they land as **one** commit with **one** re-run, and the
 Aug-30 campaign becomes the labelled baseline rather than something to compare against
 piecemeal.
+
+### The regression fixture for step 2
+
+Measured on `bmal1seeds`, these are the exact sets a correct implementation must reproduce.
+They are the cheapest test in the whole plan and they pin every threshold at once:
+
+    C1 orbit          {3}
+    C2 attractor      {1, 4, 5, 11, 14}
+    C3 dose-0 ident   {3, 4, 5, 11, 14}
+    C4 phase res      {0, 1, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15}     12 of 15
+    C5 aliveness      {2, 5, 11, 14}
+    C6 bracketing     all but {2}                                   15 of 16
+
+Two things are worth reading off this table before writing any code.
+
+**C6 fails almost everywhere.** Only seed 2 kept a transition inside its own fit window. That is
+§5.10c restated as a gate, and it means the bracketing barrier (3b.6) is not a corner case —
+it is the common case.
+
+**C3 predicts C2 at a fraction of the cost.** They differ by one element each way ({3} vs {1}):
+a single dose-0 row anticipates a 24-period integration on 4 of 5 failures. Compute C3 first and
+short-circuit.
 
 ---
 

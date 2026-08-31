@@ -1128,6 +1128,51 @@ amplitude above the floor). The accepted clocks span periods **17.9 - 34.5 h**. 
 draw is a viability measurement, so a campaign of this size is also a 3000-point map of where
 in Almeida's quotient a clock can exist -- kept in `viability__*` in the aggregated npz.
 
+#### 5.9e Which saved results were actually affected
+
+Every case below holds the dose RANGE fixed and refines only the sampling, so any change is
+sampling alone.
+
+    case                        n_dose:  12      24      48      96     verdict
+    BMAL1 base   pulse   |accum|      1.402   3.281   4.607   4.940   ALIASED, not converged
+                          signed     +0.606  -1.948  -3.880  -4.940   SIGN FLIP at 24
+                        scramble     0.0000  0.0000  0.0000  0.0000   gate blind throughout
+    BMAL1 RAD03 fitted   |accum|      1.078   1.199   1.509   1.434   NEVER CONVERGES
+                          signed     -0.199  -1.199  -0.199  -1.199   oscillates
+                          n_sing           3       3       1       3
+    PER   base   pulse   |accum|      0.552   0.593   0.612   0.629   mild drift, +14%
+    REV   fitted         |accum|      0.258   0.259   0.260   0.260   converged at 12
+    PER   fitted         |accum|      0.082   0.082   0.082   0.082   converged
+    CRY   base           |accum|      0.443   0.449   0.451   0.453   converged (quality FAILS)
+
+THE ALIASING IS GENE-SPECIFIC, AND IT IS BMAL1. Its isochrons wind ~4.8 cycles across the dose
+range (4.94 and still climbing under pulse); everything else winds slowly enough -- REV 0.26,
+PER 0.08-0.63, CRY 0.45 -- that 12 samples already converge. There is no global safe
+resolution, and the gene we have fitted most is the one that needed the most.
+
+THE QUALITY GATE CANNOT SEE THIS. BMAL1 base pulse scores scramble 0.0000 at EVERY resolution
+while its measured twist is wrong by 3.5x and its direction is inverted at 12-24 samples. The
+gate tests coherence between neighbouring cells, and a coherent alias is still coherent. It is
+therefore not a sufficient check that a surface is resolved; the convergence test is.
+
+TWO RESULTS CHANGE:
+
+  * RAD03's FITTED surface is not resolution-stable -- twist 1.08 / 1.20 / 1.51 / 1.43 and a
+    signed twist alternating between -0.199 and -1.199 as sampling doubles, with the
+    singularity count flipping 3/3/1/3. It was the most heavily analysed fit in this project
+    and its geometry is not established.
+  * REV's radialization is REAL but far smaller than reported. Its fitted twist of 0.260 is
+    genuine (converged at 12 samples, unaliased), but measured against its own base on the SAME
+    range with the unsaturated metric the improvement is 0.296 -> 0.260, about 12%. The
+    campaign's headline "0.4983 -> 0.0394, a 92% reduction" was saturation against a misplaced
+    dose window, not radialization.
+
+WHAT SURVIVES: PER's [-2, -1, 0, 1] winding is identical at 8x refinement, so it is not an
+aliasing artefact either. The likelier reading is the one established independently in 5.7 --
+that optimum's orbit REPELS (growth 1.44), and asymptotic phase does not exist on a repelling
+orbit, so the winding computation has nothing well-defined to measure. That is a stability
+failure, and the guard for it is the stability term, not more dose samples.
+
 ## 5b. Next
 
 **Reordered by 5.10.** The top three now all come from the cluster campaigns, and they are

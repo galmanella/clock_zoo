@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-08-31T13:59:33",
+  "host": "Gal_X1",
+  "arrays": [
+    "B",
+    "mode",
+    "model",
+    "names",
+    "readout",
+    "section",
+    "source_label",
+    "source_tag",
+    "target",
+    "theta",
+    "v",
+    "why",
+    "z_base"
+  ],
+  "git": "3f4b8ba",
+  "script": "fit/promote_start.py",
+  "script_tracked": false,
+  "dirty": true
+}

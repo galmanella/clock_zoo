@@ -84,6 +84,25 @@ class RunConfig:
     w_amp: float = 1.0
     bound: float = 3.0
 
+    #: ALIVENESS RAMP (docs/FIT_VALIDITY.md P1). Below `amp_lo` a cell's value is blended fully
+    #: to the maximum, above `amp_hi` it is untouched. Set amp_lo=None to recover the pre-P1
+    #: objective exactly, which is what a control arm must do.
+    amp_lo: Optional[float] = 0.05
+    amp_hi: float = 0.20
+    #: INFORMATIVENESS WEIGHTING (P3): weight each dose row by the TARGET's own old-phase span.
+    #: Pinned targets only -- make_cost raises otherwise.
+    row_weight: bool = False
+    row_weight_floor: float = 0.1
+    #: BRACKETING BARRIER (direction 1): penalise the type-1 -> type-0 transition leaving the
+    #: dose window. 0 disables. Thresholds are on the window-mean row dispersion; base measures
+    #: 0.512, so these clear it by 0.26 and 0.14.
+    w_brack: float = 0.0
+    brack_lo: float = 0.25
+    brack_hi: float = 0.65
+    #: prepend an exact dose-0 row. Free contract C3, and the radial target there is exactly the
+    #: identity, so a miscalibrated readout pays for it in the cost rather than only in a report.
+    include_zero: bool = False
+
     # ---- optimizer ------------------------------------------------------------------- #
     optimizer: str = 'cma'                      # 'cma' | 'bobyqa' | 'lbfgs' | 'lm'
     #: TOTAL cost evaluations. One currency for every optimizer, so budgets are comparable.
@@ -196,7 +215,7 @@ class RunConfig:
         # measured: a 2-seed BOBYQA smoke campaign returned cost spread 0.000000 and pairwise
         # distance 0.000. That is not multimodality evidence, it is the same run twice, and on
         # a cluster it is N-1 wasted array tasks.
-        if self.start not in ('base', 'dispersed', 'random', 'viable'):
+        if self.start not in ('base', 'dispersed', 'random', 'viable')                 and not str(self.start).startswith('fixture_'):
             bad.append(f"start {self.start!r} must be base/dispersed/random/viable")
         if self.start == 'viable' and not (0 < self.viable_period_lo
                                            < self.viable_period_hi):
@@ -396,6 +415,56 @@ class RunConfig:
         return cfg
 
 
+def load_start_fixture(model_name, name, n_free):
+    """The starting point of a promoted parameter set, IN THIS BUILD'S gauge basis.
+
+    THETA IS THE INVARIANT; `v` IS A SEARCH COORDINATE. That is hazard 18's own rule, and the
+    first version of this function broke it: it reconstructed theta from the fixture's `v` using
+    a FRESHLY computed basis and compared against the recorded theta. Those disagree by
+    construction -- `quotient_basis` SVDs a projector whose nonzero singular values are all
+    exactly 1, so the basis is not reproducible, and the check duly failed by 2.06 decades on
+    the very first promoted start.
+
+    So the fixture is read through THETA and projected into whatever basis this build produces:
+
+        v = B^T (log theta - z_base)
+
+    which is exact because B is orthonormal and the promoted point was constructed inside
+    span(B). The round trip is then verified against theta, and the component of the start that
+    does NOT lie in span(B) is reported rather than silently dropped -- it is the gauge part,
+    unobservable and unrepresentable in the search, so a large one means the fixture did not
+    come from this model's quotient at all.
+    """
+    import os
+    from models import get_model
+    from fit.cost import quotient_basis
+    fp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      'fixtures', 'starts', model_name, name + '.npz')
+    if not os.path.exists(fp):
+        raise SystemExit(f"no start fixture {fp}. Promote one with "
+                         f"`python -m fit.promote_start --help`.")
+    z = np.load(fp, allow_pickle=True)
+    theta = np.asarray(z['theta'], float)
+    names, z_base, B, _g = quotient_basis(get_model(model_name))
+    if B.shape[1] != n_free or len(theta) != len(z_base):
+        raise SystemExit(f"start fixture {name}: {len(theta)} parameters / {B.shape[1]} free "
+                         f"directions here, run expects {n_free}")
+    u = np.log(theta) - z_base
+    v = B.T @ u
+    gauge_part = float(np.linalg.norm(u - B @ v) / max(np.linalg.norm(u), 1e-30))
+    drift = float(np.max(np.abs(np.log10(np.exp(z_base + B @ v) / theta))))
+    if drift > 1e-8:
+        raise SystemExit(
+            f"start fixture {name}: projecting its theta into this build's basis and back "
+            f"changes it by {drift:.3g} decades (gauge component {gauge_part:.2%}). It does "
+            f"not lie in this model's gauge quotient.")
+    if gauge_part > 1e-6:
+        print(f"[start] fixture {name}: {gauge_part:.2%} of the displacement is GAUGE and has "
+              f"been projected out -- unobservable, and the search cannot represent it.",
+              flush=True)
+    return v
+
+
 def start_points(cfg, n_free):
     """Starting point for each seed, in gauge-quotient coordinates.
 
@@ -413,6 +482,14 @@ def start_points(cfg, n_free):
         # handled by fit.viability.find_starts, which needs the model and can fail per seed
         raise RuntimeError("start='viable' is resolved by fit.viability.find_starts, "
                            "not by start_points")
+    if str(cfg.start).startswith('fixture_'):
+        # START FROM A PROMOTED PARAMETER SET, never from out/. REPO_MAP hazard 16: anything a
+        # later run DEPENDS on lives in fixtures/, promoted deliberately and visible as a diff.
+        # The fixture carries the gauge-quotient basis `B` alongside `v`, which also closes
+        # hazard 18 -- `v` alone is a machine-local coordinate and would reconstruct parameters
+        # decades away under a re-derived basis.
+        return {sd: load_start_fixture(cfg.model, str(cfg.start).split('_', 1)[1], n)
+                for sd in seeds}
     if cfg.start == 'random':
         return {sd: np.random.default_rng(1000 + sd).uniform(
             -cfg.start_radius, cfg.start_radius, n) for sd in seeds}

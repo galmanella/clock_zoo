@@ -179,7 +179,7 @@ def run(cfg, seed=None, tag=None, v_start=None):
     readout = str(getattr(model, 'readout_variable', None) or model.reference_variable)
 
     doses, s_crit = fit_dose_grid(model_name, target, mode, cfg.max_factor, cfg.n_dose,
-                                  lo_factor=cfg.lo_factor)
+                                  lo_factor=cfg.lo_factor, include_zero=cfg.include_zero)
     tag = paths.run_tag(cfg.tag if tag is None else tag)
     if cfg.verbose:
         print(describe(cfg), flush=True)
@@ -202,9 +202,16 @@ def run(cfg, seed=None, tag=None, v_start=None):
     # Pinning to the base run's own singularity asks the well-posed question -- flatten the
     # twist while holding the defect where it already is -- and is what input_screen's
     # radialize.py did (`make_radial_target(S_crit, phi_sing, ...)`).
+    # ONE dict, so the probe surface and the scored surface can never drift apart. The probe
+    # only locates the seed's singularity, but it must see the same surface the cost will.
+    cost_opts = dict(amp_ramp=None if cfg.amp_lo is None else (cfg.amp_lo, cfg.amp_hi),
+                     row_weight=cfg.row_weight, row_weight_floor=cfg.row_weight_floor,
+                     w_brack=cfg.w_brack, brack_lo=cfg.brack_lo, brack_hi=cfg.brack_hi)
     C_probe = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
                         backend=backend, dt=dt, w_osc=0.0, w_amp=0.0,
-                        pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout)
+                        pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout,
+                        **{k: v for k, v in cost_opts.items() if k != 'row_weight'},
+                        row_weight=False)   # the probe target is PROFILED; weighting needs pinned
     _zb, _ab, _amb = C_probe['surface'](C_probe['v0'])
     from analysis import winding as _W
     _ptc_b = np.where(_ab, (np.angle(_zb) / (2 * np.pi)) % 1.0, np.nan)
@@ -230,7 +237,7 @@ def run(cfg, seed=None, tag=None, v_start=None):
 
     C = make_cost(model, target, doses, tgt, n_phase=n_phase, mode=mode,
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp,
-                  pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout)
+                  pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout, **cost_opts)
     before = _diagnose_safe(model, C, C['v0'], 'base')
     # The BASE surface has to be usable or nothing downstream means anything. A run was allowed
     # to proceed from a base that failed the gate (scramble 0.0563 at 16x10) and its "before"
@@ -403,6 +410,10 @@ def run(cfg, seed=None, tag=None, v_start=None):
                 section=str(model.reference_variable),
                 readout=str(getattr(model, 'readout_variable', None)
                             or model.reference_variable),
+                amp_lo=(np.nan if cfg.amp_lo is None else float(cfg.amp_lo)),
+                amp_hi=float(cfg.amp_hi), row_weight=bool(cfg.row_weight),
+                w_brack=float(cfg.w_brack), include_zero=bool(cfg.include_zero),
+                lo_factor=float(cfg.lo_factor),
                 off_regime=bool(off_regime), re_lambda_fit=float(re_fit),
                 target_pinned=bool(tgt.k is not None),
                 k_used=float(tgt.k) if tgt.k is not None else np.nan,

@@ -48,11 +48,26 @@ OUT = os.path.join(HERE, 'out')
 ANALYSES = ('validate', 'scrit', 'characterize', 'lc_sens', 'ptc_sens', 'coupling')
 
 
+#: illegal in a Windows path component. This repo runs on Linux (cluster) and Windows (the
+#: analysis machine that `out/` is synced back to), so a name that is merely legal on Linux is
+#: a bug that surfaces only after the expensive half is done.
+_BAD_CHARS = set('<>:"|?*') | {chr(92), '/'}
+
+
 def _safe(part, what):
-    """Reject path separators / traversal in a name that becomes a directory component."""
+    """Reject path separators / traversal in a name that becomes a directory component.
+
+    ALSO rejects characters that are illegal on Windows. A campaign tag once contained a colon
+    (`start-fixture:seed2`): legal on Linux, so every check passed and every dry-run validated,
+    and it would have failed at `makedirs` AFTER an 8000-evaluation fit -- or, worse, only when
+    `out/` was synced back. Fail at construction instead.
+    """
     s = str(part)
     if not s or s != os.path.basename(s) or s in ('.', '..'):
         raise ValueError(f"{what} must be a plain name, got {part!r}")
+    bad = sorted(_BAD_CHARS & set(s))
+    if bad:
+        raise ValueError(f"{what} contains {bad!r}, illegal in a path on Windows: {part!r}")
     return s
 
 

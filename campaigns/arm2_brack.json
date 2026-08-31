@@ -1,0 +1,45 @@
+{
+  "amp_lo": null,
+  "backend": "diffrax",
+  "bound": 3.5,
+  "cma_mode": "anneal",
+  "dt": 0.02,
+  "lo_factor": 0.5,
+  "log_every": 10,
+  "max_factor": 8.0,
+  "maxfev": 8000,
+  "mode": "instant",
+  "model": "almeida",
+  "n_dose": 14,
+  "n_phase": 20,
+  "notes": "2026-08-31 arm comparison. FIVE ARMS, each differing from arm0_ctl in EXACTLY ONE field, so any difference is attributable to that field. CMA is stochastic, so each cell is replicated over 3 seeds -- with one run per cell the arm effect could not be separated from seed noise. Two starts: 'base' (the positive control -- the only Aug-30 run that behaved cleanly) and 'fixture:seed2' (attracting orbit but fails contract C5 and C6, so RAMP, BRACK and FLOOR all have something to fix and C3/C4 are not confounds). Compare arms ONLY after re-scoring every endpoint on a COMMON yardstick -- fit.contract, plus c_ptc under arm0's objective -- because each arm minimises a different function and their own cost values are not comparable. Direction 1 bracketing barrier ONLY. Predicts: endpoint passes contract C6 and S* stays inside the window. The arm most expected to work. BOUND IS 3.5, NOT THE 3.0 OF THE AUG-30 CAMPAIGN, AND UNIFORMLY SO ACROSS ALL FIVE ARMS. The promoted start sits at max|v_i| = 2.9996 in the basis it was fitted in -- ON the old boundary -- and the gauge-quotient basis is not reproducible (hazard 18), so a rotation puts one of its 16 components at 3.0317, marginally OUTSIDE. CMA then refuses the start outright. The box is therefore BASIS-DEPENDENT: 'inside the box' is not a property of the model. Raising it uniformly keeps every arm-to-arm contrast single-variable; it does mean arm0_ctl, not the Aug-30 campaign, is the control.",
+  "optimizer": "cma",
+  "popsize": 32,
+  "readout": "REV",
+  "restarts": 2,
+  "section": "PER",
+  "seeds": [
+    [
+      0
+    ],
+    [
+      1
+    ],
+    [
+      2
+    ]
+  ],
+  "sigma0": 0.5,
+  "start": [
+    "base",
+    "fixture_seed2"
+  ],
+  "tag": "arm2_brack",
+  "target": "BMAL1",
+  "target_mode": "pinned",
+  "verbose": true,
+  "w_amp": 1.0,
+  "w_brack": 1.0,
+  "w_osc": 0.2,
+  "workers": 32
+}

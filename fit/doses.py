@@ -109,7 +109,7 @@ def load_scrit(model_name, target, mode='instant'):
 
 
 def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10,
-                  lo_factor=0.5):
+                  lo_factor=0.5, include_zero=False):
     """(doses, S_crit) -- a log-spaced fit window from lo_factor*S_crit to max_factor*S_crit.
 
     Log-spaced rather than a subset of the scrit grid so the sampling is under this module's
@@ -133,12 +133,38 @@ def fit_dose_grid(model_name, target, mode='instant', max_factor=8.0, n=10,
 
         8 * S_crit is still well inside the smooth regime: the gradient pathology sets in around
         18 * S_crit, and 3-5 * S_crit measured |grad| = 2.4 against 0.7 near S_crit.
+
+    LOWERING `lo_factor` TRADES THAT PLACEMENT AWAY, AND THE TRADE IS NOT OPTIONAL TO THINK
+    ABOUT. The Aug-30 campaign showed the fitted S_crit collapsing 3-4 decades below the window,
+    so every candidate was scored entirely on its type-0 side (contract C6 fails 16 of 16). The
+    obvious fix -- drop the floor -- costs nothing in wall time (measured: 48 doses over
+    [0.01, 8] S_crit runs at 20.9 s against 24.7 s over [0.5, 8]; low doses integrate fast) but
+    it REDISTRIBUTES the rows:
+
+        lo      hi     S_crit at        rows above S_crit, n=14      n=48
+        0.5      8     25 log-pct       10.5                         36
+        0.05     8     59 log-pct        5.7                         19
+        0.01     8     69 log-pct        4.3                         15
+
+    There is no floor that keeps S_crit at the 25th percentile AND reaches 0.01: that needs
+    `max_factor` ~ 8000, far inside the gradient pathology (hazard 11). So reaching down and
+    resolving twist are in tension AT FIXED n, and the only way to have both is more rows --
+    which is why P2 and P4 of docs/FIT_VALIDITY.md have to be decided together. Note the
+    right-hand column: 48 rows at lo=0.01 gives MORE absolute type-0 coverage (15) than 14 rows
+    at lo=0.5 (10.5), plus 33 rows below the transition.
+
+    `include_zero` prepends an exact dose-0 row. It costs one cell column and makes contract C3
+    free -- and it is not inert in the cost: the radial target at dose 0 is exactly the identity
+    (`radial_z` reduces to exp(2i.pi.old)), so a candidate whose phase readout is miscalibrated
+    pays for it there instead of only being flagged afterwards.
     """
     S, _grid, dt = load_scrit(model_name, target, mode)
     if not np.isfinite(S):
         raise SystemExit(f"{target} ({mode}) has no S_crit -- it does not reset, so there is "
                          f"no transition to fit")
-    return np.geomspace(lo_factor * S, max_factor * S, int(n)), S
+    k = int(n) - (1 if include_zero else 0)
+    d = np.geomspace(lo_factor * S, max_factor * S, k)
+    return (np.concatenate([[0.0], d]) if include_zero else d), S
 
 
 def promote(model_name, mode='instant', tag=None, dry_run=False):

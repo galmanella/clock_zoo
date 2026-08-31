@@ -89,6 +89,20 @@ def quotient_basis(model, param_names=None, include_time=True):
     return list(g.names), g.z_nominal.copy(), B, g
 
 
+def _target_span(zt):
+    """Per-dose-row circular span of a target phase field -- how much old-phase structure it has.
+
+    CIRCULAR, and that is not a nicety: phase wraps, and a peak-to-peak about an arithmetic
+    mean read 4 informative dose rows for REV against a true 1, because REV's target sits at
+    psi = 0.975 and its rows straddle the 0/1 boundary (PROJECT_SUMMARY 5.12). Reuses
+    `analysis.winding.circ_span`, which saturates at 0.5 -- here that ceiling IS the meaning
+    wanted, since 0.5 already means "sweeps the whole circle".
+    """
+    from analysis.winding import circ_span
+    ph = (np.angle(np.asarray(zt)) / (2 * np.pi)) % 1.0
+    return np.array([circ_span(ph[:, j]) for j in range(ph.shape[1])], float)
+
+
 # --------------------------------------------------------------------------- #
 #  Hopf-distance barrier (ported from input_screen/osc_term.py, generalized)
 # --------------------------------------------------------------------------- #
@@ -421,7 +435,8 @@ class RadialTarget:
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
               param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0, pulse=8.0,
-              readout_ref=None, w_stab=0.0, r_max=0.98, basis=None, amp_ramp=(0.05, 0.20)):
+              readout_ref=None, w_stab=0.0, r_max=0.98, basis=None, amp_ramp=(0.05, 0.20),
+              row_weight=False, row_weight_floor=0.1):
     """Build the objective.
 
     Returns a dict with
@@ -438,6 +453,9 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     `amp_ramp = (lo, hi)` is the aliveness ramp (P1 of docs/FIT_VALIDITY.md); pass None to
     recover the pre-P1 objective exactly, which is what any comparison against the Aug-30
     campaign must do.
+
+    `row_weight` turns on informativeness weighting (P3). PINNED TARGETS ONLY -- it raises
+    otherwise, for the reason given at its definition below.
     """
     names, z_base, B, g = quotient_basis(model, param_names)
     # A CALLER MAY PIN THE BASIS, AND ANYTHING RE-EVALUATING A SAVED `v` MUST.
@@ -495,6 +513,35 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
         return jnp.exp(zbj + Bj @ v)
 
     growth_fn = make_growth_fn(model, backend=backend) if w_stab else None
+
+    # INFORMATIVENESS WEIGHTING (P3): weight each dose row by how much old-phase structure the
+    # TARGET still has there. A Poincare target goes phase-blind above its own singularity --
+    # measured span 0.5 below S*, 0.05 at 6 x S* (REPO_MAP hazard 17) -- and on a log window
+    # most rows are up there, so most of the cost is nearly free to satisfy. Split at S* on the
+    # Aug-30 campaign: the residual BELOW went 0.199 -> 0.181-0.221 (no better) while ABOVE it
+    # went 0.276 -> 0.035-0.057. All of the apparent progress was in the blind region.
+    #
+    # ONLY LEGAL FOR A PINNED TARGET, AND THIS IS NOT A DETAIL. `w` is safe in circ_cost
+    # precisely because the optimizer cannot move it. A PROFILED target is re-registered to the
+    # candidate at every evaluation, so its span would become a function of the model -- and a
+    # model-dependent WEIGHT is the down-weighting that circ_cost's docstring forbids: the
+    # optimizer could discount the informative rows by moving the target. So a profiled target
+    # gets no weighting, and says so rather than silently ignoring the request.
+    row_w = None
+    if row_weight:
+        if getattr(tgt, 'k', None) is None:
+            raise ValueError(
+                "row_weight requires a PINNED target. With a profiled target the weights would "
+                "depend on the candidate, which turns a safe weight into a down-weighting the "
+                "optimizer can exploit (see fit.target.circ_cost). Pin the target, or pass "
+                "row_weight=False.")
+        _zt_fixed = radial_z(old, doses, float(tgt.k), float(tgt.psi))
+        _sp = _target_span(np.asarray(_zt_fixed))
+        # a floor, not a bare span: a row with zero weight contributes nothing at all, and a
+        # surface is still expected to be a PTC there. `row_weight_floor` keeps every row in the
+        # cost while concentrating it where the target can discriminate.
+        w1 = row_weight_floor + (1.0 - row_weight_floor) * (_sp / max(_sp.max(), 1e-30))
+        row_w = jnp.asarray(np.broadcast_to(w1[None, :], (n_phase, len(doses))))
 
     def _surface(v):
         P = model.jax_apply(_theta(v), names)
@@ -560,7 +607,7 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
             lo, hi = amp_ramp
             t = jnp.clip((amp - lo) / max(hi - lo, 1e-12), 0.0, 1.0)
             soft = t * t * (3.0 - 2.0 * t)          # smoothstep: C1 at both knees
-        c_ptc = circ_cost(zu, zt, alive, soft=soft)
+        c_ptc = circ_cost(zu, zt, alive, soft=soft, w=row_w)
         # one-sided quadratic floor: 0 when healthy, rising as the cycle shrinks. Quadratic
         # rather than linear so it is gentle near the floor and firm well below it.
         a = jnp.maximum(0.0, 1.0 - amp_lc / amp_floor) ** 2

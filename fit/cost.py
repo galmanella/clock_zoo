@@ -89,6 +89,38 @@ def quotient_basis(model, param_names=None, include_time=True):
     return list(g.names), g.z_nominal.copy(), B, g
 
 
+def row_dispersion(zu, alive):
+    """Per-dose-row circular dispersion of a unit-phase field: 1 - |mean resultant|, in [0, 1].
+
+    THE BRACKETING OBSERVABLE. It says how much a dose row's new phase varies with OLD phase:
+
+        type-1 row -- new phase sweeps the circle    -> resultant ~ 0 -> dispersion ~ 1
+        type-0 row -- new phase nearly constant      -> resultant ~ 1 -> dispersion ~ 0
+
+    so the transition sits where it crosses. Three properties make it the right variable for a
+    barrier, and each one rules out an alternative that was considered first:
+
+      * DEFINED WHEN THE SINGULARITY IS GONE. `fit.target.soft_singularity` locates the defect
+        from the amplitude dip, so it cannot see a defect that has already left the grid -- and
+        that is exactly the state we need to penalise. Dispersion is a property of every row
+        whether or not a singularity is present anywhere.
+      * DIRECTION-AWARE. Dispersion low at the BOTTOM of the window means the transition fell
+        below the floor; still high at the TOP means it rose above the ceiling. A barrier on a
+        located S* cannot distinguish those once the defect is off-grid; this can, and the
+        Aug-30 campaign contains both (13 escaped downward, seed 0 upward).
+      * SMOOTH. A mean of unit vectors -- no max, no plaquette search, no grid quantisation, so
+        it differentiates cleanly. `analysis.winding.detect_grid` is a staircase and
+        `circ_span` is a max.
+
+    VALIDATED against the independent extended-grid S_crit on all 16 Aug-30 fits: every run this
+    reads as "type-0 throughout" has a rescanned S* of 0.01-4.0 against a window floor of 12.5,
+    and the one it reads as "type-1 throughout" (seed 0) has S* = 363 against a ceiling of 200.
+    """
+    z = jnp.where(alive, zu, 0.0)
+    n = jnp.maximum(jnp.sum(alive.astype(zu.real.dtype), axis=0), 1.0)
+    return 1.0 - jnp.abs(jnp.sum(z, axis=0) / n)
+
+
 def _target_span(zt):
     """Per-dose-row circular span of a target phase field -- how much old-phase structure it has.
 
@@ -436,7 +468,8 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
               param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0, pulse=8.0,
               readout_ref=None, w_stab=0.0, r_max=0.98, basis=None, amp_ramp=(0.05, 0.20),
-              row_weight=False, row_weight_floor=0.1):
+              row_weight=False, row_weight_floor=0.1,
+              w_brack=0.0, brack_lo=0.25, brack_hi=0.65):
     """Build the objective.
 
     Returns a dict with
@@ -456,6 +489,10 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
 
     `row_weight` turns on informativeness weighting (P3). PINNED TARGETS ONLY -- it raises
     otherwise, for the reason given at its definition below.
+
+    `w_brack` weights the BRACKETING BARRIER: a one-sided penalty that keeps the type-1 ->
+    type-0 transition inside the dose window, so the window does not have to be widened to
+    chase it. Zero at a healthy point by construction; see `row_dispersion`.
     """
     names, z_base, B, g = quotient_basis(model, param_names)
     # A CALLER MAY PIN THE BASIS, AND ANYTHING RE-EVALUATING A SAVED `v` MUST.
@@ -631,10 +668,59 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
                              - jnp.log(r_max)) ** 2
         else:
             st = jnp.array(0.0)
-        total = c_ptc + w_osc * b + w_amp * a + w_stab * st
+        # BRACKETING BARRIER. Keep the type-1 -> type-0 transition inside the dose window
+        # instead of widening the window to chase it. 16 of 16 Aug-30 fits ended with it
+        # outside (contract C6), which is what made every c_ptc they reported a statement about
+        # a surface with no transition in it.
+        #
+        # ONE-SIDED AND SQUARED, the same shape as the amplitude floor and the stability term:
+        # exactly 0 while the transition is comfortably inside, C1 at the knee, quadratic
+        # beyond. It must be exactly 0 at a healthy point or it moves the global minimum, which
+        # is the mistake 5.3 records twice (the amplitude floor and the Hopf barrier both
+        # charged a perfectly good truth). MEASURED at base: dispersion is 0.700 at the bottom
+        # row and 0.146 at the top, so the thresholds below clear it by 0.2 and 0.15.
+        #
+        # `j_lo` skips a dose-0 row if the grid carries one: at zero dose the PTC is the
+        # identity, whose dispersion is 1 by construction, so it would mask a collapse.
+        # GATED ON THE ROW BEING ALIVE, and that is not a detail. With every cell dead the
+        # resultant is 0 and the dispersion reads 1.0 on EVERY row, so an all-dead surface
+        # looks exactly like "the transition is above the ceiling" and the barrier charged it
+        # 0.49 for a reason that is not true. A dead surface already costs the maximum through
+        # c_ptc; letting a second term charge it again, for the wrong reason, muddies both the
+        # value and the gradient. Scaling by the row's alive fraction keeps each term
+        # responsible for exactly one failure -- the same separation the aliveness ramp makes.
+        # AGGREGATED OVER THE WHOLE WINDOW, NOT READ OFF THE TWO EDGE ROWS.
+        #
+        # The first version used the bottom and top rows only. It separated the cases correctly
+        # but AMPLIFIED THE KNOWN GRADIENT PATHOLOGY: at seed 0, |grad| went 3.0e10 -> 6.1e11
+        # when the barrier was switched on. The reason is structural -- `c_ptc` averages over
+        # all 280 cells, so per-cell non-smoothness (hazard 11 / 5.4: the coexisting fixed
+        # point's basin boundary) averages down, while two rows of 20 cells give it 14x less
+        # room to cancel. Meaning the barrier is smooth exactly where the map is, and inherits
+        # the map's roughness with less damping everywhere else.
+        #
+        # The mean dispersion over the window separates the cases just as cleanly -- base
+        # 0.512, the fourteen collapsed fits 0.000-0.162, seed 0's upward escape 0.764 -- while
+        # averaging over every row.
+        if w_brack:
+            disp = row_dispersion(zu, alive)
+            af = jnp.mean(alive.astype(jnp.float64), axis=0)
+            lo_j = 1 if float(doses[0]) == 0.0 else 0   # a dose-0 row is the identity: skip it
+            wgt = af[lo_j:]
+            D = jnp.sum(wgt * disp[lo_j:]) / jnp.maximum(jnp.sum(wgt), 1e-12)
+            # gated on the surface being alive at all: with every cell dead the resultant is 0
+            # and D reads 1.0, which looks exactly like "the transition is above the ceiling".
+            # A dead surface already costs the maximum through c_ptc; charging it again here,
+            # for a reason that is not true, muddies both the value and the gradient.
+            gate = jnp.mean(alive.astype(jnp.float64))
+            br = gate * (jnp.maximum(0.0, brack_lo - D) ** 2
+                         + jnp.maximum(0.0, D - brack_hi) ** 2)
+        else:
+            br = jnp.array(0.0)
+        total = c_ptc + w_osc * b + w_amp * a + w_stab * st + w_brack * br
         return dict(total=total, c_ptc=c_ptc, osc=b, amp_pen=a, amp_lc=amp_lc, period=T,
                     alive_frac=jnp.mean(alive.astype(jnp.float64)), re_lambda=re,
-                    fp_res=res, stab=st, growth=r_grow, **aux)
+                    fp_res=res, stab=st, growth=r_grow, brack=br, **aux)
 
     def _residual(v):
         """The cost as a RESIDUAL VECTOR r with |r|^2 == total.

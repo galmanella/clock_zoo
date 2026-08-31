@@ -421,7 +421,7 @@ class RadialTarget:
 def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backend='diffrax',
               dt=0.02, skip_p=None, w_osc=0.2, w_amp=1.0, amp_frac=0.05, m_amp=64,
               param_names=None, eps=1e-12, grad_mode='rev', ridge=0.0, pulse=8.0,
-              readout_ref=None, w_stab=0.0, r_max=0.98, basis=None):
+              readout_ref=None, w_stab=0.0, r_max=0.98, basis=None, amp_ramp=(0.05, 0.20)):
     """Build the objective.
 
     Returns a dict with
@@ -434,6 +434,10 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
 
     `basis` pins the gauge-quotient basis instead of re-deriving it -- REQUIRED when
     re-evaluating a `v` saved by an earlier run. See the comment on it below.
+
+    `amp_ramp = (lo, hi)` is the aliveness ramp (P1 of docs/FIT_VALIDITY.md); pass None to
+    recover the pre-P1 objective exactly, which is what any comparison against the Aug-30
+    campaign must do.
     """
     names, z_base, B, g = quotient_basis(model, param_names)
     # A CALLER MAY PIN THE BASIS, AND ANYTHING RE-EVALUATING A SAVED `v` MUST.
@@ -536,7 +540,27 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
     def _parts(v):
         P, zu, alive, amp, amp_lc, T, r_grow = _surface(v)
         zt, aux = tgt(zu, alive, old, doses)
-        c_ptc = circ_cost(zu, zt, alive)
+        # ALIVENESS RAMP (P1). `DEAD_AMP = 0.01` means "not literally zero"; it does not mean
+        # "carries phase information". At |z| = 0.05 the post-perturbation oscillation is 5% of
+        # the intact clock and its Fourier phase is noise -- measured, 4 of the 16 Aug-30 fits
+        # had a median |z| of 0.05-0.09 across the whole window and were scored as PTCs anyway
+        # (PROJECT_SUMMARY 5.12).
+        #
+        # It blends TOWARD THE MAXIMUM, never down-weights -- see fit.target.circ_cost. A weight
+        # would let the optimizer discount a cell by killing it.
+        #
+        # WHY A PER-CELL RAMP IS SAFE HERE, WHICH IS NOT OBVIOUS. |z| also falls at a genuine
+        # phase singularity, which is the most informative cell on the surface, so a ramp could
+        # in principle blank exactly what the fit is for. MEASURED on the rescanned campaign:
+        # at seed 9's singularity |z| = 0.997 and at seed 6's the deepest cell is 0.490, while
+        # the dead surfaces sit at 0.016-0.09. The band below is 2.5x clear of the deepest
+        # genuine dip. `fit.contract` C5 is the backstop if a future model breaks that margin.
+        soft = None
+        if amp_ramp is not None:
+            lo, hi = amp_ramp
+            t = jnp.clip((amp - lo) / max(hi - lo, 1e-12), 0.0, 1.0)
+            soft = t * t * (3.0 - 2.0 * t)          # smoothstep: C1 at both knees
+        c_ptc = circ_cost(zu, zt, alive, soft=soft)
         # one-sided quadratic floor: 0 when healthy, rising as the cycle shrinks. Quadratic
         # rather than linear so it is gentle near the floor and firm well below it.
         a = jnp.maximum(0.0, 1.0 - amp_lc / amp_floor) ** 2

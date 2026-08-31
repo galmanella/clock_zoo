@@ -552,7 +552,14 @@ Both terms of that cost (twist span, singularity position) are *minimized* by a 
 oscillator. The cost here inverts that: it is a **pointwise match over the whole surface**, and
 an unusable cell scores the **maximum** rather than being dropped. A dead oscillator therefore
 becomes the worst point in the space instead of the best. Asserted by
-`python -m fit.cost --selftest`: base **0.292**, Hopf-collapsed **2.748**.
+`python -m fit.cost --selftest`: base **0.3615**, Hopf-collapsed **2.4813**.
+
+*(Re-measured at HEAD. The pair quoted here until 2026-08-30 was 0.292 / 2.748; the
+invariant is unchanged and the drift predates the P1 aliveness ramp -- verified by an A/B
+with the ramp stashed, which reproduces 0.3615 / 2.4813 exactly. The likely cause is the
+observable change of 5.7, which moved the phase origin and so the base residual against a
+profiled target, but that was not chased down. A selftest whose printed numbers are cited
+in prose should be re-read whenever the prose is.)*
 
 ### 5.3 Four things the plan got wrong, each caught by a measurement
 

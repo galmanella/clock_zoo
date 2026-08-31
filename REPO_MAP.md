@@ -349,3 +349,21 @@ tracking.
   self-recovery control has not yet been run.
 - `fit/radial._diagnose` still solves the orbit with `solver.guess` where the cost uses `make_guess_fn` -- hazard 15's first bullet, fixed in `figures._backfill` but not here. It cost three runs of the Aug-30 campaign their verdict (PROJECT_SUMMARY 5.10f). One line; not changed yet because it re-opens finished fits.
 - The radialization cost has no term requiring the fitted surface to RESOLVE OLD PHASE, and no weighting toward the doses where the target is informative. Both are what hazard 17 is about.
+- **Nine outputs in `out/` were written by scripts that lived only in a session scratchpad and
+  are now gone.** This is the provenance failure `paths.provenance` exists to catch, and the
+  guard did catch it -- it printed the warning at write time and recorded
+  `script_tracked: false` in every sidecar. Nobody acted on it. Audit:
+
+      python -c "
+      import json, glob
+      for f in glob.glob('out/**/*.meta.json', recursive=True):
+          m = json.load(open(f))
+          if m.get('script_tracked') is False: print(m['script'], '->', f)"
+
+  Most are uncited exploratory figures and can simply be deleted. **One is cited**:
+  `out/almeida/fit_radial/RAD01/endtoend_perturbations.png`, which PROJECT_SUMMARY 5.7 and
+  hazard 14 both lean on for "the dynamics were fine the whole time". Its script
+  (`scratchpad/endtoend.py`) no longer exists, so that figure currently cannot be regenerated
+  and the claim rests on a picture with no derivation behind it. Either re-derive it from a
+  tracked entry point or stop citing it. Set `CLOCKZOO_STRICT_PROVENANCE=1` locally, not only
+  on the cluster, and the next one fails loudly instead of leaving a note in a sidecar.

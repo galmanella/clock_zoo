@@ -526,6 +526,18 @@ def fig_seeds(z):
     that differ only by a change of units are at distance 0 (REPO_MAP hazard 6). Without that,
     a gauge motion would read as a distinct basin and every campaign would look multimodal.
     """
+    # A PER-TASK `seeds_*.npz` -- the one `run_seeds._compare_seeds` writes -- has the same
+    # name and the same first four keys as an aggregated one, so `_load` will happily hand one
+    # over. It carries only (seeds, v, cost, dist): no verdicts and no surfaces, which is the
+    # whole reason fit/aggregate.py exists. Say that, rather than dying on a KeyError six
+    # panels in.
+    missing = [k for k in ('verdict', 'ptc_fit', 'labels', 'ptc_target_used') if k not in z]
+    if missing:
+        raise SystemExit(
+            f"this looks like a PER-TASK seeds npz, not an aggregated one (missing "
+            f"{', '.join(missing)}). It compares only the seeds that shared one array task. "
+            f"Run `python -m fit.aggregate --model {_CTX['model']} --tag <campaign>` and plot "
+            f"the tag it writes.")
     lab, cost = z['labels'], np.asarray(z['cost'], float)
     D, ok = np.asarray(z['dist'], float), _usable(z)
     n = len(lab)
@@ -892,8 +904,8 @@ def fig_genes(z):
                      f"{float(z['fit__parts_period'][i]):.1f} h    "
                      f"mu {float(z['fit__mu'][i]):.3g}    "
                      f"Re(lam) {float(z['fit__parts_re_lambda'][i]):+.4f}\n"
-                     f"target has old-phase structure on {n_inf}/{len(sp)} doses"
-                     + ('  <- nearly featureless: cost is cheap here'
+                     f"target informative on {n_inf}/{len(sp)} doses"
+                     + ('\nNEARLY FEATURELESS TARGET -- cost is cheap here'
                         if n_inf <= len(sp) // 4 else ''),
                      fontsize=8, color=vc)
     fig.colorbar(im, cax=fig.add_subplot(gs[0:3, n]), label='new phase (cyc)')

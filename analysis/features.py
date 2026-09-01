@@ -88,6 +88,61 @@ def _load_char(model_name, mode, tag=None):
     return out, tag
 
 
+def _load_scan(model_name, mode, tag=None):
+    """{target: dict} from THE SCREEN (`analysis.scrit`) rather than from the refined surfaces.
+
+    The wide dose scan already IS a PTC surface -- 32 phases x 40 doses over seven decades --
+    and it costs nothing extra to read. It is coarse in phase and enormous in dose, which is
+    the opposite trade from `analysis.characterize`, so the two answer different questions:
+    the screen shows WHERE ON THE DOSE AXIS anything happens at all, the refined surface shows
+    WHAT it looks like once you are there.
+
+    TWO THINGS ARE COARSER THAN THEY LOOK, and both are recorded rather than smoothed over:
+      * validity is PER DOSE ROW, not per cell. The scan keeps one running minimum per dose
+        (the min over that row's phases), so a row is either believed or discarded whole. The
+        refined path tracks it per trajectory.
+      * `amp` is likewise one number per dose, the row's minimum relative amplitude, so it is
+        stored 1-D here where the refined path stores the full grid.
+    """
+    from analysis.dosegrid import _scrit_files
+    from engine.ptc import valid_mask
+    tag, files = _scrit_files(model_name, mode, tag)
+    if not files:
+        return {}, None
+    out = {}
+    for fp in files:
+        z = np.load(fp, allow_pickle=True)
+        for i, t in enumerate([str(x) for x in z['targets']]):
+            if f'ptc__{t}' not in z:
+                continue
+            doses = np.asarray(z[f'doses__{t}'], float)
+            ptc = np.asarray(z[f'ptc__{t}'], float)              # (n_phase, n_dose)
+            ymin = np.asarray(z[f'ymin__{t}'], float)            # per DOSE
+            ampd = np.asarray(z[f'amp__{t}'], float)             # per DOSE
+            colok = np.asarray(valid_mask(ymin), bool)
+            # discard the rows the integrator was unstable on, exactly as `scrit` does before
+            # taking a winding number -- otherwise the figure shows numbers scrit refused.
+            ptc = np.where(colok[None, :], ptc, np.nan)
+            n_phase = ptc.shape[0]
+            old = np.arange(n_phase) / n_phase
+            sings = W.find_singularities(old, doses, ptc)
+            S, phi, nsing = W.detect_grid(old, doses, ptc)
+            tw = W.twist_curve(old, doses, ptc)
+            fin = np.isfinite(ampd) & colok
+            out[t] = dict(
+                old=old, doses=doses, ptc=ptc, amp=ampd,
+                valid=np.broadcast_to(colok, ptc.shape).copy(),
+                Wv=np.asarray(z[f'W__{t}'], float), twist=tw,
+                sing_phi=np.array([s['phi'] for s in sings]),
+                sing_dose=np.array([s['dose'] for s in sings]),
+                sing_sign=np.array([s['sign'] for s in sings]),
+                S=float(S), phi=float(phi), n_sing=int(nsing),
+                total_twist=float(W.total_twist(tw)),
+                min_amp=float(np.min(ampd[fin])) if np.any(fin) else np.nan,
+                dt=float(z['dt_used'][i]) if 'dt_used' in z else np.nan)
+    return out, tag
+
+
 def _load_scrit(model_name, mode):
     """{target: (S_crit, ceiling, reason, pos_in_shared_grid)} -- empty dict if never scanned."""
     from analysis.dosegrid import read_scrit
@@ -154,24 +209,38 @@ def row_of(model_name, mode, target, ch, sc):
     )
 
 
-def build(mode='pulse', models=GM.MODELS, char_tags=None, verbose=True):
+#: Where a surface came from. 'scan' is the wide screen `analysis.scrit` already produced;
+#: 'surface' is the refined render `analysis.characterize` makes on the derived dose grid.
+SOURCES = ('scan', 'surface')
+
+
+def build(mode='pulse', models=GM.MODELS, char_tags=None, source='surface', verbose=True):
     """Every model's rows for one mode, plus the raw surfaces keyed (model, target)."""
+    if source not in SOURCES:
+        raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
     rows, surfaces, tags = [], {}, {}
     for m in models:
-        ch, ctag = _load_char(m, mode, (char_tags or {}).get(m))
+        ch, ctag = (_load_scan(m, mode, (char_tags or {}).get(m)) if source == 'scan'
+                    else _load_char(m, mode, (char_tags or {}).get(m)))
         if not ch:
             if verbose:
-                print(f"[features] {m}/{mode}: no characterize run -- skipping")
+                print(f"[features] {m}/{mode}: no {source} run -- skipping")
             continue
         sc, stag = _load_scrit(m, mode)
-        tags[m] = dict(characterize=ctag, scrit=stag)
+        tags[m] = dict(source=ctag, scrit=stag)
         for t in sorted(ch, key=lambda x: list(ch).index(x)):
             rows.append(row_of(m, mode, t, ch[t], sc.get(t)))
             surfaces[(m, t)] = ch[t]
     return rows, surfaces, tags
 
 
-def save(rows, surfaces, tags, mode, tag=None, write_csv=True):
+def _fname(mode, source):
+    """Screen and refined tables never share a filename: they are different measurements of
+    the same thing, and overwriting one with the other is not a merge but a loss."""
+    return f"features_{mode}.npz" if source == 'surface' else f"features-{source}_{mode}.npz"
+
+
+def save(rows, surfaces, tags, mode, tag=None, write_csv=True, source='surface'):
     """One npz with the scalars AND every surface, so a figure never reopens a per-model file."""
     tag = paths.run_tag(tag)
     blob = {c: np.array([r[c] for r in rows]) for c in COLUMNS}
@@ -181,8 +250,9 @@ def save(rows, surfaces, tags, mode, tag=None, write_csv=True):
             blob[f'{k}__{m}__{t}'] = np.asarray(ch[k])
     # NB no scalar `mode` key: 'mode' is already a per-row COLUMN, and writing the scalar over
     # it silently turned the column into a 0-d array that `load` could not index.
-    blob['tags'] = np.array([f"{m}:{v['characterize']}|{v['scrit']}" for m, v in tags.items()])
-    out = paths.out_path(ZOO, 'features', f'features_{mode}.npz', tag)
+    blob['tags'] = np.array([f"{m}:{v['source']}|{v['scrit']}" for m, v in tags.items()])
+    blob['source'] = source
+    out = paths.out_path(ZOO, 'features', _fname(mode, source), tag)
     paths.savez(out, **blob)
     print(f"[features] -> {out}", flush=True)
     if write_csv:
@@ -196,13 +266,13 @@ def save(rows, surfaces, tags, mode, tag=None, write_csv=True):
     return out
 
 
-def load(mode='pulse', tag=None):
+def load(mode='pulse', tag=None, source='surface'):
     """The saved feature table: (rows, surfaces, blob)."""
     tag = tag or paths.latest_run(ZOO, 'features')
-    fp = None if tag is None else paths.out_path(ZOO, 'features', f'features_{mode}.npz', tag)
+    fp = None if tag is None else paths.out_path(ZOO, 'features', _fname(mode, source), tag)
     if fp is None or not os.path.exists(fp):
-        raise SystemExit(f"no feature table for mode {mode!r}; run "
-                         f"`$PY -m analysis.features --mode {mode}`")
+        raise SystemExit(f"no {source} feature table for mode {mode!r}; run "
+                         f"`$PY -m analysis.features --mode {mode} --source {source}`")
     z = dict(np.load(fp, allow_pickle=True))
     n = len(z['target'])
     rows = [{c: (str(z[c][i]) if z[c].dtype.kind in 'US' else z[c][i]) for c in COLUMNS}
@@ -224,8 +294,10 @@ def load(mode='pulse', tag=None):
     return rows, surfaces, z
 
 
-def print_table(rows, mode):
-    print(f"\n{'=' * 128}\nZOO FEATURE TABLE -- {mode} mode\n{'=' * 128}")
+def print_table(rows, mode, source='surface'):
+    what = ('the WIDE SCREEN (scrit: 7 decades of dose, coarse in phase)' if source == 'scan'
+            else 'the REFINED surfaces (characterize)')
+    print(f"\n{'=' * 128}\nZOO FEATURE TABLE -- {mode} mode, from {what}\n{'=' * 128}")
     hdr = (f"  {'model':10s} {'target':9s} {'gene':7s} {'level':8s} {'S_scan':>9s} "
            f"{'S_surf':>9s} {'phi*':>6s} {'twist':>6s} {'acc':>6s} {'sgn':>6s} "
            f"{'span_hi':>7s} {'type0':>6s} {'minamp':>7s} {'scr':>6s} {'q':>4s}")
@@ -259,8 +331,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description='the cross-model PTC feature table')
     ap.add_argument('--mode', default='pulse', choices=('pulse', 'instant'))
     ap.add_argument('--models', default=','.join(GM.MODELS))
+    ap.add_argument('--source', default='surface', choices=SOURCES,
+                    help="'scan' reads the wide screen scrit already produced; "
+                         "'surface' reads the refined characterize render")
     ap.add_argument('--char-tag', default=None,
-                    help='characterize run tag, or model=tag,model=tag')
+                    help='source run tag (characterize or scrit), or model=tag,model=tag')
     ap.add_argument('--tag', default=None, help='output tag')
     ap.add_argument('--no-csv', action='store_true')
     a = ap.parse_args(argv)
@@ -269,11 +344,11 @@ def main(argv=None):
     if a.char_tag:
         ct = ({k: v for k, v in (p.split('=', 1) for p in a.char_tag.split(','))}
               if '=' in a.char_tag else {m: a.char_tag for m in models})
-    rows, surf, tags = build(a.mode, models, ct)
+    rows, surf, tags = build(a.mode, models, ct, source=a.source)
     if not rows:
         raise SystemExit("[features] nothing to tabulate")
-    print_table(rows, a.mode)
-    save(rows, surf, tags, a.mode, a.tag, write_csv=not a.no_csv)
+    print_table(rows, a.mode, a.source)
+    save(rows, surf, tags, a.mode, a.tag, write_csv=not a.no_csv, source=a.source)
     return 0
 
 

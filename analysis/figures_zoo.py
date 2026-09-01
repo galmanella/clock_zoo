@@ -49,13 +49,21 @@ import analysis  # noqa: F401
 import paths
 from analysis import genemap as GM
 from analysis.features import ZOO
-from plotting import phase_cmap, broken, BAD_COLOR
+from plotting import phase_cmap, broken
 
 #: One colour per model, one marker per expression level. See the header.
 MODEL_COLOR = {'almeida': '#1f77b4', 'korencic': '#d95f02', 'goldbeter': '#2ca02c'}
 LEVEL_MARKER = {'mrna': 'o', 'protein': 's', 'nuclear': '^', 'complex': 'D'}
 
-_CTX = dict(tag=None, publish=False)
+NL = chr(10)
+
+_CTX = dict(tag=None, publish=False, source='surface')
+
+
+def _sfx():
+    """Filename suffix marking WHICH measurement a figure is of. The screen and the refined
+    render are different pictures of the same target and must not overwrite each other."""
+    return '' if _CTX['source'] == 'surface' else f"_{_CTX['source']}"
 
 
 def _save(fig, name, **cfg):
@@ -106,9 +114,35 @@ def _surface_panel(ax, ch, r, ylim=None, show_y=True, title=None):
     return im
 
 
-def _twist_panel(ax, ch, r, xlim=None, show_y=True, xlabel='dose'):
+def _winding_bands(ax, doses, Wv):
+    """Shade the dose axis by PTC TYPE, behind the twist curve.
+
+    The winding number is the screen's primary readout and it is one integer per dose, so it
+    costs a background rather than a panel: pale blue where the PTC is type-0 (|W| < 0.5,
+    i.e. resetting), unshaded where it is type-1, and hatched grey where there is no usable
+    number at all -- the integrator having left its stability region or the clock having
+    stopped. Those three are different claims and a single "no data" colour conflates the last
+    two with the first.
+    """
+    d = np.asarray(doses, float)
+    Wv = np.asarray(Wv, float)
+    if Wv.shape != d.shape:
+        return
+    edges = np.sqrt(d[:-1] * d[1:])                      # log-midpoints between samples
+    edges = np.concatenate([[d[0] ** 2 / edges[0]], edges, [d[-1] ** 2 / edges[-1]]])
+    for k in range(len(d)):
+        if not np.isfinite(Wv[k]):
+            ax.axvspan(edges[k], edges[k + 1], color='0.86', lw=0, zorder=0, hatch='///',
+                       edgecolor='0.7')
+        elif abs(Wv[k]) < 0.5:
+            ax.axvspan(edges[k], edges[k + 1], color='#cfe3f5', lw=0, zorder=0)
+
+
+def _twist_panel(ax, ch, r, xlim=None, show_y=True, xlabel='dose', bands=True):
     """Stable fixed-point phase vs dose -- house orientation: dose on x (log), phase on y."""
     doses, tw = np.asarray(ch['doses'], float), np.asarray(ch['twist'], float)
+    if bands and 'Wv' in ch:
+        _winding_bands(ax, doses, ch['Wv'])
     ax.axhline(0, color='0.75', lw=0.5, ls=':')
     ax.axhline(1, color='0.75', lw=0.5, ls=':')
     ax.plot(*broken(doses, tw), color='k', lw=1.8, zorder=5)
@@ -176,10 +210,13 @@ def fig_model_surfaces(rows, surfaces, model, mode, ncol=5):
 
     note = ('shared dose grid' if shared else 'PER-TARGET dose grids -- axes NOT comparable')
     fig.suptitle(f"{model} ({mode}): base PTC surface and fixed-point curve for every "
-                 f"perturbable target  [{note}]", fontsize=12)
+                 f"perturbable target  [{note}]{NL}"
+                 f"twist panels: blue = type-0 (resetting) doses, hatched = no usable "
+                 f"winding (integrator unstable or clock stopped)", fontsize=12)
     fig.tight_layout(rect=[0, 0, 0.915, 0.97])
     _phase_colorbar(fig, im)
-    return _save(fig, f"surfaces_{model}_{mode}.png", src_model=model, mode=mode,
+    return _save(fig, f"surfaces_{model}_{mode}{_sfx()}.png", src_model=model, mode=mode,
+                 source=_CTX['source'],
                  targets=ts, shared_grid=shared)
 
 
@@ -240,7 +277,8 @@ def fig_gene_across_models(rows, surfaces, gene, mode):
                  f"-- {ncol} target(s) in {len(set(m for m, _t, _l in cols))} model(s)",
                  fontsize=12.5)
     _phase_colorbar(fig, im)
-    return _save(fig, f"gene_{gene}_{mode}.png", gene=gene, mode=mode,
+    return _save(fig, f"gene_{gene}_{mode}{_sfx()}.png", gene=gene, mode=mode,
+                 source=_CTX['source'],
                  columns=[f'{m}/{t}' for m, t, _l in cols])
 
 
@@ -327,7 +365,8 @@ def fig_features(rows, mode, min_models=1):
     fig.suptitle(f"PTC features across models ({mode} mode) -- colour = model, "
                  f"marker = expression level", fontsize=13)
     fig.tight_layout(rect=[0, 0.03, 1, 0.96])
-    return _save(fig, f"features_{mode}.png", mode=mode, genes=genes,
+    return _save(fig, f"features_{mode}{_sfx()}.png", mode=mode, genes=genes,
+                 source=_CTX['source'],
                  n_rows=len(rows))
 
 
@@ -348,21 +387,31 @@ def fig_features_modes(rows_by_mode, min_models=1):
     show = [f for f in FEATURES if f[0] in
             ('S_scan', 'total_twist', 'acc_twist', 'span_hi_half', 'type0_frac', 'min_amp')]
     nrow = len(show)
-    fig, axes = plt.subplots(nrow, 2, figsize=(11.5, 2.6 * nrow), squeeze=False,
-                             sharey='row')
+    fig, axes = plt.subplots(nrow, 2, figsize=(11.5, 2.6 * nrow), squeeze=False)
     for i, (col, lab, log, ylim) in enumerate(show):
         for j, md in enumerate(modes):
             rws = rows_by_mode[md]
             gx, off, _k = _gene_x(rws, genes)
             _scatter_feature(axes[i][j], rws, col, genes, gx, off, log=log, ylim=ylim)
             axes[i][j].set_title(f"{lab}  --  {md}", fontsize=9.5)
-    fig.legend(handles=_legend_handles(allrows), loc='upper center', ncol=6, fontsize=8,
-               frameon=False, bbox_to_anchor=(0.5, 0.985))
+        if col == 'S_scan':
+            # NOT shared. A pulse dose is a rate and an instant dose is a concentration; one
+            # axis across the two would assert a comparison the units do not support.
+            axes[i][0].set_ylabel('dose (rate)', fontsize=8)
+            axes[i][1].set_ylabel('dose (conc.)', fontsize=8)
+        else:                       # everything else is a cycle count or a fraction -- share,
+            lo = min(a.get_ylim()[0] for a in axes[i])      # so a difference between the two
+            hi = max(a.get_ylim()[1] for a in axes[i])      # arms is a difference in the data
+            for a in axes[i]:
+                a.set_ylim(lo, hi)
     fig.suptitle("PTC features: 8 h pulse vs instant displacement "
                  "(dose units DIFFER between the two -- compare the pattern, not the number)",
-                 fontsize=12.5, y=0.999)
-    fig.tight_layout(rect=[0, 0, 1, 0.945])
-    return _save(fig, "features_modes.png", modes=modes, genes=genes)
+                 fontsize=12.5)
+    fig.tight_layout(rect=[0, 0.045, 1, 0.965])
+    fig.legend(handles=_legend_handles(allrows), loc='lower center', ncol=7, fontsize=8,
+               frameon=False, bbox_to_anchor=(0.5, 0.002))
+    return _save(fig, f"features_modes{_sfx()}.png", modes=modes, genes=genes,
+                 source=_CTX['source'])
 
 
 # --------------------------------------------------------------------------- #
@@ -374,13 +423,15 @@ def main(argv=None):
     ap.add_argument('--models', default=','.join(GM.MODELS))
     ap.add_argument('--genes', default=None, help='default: every gene in >=1 model')
     ap.add_argument('--feat-tag', default=None, help='analysis.features run tag')
+    ap.add_argument('--source', default='surface', choices=('scan', 'surface'),
+                    help="which feature table to draw: the wide screen or the refined render")
     ap.add_argument('--tag', default=None, help='output tag for the figures')
     ap.add_argument('--ncol', type=int, default=5)
     ap.add_argument('--publish', action='store_true')
     a = ap.parse_args(argv)
     from analysis.features import load as load_features
 
-    _CTX.update(tag=paths.run_tag(a.tag), publish=a.publish)
+    _CTX.update(tag=paths.run_tag(a.tag), publish=a.publish, source=a.source)
     want = (['surfaces', 'genes', 'features', 'modes'] if a.which == 'all'
             else a.which.split(','))
     modes = ('pulse', 'instant') if a.mode == 'both' else (a.mode,)
@@ -388,7 +439,7 @@ def main(argv=None):
     made, rows_by_mode = [], {}
 
     for md in modes:
-        rows, surfaces, _z = load_features(md, a.feat_tag)
+        rows, surfaces, _z = load_features(md, a.feat_tag, source=a.source)
         rows_by_mode[md] = rows
         if 'surfaces' in want:
             for m in models:

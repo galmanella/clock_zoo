@@ -52,7 +52,7 @@ DECADES = 1.8
 
 
 def scan_target(model, target, mode='pulse', lo=1e-3, hi=1e4, n_scan=40, n_phase=32,
-                skip_p=None, dt0=0.02, dt_floor=1e-3, verbose=True):
+                skip_p=None, dt0=0.02, dt_floor=1e-3, chunk=None, verbose=True):
     """Wide log dose scan -> winding vs dose, S_crit, and the validity ceiling, REFINING the
     integrator step until S_crit is trustworthy.
 
@@ -82,8 +82,17 @@ def scan_target(model, target, mode='pulse', lo=1e-3, hi=1e4, n_scan=40, n_phase
     prev_S, res = np.nan, None
     dt = float(dt0)
     while True:
-        res = _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt)
+        t0 = time.time()
+        res = _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt,
+                         chunk=chunk or CHUNK)
         S, ceil = res['S_crit'], res['d_max_valid']
+        if verbose:
+            # A dt round is minutes on the larger models, and the loop can run three of them.
+            # Silence for that long is indistinguishable from a hang, so say what each round
+            # cost and what it found BEFORE deciding whether to refine.
+            print(f"    [scan] {target:9s} dt={dt:<8g} S_crit={_fmt(S):>9s} "
+                  f"ceiling={_fmt(ceil):>9s} ({res['ceiling_reason']}) "
+                  f"{time.time() - t0:.0f}s", flush=True)
         headroom = np.isfinite(S) and np.isfinite(ceil) and ceil > 2.0 * S
         agrees = (np.isfinite(S) and np.isfinite(prev_S)
                   and abs(np.log(S / prev_S)) < 0.15)
@@ -118,10 +127,35 @@ def _report(r, n_scan):
     print(f"           W(dose): {prof}", flush=True)
 
 
-def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt):
+#: Points per vmapped call. Large enough to fill the machine (see `_eval_points`), small
+#: enough that the batch and its checkpointed scan carry stay in cache/RAM on 16 states.
+CHUNK = 2048
+
+
+def _eval_points(fj, P, x0, n_phase, doses, chunk=CHUNK):
+    """Evaluate the PTC on the full (dose x phase) grid, in chunks.
+
+    Returns (Z, MN), both (n_dose, n_phase): the raw complex readout and the per-trajectory
+    minimum state. Chunking is over the FLATTENED point list, so a chunk boundary can fall
+    inside a dose row; the reshape at the end puts it back.
+    """
+    import numpy as _np
+    from engine.ptc import grid_points
+    ph, dz = grid_points(n_phase, _np.asarray(doses, float))
+    n = int(ph.shape[0])
+    zs, ms = [], []
+    for a in range(0, n, int(chunk)):
+        b = min(a + int(chunk), n)
+        z, mn = fj(P, x0, ph[a:b], dz[a:b])
+        zs.append(_np.asarray(z))
+        ms.append(_np.asarray(mn))
+    return (_np.concatenate(zs).reshape(len(doses), n_phase),
+            _np.concatenate(ms).reshape(len(doses), n_phase))
+
+
+def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt, chunk=CHUNK):
     """One wide dose scan at a fixed integrator step."""
     import jax
-    import jax.numpy as jnp
     from engine.ptc import make_ptc, phase_or_nan, valid_mask
     from analysis.winding import winding_curve, impute
 
@@ -130,25 +164,27 @@ def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt):
     P = model.jax_params()
     x0 = solver.guess(P)
     fj = jax.jit(f)
-    ph = jnp.arange(n_phase) / n_phase
     doses = np.geomspace(lo, hi, n_scan)
 
+    # ONE vmapped call over the whole (phase x dose) scan instead of one call per dose. The
+    # arithmetic is identical -- vmap is elementwise over the points, and these ARE the same
+    # points -- but a 32-point batch does not fill the machine: MEASURED on Korencic at
+    # dt=0.005, 32 points cost 36 ms/point and 2048 cost 10.5, so the per-dose loop was
+    # spending ~3.5x of the scan on dispatch. Chunked, because the batch is materialised.
+    Z, MN = _eval_points(fj, P, x0, n_phase, doses, chunk)
+    p_all, a_all = phase_or_nan(Z)                       # (n_dose, n_phase)
+    ptc = p_all.T.copy()                                 # (n_phase, n_dose), house orientation
+    ymin = np.min(MN, axis=1)
+    with np.errstate(invalid='ignore'):
+        amp = np.where(np.any(np.isfinite(a_all), axis=1),
+                       np.nanmin(np.where(np.isfinite(a_all), a_all, np.inf), axis=1), np.nan)
+    amp = np.where(np.isfinite(amp), amp, np.nan)
+    n_dead = np.sum(~np.isfinite(p_all), axis=1).astype(int)
     W = np.full(n_scan, np.nan)
-    amp = np.full(n_scan, np.nan)
-    ymin = np.full(n_scan, np.nan)
-    n_dead = np.zeros(n_scan, int)
-    ptc = np.full((n_phase, n_scan), np.nan)
-
-    for j, d in enumerate(doses):
-        z, mn = fj(P, x0, ph, jnp.full(n_phase, float(d)))
-        mn = np.asarray(mn)
-        p, a = phase_or_nan(np.asarray(z))
-        ymin[j] = float(mn.min())
-        amp[j] = float(np.nanmin(a)) if np.any(np.isfinite(a)) else np.nan
-        n_dead[j] = int(np.sum(~np.isfinite(p)))
-        ptc[:, j] = p
-        if np.all(valid_mask(mn)):
-            W[j] = np.nan if (w := winding_curve(impute(p[:, None])[:, 0])) is None else w
+    for j in range(n_scan):
+        if np.all(valid_mask(MN[j])):
+            w = winding_curve(impute(ptc[:, j][:, None])[:, 0])
+            W[j] = np.nan if w is None else w
 
     valid = valid_mask(ymin)
     live = n_dead == 0
@@ -199,7 +235,7 @@ def adaptive_grid(S_crit, d_max, lo, n=24, decades=DECADES, below=BELOW_FRAC):
 
 # --------------------------------------------------------------------------- #
 def run(model_name, mode='pulse', targets=None, n_scan=40, n_phase=32, lo=1e-3, hi=1e4,
-        dt0=0.02, dt_floor=1e-3, shard=None, nshards=None, tag=None):
+        dt0=0.02, dt_floor=1e-3, chunk=None, shard=None, nshards=None, tag=None):
     from models import get_model
     model = get_model(model_name)
     all_t = list(targets or model.perturbable_targets())
@@ -210,7 +246,7 @@ def run(model_name, mode='pulse', targets=None, n_scan=40, n_phase=32, lo=1e-3, 
 
     t0 = time.time()
     rows = [scan_target(model, t, mode=mode, lo=lo, hi=hi, n_scan=n_scan, n_phase=n_phase,
-                        dt0=dt0, dt_floor=dt_floor) for t in mine]
+                        dt0=dt0, dt_floor=dt_floor, chunk=chunk) for t in mine]
     print(f"[scrit] {len(rows)} target(s) in {time.time() - t0:.0f}s", flush=True)
 
     blob = dict(model=model_name, mode=mode, targets=np.array([r['target'] for r in rows]),
@@ -289,6 +325,8 @@ def main(argv=None):
     ap.add_argument('--hi', type=float, default=1e4)
     ap.add_argument('--dt0', type=float, default=0.02)
     ap.add_argument('--dt-floor', type=float, default=1e-3)
+    ap.add_argument('--chunk', type=int, default=None,
+                    help=f'points per vmapped call (default {CHUNK}); lower it if RAM is tight')
     ap.add_argument('--shard', type=int, default=None)
     ap.add_argument('--nshards', type=int, default=None)
     ap.add_argument('--tag', default=None)
@@ -298,7 +336,7 @@ def main(argv=None):
         return 0 if merge(a.model, a.mode, a.tag) is not None else 1
     run(a.model, mode=a.mode, targets=(a.targets.split(',') if a.targets else None),
         n_scan=a.n_scan, n_phase=a.n_phase, lo=a.lo, hi=a.hi, dt0=a.dt0,
-        dt_floor=a.dt_floor, shard=a.shard, nshards=a.nshards, tag=a.tag)
+        dt_floor=a.dt_floor, chunk=a.chunk, shard=a.shard, nshards=a.nshards, tag=a.tag)
     return 0
 
 

@@ -38,6 +38,62 @@ import numpy as np
 _LABEL_SKIP = {'tag', 'out_root', 'workers', 'verbose', 'log_every', 'notes'}
 
 
+def field_type(f):
+    """The scalar type of a RunConfig field, FROM ITS ANNOTATION -- never from a name list.
+
+    `Optional[float]` is a float that may be absent, so it maps to `float`; argparse only ever
+    sees a value the user actually typed. `Any` (`seeds`) and anything unrecognised map to
+    `str`, which is what the caller then parses itself.
+    """
+    import typing
+    t = f.type
+    args = [a for a in typing.get_args(t) if a is not type(None)]
+    if args:                                   # Optional[X] / Union[X, None]
+        t = args[0]
+    return t if t in (int, float, bool, str) else str
+
+
+def coerce_fields(cfg):
+    """Force every field to its annotated type, IN PLACE, and refuse what will not convert.
+
+    A config value reaches the objective through several doors -- a flag, a JSON campaign file,
+    a hand-built RunConfig in a notebook -- and only one of them was typed. A float that arrives
+    as the string '1.0' is truthy, passes every range check in `validate`, and then fails deep
+    inside a jitted cost where `fit.search._harden` turns the exception into the 1e6 failure
+    sentinel: the run continues and reports a number. This closes that door for all of them.
+    """
+    bad = []
+    for f in fields(cfg):
+        if f.name in ('seeds', 'notes'):
+            continue
+        v = getattr(cfg, f.name)
+        if v is None:
+            continue
+        want = field_type(f)
+        if want is bool:
+            if not isinstance(v, (bool, np.bool_)):
+                bad.append(f"{f.name}={v!r} is not a bool")
+            continue
+        if want in (int, float) and isinstance(v, str):
+            try:
+                setattr(cfg, f.name, want(v))
+            except ValueError:
+                bad.append(f"{f.name}={v!r} is not a {want.__name__}")
+            continue
+        if want is str:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float, np.integer, np.floating)):
+            bad.append(f"{f.name}={v!r} is not a {want.__name__}")
+        elif want is int and not float(v).is_integer():
+            # never truncate: `maxfev=0.5 -> 0` is a silently empty run
+            bad.append(f"{f.name}={v!r} is not a whole number")
+        else:
+            setattr(cfg, f.name, want(v))
+    if bad:
+        raise SystemExit("RunConfig has values of the wrong type:\n  " + "\n  ".join(bad))
+    return cfg
+
+
 @dataclass
 class RunConfig:
     """Everything a radialization run needs. Every field is settable; nothing is hard-wired."""
@@ -199,7 +255,13 @@ class RunConfig:
 
         A campaign submits many jobs at once; a typo that only surfaces three hours into a
         queued run costs far more than one that surfaces at submission.
+
+        TYPES ARE CHECKED FIRST, because every range test below is written for numbers and a
+        string sails through all of them: '1.0' is truthy, `'1.0' > 0` raises rather than
+        failing, and the value only breaks later inside a jitted cost where `_harden` converts
+        the exception into a 1e6 score and the run carries on.
         """
+        coerce_fields(self)
         bad = []
         if self.mode not in ('instant', 'pulse'):
             bad.append(f"mode {self.mode!r} must be 'instant' or 'pulse'")
@@ -384,7 +446,17 @@ class RunConfig:
     # ------------------------------------------------------------------ CLI ----------- #
     @staticmethod
     def add_arguments(ap):
-        """Every field becomes a flag, derived from the dataclass so the two cannot drift."""
+        """Every field becomes a flag, derived from the dataclass so the two cannot drift.
+
+        The TYPE is derived too, by `field_type`. It used to come from a hand-written list of
+        field names, and that list had drifted: `amp_lo`, `amp_hi`, `row_weight_floor`,
+        `w_brack`, `brack_lo`, `brack_hi`, `span_lo`, `span_hi`, `w_anchor`, `start_radius` and
+        the four `viable_*` fields were all float-valued and none of them were in it, so
+        argparse handed each one to the objective AS A STRING. `--w-brack 1.0` reached
+        `make_cost` as '1.0', the cost raised inside `fit.search._harden`, and the run scored
+        the 1e6 failure sentinel instead of stopping -- silent, and on exactly the options the
+        Aug-31 arms were built to test. Campaigns escaped it only because JSON keeps its types.
+        """
         d = RunConfig()
         for f in fields(RunConfig):
             if f.name in ('seeds', 'notes'):
@@ -396,13 +468,7 @@ class RunConfig:
                 ap.add_argument('--no-' + f.name.replace('_', '-'), dest=f.name,
                                 action='store_false')
             else:
-                typ = (int if f.name in ('n_phase', 'n_dose', 'maxfev', 'popsize', 'workers',
-                                         'restarts', 'skip_p', 'log_every')
-                       else float if f.name in ('pulse', 'lo_factor', 'max_factor', 'dt',
-                                                'w_osc', 'w_amp', 'bound', 'sigma0',
-                                                'target_scrit', 'target_phi')
-                       else str)
-                ap.add_argument(flag, dest=f.name, type=typ, default=None,
+                ap.add_argument(flag, dest=f.name, type=field_type(f), default=None,
                                 help=f"(default {cur!r})")
         ap.add_argument('--seeds', type=str, default=None,
                         help="comma-separated, e.g. 0,1,2,3 (default 0). All seeds run in "

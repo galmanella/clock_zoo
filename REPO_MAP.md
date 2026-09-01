@@ -49,7 +49,9 @@ different code.
 | **Do the fitted orbits actually ATTRACT?** | `$PY -m fit.stability --model M --tag <c>` (`--selftest` first) |
 | Are the fitted surfaces flat, or is the transition just below the window? | `$PY -m fit.rescan --model M --tag <c>` |
 | Their figures | `$PY -m fit.figures --which cycles\|rescan --tag <c>` |
-| **Compare campaigns with different objectives** | `$PY -m fit.compare_arms --model M --arms A B C --control A` |
+| **Compare campaigns with different objectives** | `$PY -m fit.arms_rescore --model M --arms A B C --control A --tag <t> --check` then `$PY -m fit.figures_arms --arms A B C --tag <t>` |
+| **Did the arms actually differ?** (ask FIRST — hazard 21) | the audit panel of `fit.figures_arms --which collapse`, or `--check` in `fit.arms_rescore` |
+| Does the worker pool build the parent's objective? | `$PY -m fit.parallel --selftest` |
 
 Order matters: `scrit` derives the dose grid and the integrator step that `characterize` and
 `ptc_sens` consume, and `coupling` is a pure read of `lc_sens` + `ptc_sens`.
@@ -92,12 +94,12 @@ until the tasks are joined.
 ### `fit/`
 | File | Role |
 |---|---|
-| `config.py` | `RunConfig`: every setting a run depends on, in one dataclass. Two runs with equal configs ARE the same experiment, and the npz records which one. |
+| `config.py` | `RunConfig`: every setting a run depends on, in one dataclass. Two runs with equal configs ARE the same experiment, and the npz records which one. Flag types and `coerce_fields` come from the field ANNOTATIONS, never a name list (hazard 21). |
 | `target.py` | The radial (Poincare) target, its `(k, psi)` registration, and the smooth `soft_singularity`. |
 | `cost.py` | **CORE.** The pointwise surface cost, the gauge quotient (`quotient_basis`), the amplitude floor and the Hopf barrier. `--selftest` asserts the anti-degeneracy invariant. |
 | `doses.py` | The FIT dose window -- capped at `max_factor * S_crit`, which is what keeps the gradient finite (hazard 11) -- plus `--promote` for the S_crit fixture (hazard 16). |
 | `search.py` | L-BFGS, multistart, CMA-ES (anneal / ipop), BOBYQA, LM. BOBYQA is the measured winner (PROJECT_SUMMARY 5.6). |
-| `parallel.py` | Population-parallel evaluation for CMA. The cluster buys THROUGHPUT, not latency (5.8). |
+| `parallel.py` | Population-parallel evaluation for CMA. The cluster buys THROUGHPUT, not latency (5.8). **The cost keywords are named ONCE** (`_ABS_COST_KW` / `_REL_COST_KW`) and both carried and splatted from that one list, `_audit_cost_kw` refuses any factory option nothing ships, and `PoolEvaluator(verify=...)` scores parent against pool before the first generation — the three guards against hazard 21. `--selftest`. |
 | `viability.py` | Rejection-sampling for `start='viable'`: draw random parameter sets, keep the healthy circadian clocks. Its rejects are a free viability map. |
 | `radial.py` | ENTRY. One radialization (`run`), a seed set (`run_seeds`), the degeneracy checks and the verdict. |
 | `recover.py` | ENTRY. T1, the self-recovery control: fit an IN-CLASS target whose answer is known. |
@@ -106,6 +108,8 @@ until the tasks are joined.
 | `stability.py` | **ENTRY. The stability guard.** Perturb the fitted cycle and integrate: does it come back, run away, or settle on a point? Measures each orbit's own numerical FLOOR first, because that spans five orders across a campaign and a perturbation below it measures noise (hazard 19). |
 | `rescan.py` | ENTRY. Re-renders a campaign's fitted PTCs finer and down to dose 0, with the dose-0 identity row as the readout-calibration control. Pins the run's gauge basis (hazard 18). |
 | `contract.py` | **ENTRY. The six-check surface validity contract** (orbit / attractor / dose-0 calibration / phase resolution / aliveness / bracketing), pinned to a regression fixture. Five of six are free from what `_surface` already computes. |
+| `arms_rescore.py` | **ENTRY. The expensive half of an arm comparison, saved once**: the common yardstick and the contract for every endpoint, plus THE OBJECTIVE THAT WAS ACTUALLY SEARCHED at each arm's start. Writes `yardstick.json` so the figures stay pure-read. |
+| `figures_arms.py` | Pure read. Arm-campaign figures. The FIRST one is an audit: it groups runs by a hash of `trace_f[1:]` — the pool's own output — so "did these arms actually differ" is derived, not assumed. |
 | `compare_arms.py` | **ENTRY. Compares campaigns that used DIFFERENT objectives**, by re-scoring every endpoint under the CONTROL arm's objective -- the only column comparable across arms. Refuses to report a number for an endpoint where the cost is not well defined at double precision. |
 | `promote_start.py` | ENTRY. Promotes a finished fit's parameters into `fixtures/starts/` so a later run can START there, without `out/` becoming an input (hazard 16). Keyed on THETA, not `v` (hazard 18). |
 | `probe_window.py` | ENTRY. Decision probe: is a dose window anchored to the candidate's own transition continuous in parameters? (Yes, where an orbit exists -- PROJECT_SUMMARY 5.13b.) |
@@ -449,6 +453,49 @@ tracking.
     diverging or unmeasurable. A one-row check predicts a 24-period integration. `fit/rescan.py`
     puts that row on every surface it renders; `ID_TOL = 1e-2` is where the two populations
     separate, not a guess.
+
+21. **A HAND-WRITTEN LIST OF OPTION NAMES WILL DRIFT, AND WHEN THE THING IT FEEDS HAS DEFAULTS,
+    THE DRIFT IS SILENT.** Three of the five Aug-31 arms never ran their own objective.
+
+    `fit/parallel.py` had the list twice: `cost_spec` enumerated the fields it carried, and
+    `build_cost` re-enumerated them into the `make_cost` call. `amp_ramp` was in the first and
+    not the second; `row_weight` and `w_brack` were in neither. `make_cost` then supplied its
+    own defaults -- and its default is `amp_ramp=(0.05, 0.20)`, the ramp **ON** -- so every
+    worker in `arm0_ctl`, `arm1_ramp`, `arm2_brack` and `arm3_inform` minimised ONE function
+    while four tags claimed four. Nothing failed. Every run produced a plausible endpoint.
+
+    THE EVIDENCE IS IN THE TRACES, AND IT IS EXACT. For matched (start, seed) the four arms
+    agree on **all 8000 population evaluations, bit for bit**; the only differing entry in the
+    whole 8001-long trace is index 0 -- the one evaluation the PARENT makes, under the arm's
+    declared cost. `arm4_floor` differs from evaluation 1, because `lo_factor` moves the DOSE
+    GRID, and `doses` is a spec array rather than a keyword.
+
+    The same defect in the same shape sat in `fit/config.add_arguments`, whose flag types came
+    from a hand-kept list of field names: **fourteen** float/int fields were missing from it and
+    argparse handed each to the objective AS A STRING. `--w-brack 1.0` reached `make_cost` as
+    `'1.0'`, the cost raised inside `fit.search._harden`, and the run scored the 1e6 sentinel
+    and carried on. Campaigns escaped only because JSON preserves types.
+
+    THREE RULES, all now enforced in code:
+
+      * **Name the options once.** `_ABS_COST_KW` / `_REL_COST_KW` are used BOTH to build the
+        spec and to splat it into the factory. Carrying and forwarding are one act.
+      * **Audit against the factory's own signature.** `_audit_cost_kw` reads
+        `inspect.signature(make_cost)` and refuses any parameter that is neither shipped nor
+        listed in `_NOT_SHIPPED` with a reason. Adding a cost term without shipping it is now a
+        hard error at spec time, in the parent, before a node-hour is spent.
+      * **Check the pool against the parent, at DISPLACED points.** `PoolEvaluator(verify=...)`
+        scores both and refuses to start if they differ. Displaced matters: at the base start
+        every batch-1 arm agreed at 0.428466, because the ramp and the barrier are exactly zero
+        on a healthy surface, so a check at `v0` alone would have passed all four.
+
+    `$PY -m fit.parallel --selftest` is the regression, and its NEGATIVE CONTROL is the part
+    that matters: it requires the round-tripped cost to match a NON-DEFAULT parent and to
+    *differ* from the same cost built from defaults. A test written with default options would
+    have passed against the bug.
+
+    The general rule: **when config crosses a process boundary, the destination's defaults are
+    the enemy.** Anything that can be defaulted will be, and it will look like a result.
 
 ## Open
 

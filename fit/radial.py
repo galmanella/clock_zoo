@@ -296,22 +296,33 @@ def run(cfg, seed=None, tag=None, v_start=None):
         # not distinct basins, so a contracting sigma is what is called for.
         ev, ps = None, cfg.popsize
         if workers and workers > 1:
-            from fit.parallel import PoolEvaluator, cost_spec, recommend_popsize
+            from fit.parallel import (PoolEvaluator, cost_spec, recommend_popsize,
+                                      probe_points)
             # an EXPLICIT popsize always wins; the recommendation only fills a blank
             ps = cfg.popsize or recommend_popsize(C['n_free'], workers)
-            ev = PoolEvaluator(cost_spec(
+            # THE POOL MUST BUILD THE SAME OBJECTIVE THE PARENT IS OPTIMISING -- and that is
+            # now CHECKED rather than asserted in a comment. `**cost_opts` is splatted, so an
+            # option added to `cost_opts` above reaches the workers without a second edit here;
+            # `verify=` then scores the parent's own cost against the pool's at four displaced
+            # points and refuses to start if they differ. The comment alone was here before,
+            # and three of the Aug-31 arms were silently lost under it (PROJECT_SUMMARY 5.15).
+            spec = cost_spec(
                 model_name, target, doses, n_phase, mode=mode, backend=backend, dt=dt,
+                w_osc=w_osc, w_amp=w_amp,
                 target_k=(tgt.k if tgt.k is not None else None),
                 target_psi=(tgt.psi if tgt.k is not None else None),
                 section=section, readout=readout,
                 pulse=cfg.pulse, skip_p=cfg.skip_p,
-                # the pool must build the SAME objective the parent is optimising
                 window_mode=cfg.window_mode, span=(cfg.span_lo, cfg.span_hi),
                 w_anchor=cfg.w_anchor, s_crit_base=s_crit, n_dose=cfg.n_dose,
-                amp_ramp=cost_opts['amp_ramp'], basis=C['B']), workers)
+                basis=C['B'], **cost_opts)
             print(f"[radial] population parallelism: {workers} workers, popsize {ps} "
                   f"(oversubscribed so fast members fill the gaps behind a straggler)",
                   flush=True)
+            ev = PoolEvaluator(spec, workers, verify=C_opt['total'],
+                               verify_at=probe_points(
+                                   C_opt['v0'] if v_start is None else v_start,
+                                   n=4, radius=0.35))
         try:
             runs = [search.cma(C_opt, v0=v_start, bound=bound, seed=seed, mode=cfg.cma_mode,
                                sigma0=cfg.sigma0, maxfev=cfg.maxfev,

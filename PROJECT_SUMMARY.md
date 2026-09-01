@@ -37,6 +37,15 @@ result, where no direction decoupled. The clean probes (BMAL1, DBP) find the SAM
 -- but see 3.7: the CRY and PER surfaces turned out to be phase-scrambled and their numbers are
 retracted, so this rests on two probes, not four.
 
+The **Aug-31 arm campaign** then ran, to decide which of four cost changes is worth adopting --
+and it did not answer that, because three of its five arms silently minimised the control's
+objective (§5.15). The cause was a hand-written list of option names in `fit/parallel.py` that
+had drifted from the one beside it, with `make_cost`'s own defaults filling the gap; the traces
+are bit-identical over all 8000 population evaluations. It is fixed and now guarded three ways
+(hazard 21). The one arm that DID run answers P2: extending the dose window down to
+0.01 x S_crit takes the difficult start from 3 contract failures to 0 in 2 of 3 seeds, at 3-4x
+lower cost on a common yardstick.
+
 The most consequential methodological findings, each of which changed a scientific answer:
 
 - **Almeida's PTC type-transition dose is a property of the integrator step until you refine
@@ -46,6 +55,11 @@ The most consequential methodological findings, each of which changed a scientif
   "sensitivities" (5e98, 1e11) before being caught.
 - **Almeida is far less gauge-degenerate than Mirsky** — 2 flat directions of 18, versus 13 of
   132 — so its identifiability question is essentially unconfounded by units.
+- **A CAMPAIGN'S LABELS ARE NOT EVIDENCE THAT ITS ARMS DIFFERED.** Four tags, four configs,
+  four output directories, one objective. The check costs nothing and is now automatic: two runs
+  that minimised the same function have identical evaluation traces, and a worker pool that has
+  drifted from its parent is caught by scoring both at four displaced points before the first
+  generation.
 - **A jacobian ratio overstates decoupling.** The linear analysis predicted ~140x for the
   direction above; a finite displacement gives 11x. The ordering survives, the magnitude does
   not — so the finite-displacement number is the one to quote.
@@ -1495,6 +1509,15 @@ anchor of a relative window; never to be reported as S_crit.
 
 ## 5b. Next
 
+**READ 5.15 FIRST.** Batch 1 has run, and three of its five arms never used their own
+objective: `fit.parallel` dropped every cost option that was not already a spec array, so
+`arm0_ctl`, `arm1_ramp`, `arm2_brack` and `arm3_inform` are four labels on one search. The
+plumbing is fixed and guarded (hazard 21), P1, P3 and the bracketing barrier are STILL
+UNMEASURED and must be re-submitted, and the one arm that did run -- P2, the dose floor -- WORKS
+from the difficult start: 2 of 3 seeds go from three contract failures to none, at 3-4x lower
+cost on the common yardstick. Items 0 and 1 below are otherwise unchanged, but the sentence
+"the 20 completed runs are a BASELINE" in item 1 now applies to six runs, not twenty.
+
 **Reordered by 5.10.** The top three now all come from the cluster campaigns, and they are
 about the OBJECTIVE, not about the search: the searches worked, and what they optimised turned
 out not to be what was wanted.
@@ -1648,6 +1671,179 @@ the relative fields, and `basis` is REQUIRED and refused if absent: a worker re-
 gauge quotient gets a different valid basis and the same `v` then means different parameters
 (hazard 18, measured at 3.0 decades). Verified 0.0e+00 disagreement at four points.
 
+
+### 5.15 BATCH 1 CAME BACK, AND THREE OF THE FIVE ARMS NEVER RAN THEIR OWN OBJECTIVE
+
+Thirty runs, all completed, all with plausible endpoints. Four of the five arms minimised the
+SAME function. Nothing failed, nothing warned, and the arm labels in `out/` are the objectives
+the runs did **not** use.
+
+**The evidence is exact, and it was already in the saved npz.** `trace_f` records every
+evaluation: index 0 is the parent's own scoring of the start point under the arm's declared
+cost, and entries 1.. are the worker pool's. For matched (start, seed), `arm0_ctl`,
+`arm1_ramp`, `arm2_brack` and `arm3_inform` agree on **all 8000 population evaluations, bit for
+bit**. The only differing element in the whole 8001-long trace is index 0.
+
+| vs `arm0_ctl`, per cell | entries that differ | where | tail 1..8000 identical |
+|---|---|---|---|
+| `arm1_ramp` (base start) | 0 of 8001 | -- | yes |
+| `arm1_ramp` (fixture) | 1 of 8001 | index 0 | yes |
+| `arm2_brack` | 1 of 8001 | index 0 | yes |
+| `arm3_inform` | 1 of 8001 | index 0 | yes |
+| `arm4_floor` | ~7900 of 8001 | from index 1 | **no** |
+
+**The cause, and it is a two-list drift.** `fit/parallel.cost_spec` enumerated the fields it
+carried; `fit/parallel.build_cost` re-enumerated them into its `make_cost` call. `amp_ramp` was
+in the first list and not the second -- it was consumed only on the `relative` branch, and
+batch 1 is absolute. `row_weight` and `w_brack` were in neither. `make_cost` then supplied its
+own defaults, **and its default is `amp_ramp=(0.05, 0.20)`, the ramp ON**.
+
+So every worker built the ramp-on, no-weighting, no-barrier objective. Rebuilt and measured at
+the fixture start, against the runs' own recorded numbers:
+
+| objective at the fixture start | value | matches |
+|---|---|---|
+| parent, ramp OFF (arm0's declared cost) | 0.122047 | arm0 `trace[0]` |
+| parent, ramp ON (arm1's declared cost) | 0.776645 | arm1 `trace[0]` |
+| parent, `w_brack=1` (arm2's) | 0.164595 | arm2 `trace[0]` |
+| parent, `row_weight` (arm3's) | 0.184102 | arm3 `trace[0]` |
+| **the worker's rebuild, spec `amp_ramp=None`** | **0.776645** | -- |
+| **the worker's rebuild, spec `amp_ramp=(0.05,0.2)`** | **0.776645** | -- |
+
+The worker lands on the ramp-on value either way: the spec field was inert. **The declared
+control was not the pre-P1 objective; it was arm1.**
+
+`fit/arms_rescore.py --check` states it per arm, declared against searched at each start
+(relative, because the stored value was computed on the cluster and the rebuild here is not):
+
+| arm | start | declared f(v0) | SEARCHED f(v0) | rel diff | |
+|---|---|---|---|---|---|
+| `arm0_ctl` | base | 0.428466 | 0.428466 | 0.0e+00 | same |
+| `arm1_ramp` | base | 0.428466 | 0.428466 | 0.0e+00 | same |
+| `arm2_brack` | base | 0.428466 | 0.428466 | 0.0e+00 | same |
+| `arm3_inform` | base | 0.387287 | 0.428466 | 1.1e-01 | **DIFFERENT** |
+| `arm4_floor` | base | 0.198672 | 0.198672 | 2.8e-16 | same |
+| `arm0_ctl` | fixture | 0.122047 | 0.776645 | **5.4e+00** | **DIFFERENT** |
+| `arm1_ramp` | fixture | 0.776645 | 0.776645 | 1.2e-14 | same |
+| `arm2_brack` | fixture | 0.164595 | 0.776645 | **3.7e+00** | **DIFFERENT** |
+| `arm3_inform` | fixture | 0.184102 | 0.776645 | **3.2e+00** | **DIFFERENT** |
+| `arm4_floor` | fixture | 0.174294 | 0.442798 | **1.5e+00** | **DIFFERENT** |
+
+**`arm1_ramp` is the only arm that got the objective it asked for**, and only because the
+default it was fighting for was already the default. Everything else searched something else,
+by factors of 1.5 to 5.4. The base rows agree wherever the ramp and the barrier are inactive --
+which is exactly why a parity check evaluated at the base start would have caught nothing.
+
+`arm4_floor` escaped because `lo_factor` moves the DOSE GRID, and `doses` is a spec array
+rather than a keyword. It is the only arm that ran.
+
+**A fourth option was leaking on the caller's side too.** `cost_spec` accepted `w_osc` / `w_amp`
+and `radial.py` never passed them, so the pool used the signature defaults 0.2 / 1.0 rather than
+`cfg.w_osc` / `cfg.w_amp`. Batch 1 happens to use exactly those values, so nothing is wrong with
+these results on that account -- but any campaign that varied the oscillation or amplitude
+weight would have been confounded the same way, and silently. Three separate points in the
+plumbing, one shape of mistake.
+
+**Two ways to have caught this, neither of which existed.** The `cost_spec` docstring asserted
+that `basis` is "carried EXPLICITLY and is not optional" -- true on the relative branch, and the
+absolute branch did not forward `basis` either. And `radial.py` carried the comment "the pool
+must build the SAME objective the parent is optimising" directly above the call that did not.
+A comment is not a check.
+
+#### 5.15a The same defect, in the same shape, in the CLI
+
+`fit/config.add_arguments` derived each flag's type from a hand-kept list of field names.
+Fourteen float/int fields were missing from it -- `amp_lo`, `amp_hi`, `row_weight_floor`,
+`w_brack`, `brack_lo`, `brack_hi`, `span_lo`, `span_hi`, `w_anchor`, `start_radius`, the four
+`viable_*` -- so argparse handed each to the objective **as a string**. `--w-brack 1.0` reaches
+`make_cost` as `'1.0'`, the cost raises inside `fit.search._harden`, and the run scores the 1e6
+failure sentinel and continues. Every one of those fourteen is an option the batch-1 or batch-2
+arms exist to test. Campaigns were unaffected only because JSON preserves types.
+
+#### 5.15b The fix: name the options once, audit against the factory, check parent against pool
+
+Three changes, in increasing order of how much they cover.
+
+1. **ONE LIST.** `_ABS_COST_KW` / `_REL_COST_KW` are used BOTH to build the spec and to splat it
+   into the factory (`make_cost(model, target, doses, tgt, **spec['cost_kw'])`). Carrying and
+   forwarding became the same act, so they cannot disagree. `basis` is now REQUIRED in both
+   window modes, and an absolute-only term passed with `window_mode='relative'` raises rather
+   than being dropped.
+2. **AUDIT AGAINST THE SIGNATURE.** `_audit_cost_kw` reads `inspect.signature(make_cost)` and
+   refuses any parameter that is neither shipped nor listed in `_NOT_SHIPPED` with a reason.
+   Adding a cost term without shipping it is now a hard error, raised in the parent at spec
+   time, before a single node-hour. This is the part that makes the repair permanent: the next
+   term added to the cost cannot be silently ignored, because the check reads the cost's own
+   signature rather than a list someone has to remember to update.
+3. **CHECK THE POOL AGAINST THE PARENT.** `PoolEvaluator(verify=C_opt['total'], verify_at=...)`
+   scores both at four probe points and refuses to start if they differ by more than 1e-9. It
+   catches the whole class, not just this instance: a stale module on a compute node, a model
+   default set in one process and not the other, a basis re-derived by different LAPACK.
+
+   **The probe points are DISPLACED, and that is not a detail.** At the base start every batch-1
+   arm agrees at 0.428466, because the ramp and the bracketing barrier are exactly zero on a
+   healthy surface -- by design (5.13a). A parity check evaluated at `v0` alone would have
+   passed all four arms. `probe_points` displaces by 0.35 from a fixed seed.
+
+   Measured on a 2-worker end-to-end smoke with `w_brack=1.0`, `amp_lo=0.05` and `row_weight`
+   all on: `max |delta| = 0.000e+00 (bit-identical)`.
+
+`$PY -m fit.parallel --selftest` is the regression, and **its negative control is the part that
+matters**: it requires the round-tripped cost to match a NON-DEFAULT parent (0.0e+00 over four
+points) *and* to differ from the same cost built from defaults (7.0e-01). A test written with
+default options would have passed against the bug. Recorded as hazard 21.
+
+#### 5.15c What the batch CAN still answer: P2, the dose floor, and it works
+
+After collapsing the duplicates the batch is a clean two-arm, single-variable experiment:
+`lo_factor` 0.5 vs 0.01, three seeds and two starts each, everything else identical -- both
+groups with the ramp on. That is exactly the P2 test from `docs/FIT_VALIDITY.md`, and it is
+uncontaminated. `fit/figures_arms.py` derives the grouping from a hash of `trace_f[1:]` rather
+than from the tags, so the figures plot what ran.
+
+Every endpoint re-scored on ONE yardstick -- the control objective on the control grid -- plus
+the contract:
+
+| group | start | yardstick min..max | contract failures |
+|---|---|---|---|
+| lo 0.5 (arms 0-3, 4 replicates x 3 seeds) | base | 0.00705 .. 0.01482 | 0 of 5 |
+| lo 0.01 (`arm4_floor`) | base | 0.03029 .. 0.22508 | 0-1 of 5 |
+| lo 0.5 | fixture | 0.11132 .. 0.13862 | **1-3 of 5** |
+| lo 0.01 | fixture | 0.03381 .. 1.00000 | **0-4 of 5** |
+
+**From the difficult start the dose floor is a clear win.** All six `lo 0.5` fixture endpoints
+fail C6 -- the type-1 -> type-0 transition left the window, hazard 17 reproduced exactly -- and
+several also fail C4 or C5. Two of the three `lo 0.01` fixture runs pass **all five** checks and
+score 0.034 and 0.050 against 0.111-0.139: three to four times better on the common yardstick
+AND valid, which is the ordering that matters (a lower cost on a surface that is not a PTC is
+not an improvement). The third, seed 1, is dead and flagged !UNSTABLE.
+
+**From the base start it reads worse, and that is expected rather than a contradiction.** The
+yardstick scores only the control's narrow window, while `arm4` spent its budget over nine extra
+low-dose rows; its own `c_ptc` is 0.0019-0.0225 against the control's 0.0071-0.0148. Where the
+control start already converges cleanly there is nothing for the floor to fix, so the only
+visible effect is the wider window it is also being asked to fit. The measurement to trust is
+the fixture start, which is where the failure P2 targets actually occurs.
+
+Caveats that travel with this: `arm4` seed 1 (base) fails C4, and one seed is unstable, so this
+is 3 seeds per cell, not a converged statistic. And the whole comparison inherits the ramp,
+because both groups had it on -- **P1 is untested**, along with P3 and the bracketing barrier.
+
+#### 5.15d What batch 1 costs, and what to re-submit
+
+Twenty-four of the thirty runs carry no arm signal: roughly 30 CPU-hours. Six are real.
+
+Re-submit arms 1, 2 and 3 unchanged against `arm0_ctl` -- their configs were always correct; it
+was the plumbing beneath them that was not. `arm4_floor` does not need re-running, but note that
+its control in this batch was the ramp-on objective, so a re-run of `arm0_ctl` with the fix
+gives a genuinely pre-P1 control and changes what `arm4` is being compared against.
+
+Batch 2 (`arm5_relwin`, `arm6_relwin_raw`) was correctly held pending batch 1, per 5.14. It
+should stay held: the rule recorded there -- if the ramp wins, set `amp_lo=0.05` in both relwin
+arms and make `arm1_ramp` the control -- cannot be applied until the ramp has actually been
+measured, which is what the re-submission does. Note also that the relative branch DID forward
+`amp_ramp`, so batch 2 would not have been hit by this defect.
+
 ## 6. Figures
 
 ### Where they live
@@ -1693,6 +1889,11 @@ Pure read of the saved npz -- no figure costs compute to rebuild.
 | `genes_<mode>` | a GENE campaign: base / target / fitted PTC and the twist per gene, each on its OWN dose axis, with how much structure that gene's target actually had |
 | `cycles_<gene>_<mode>` | every fitted LIMIT CYCLE with its period and amplitude, plus the stability walk: step off the orbit and watch whether it comes back, runs away, or settles on a point |
 | `rescan_<gene>_<mode>` | the fitted PTCs re-rendered finer and down to DOSE 0 -- where the singularity really went, and the dose-0 identity control |
+| `arms_collapse` | **AN ARM CAMPAIGN'S FIRST FIGURE, AND THE ONE THAT COMES BEFORE ANY RESULT: did the arms actually minimise different functions?** Best-so-far per cell; `\|f - f(control)\|` per evaluation on a log axis; and each arm's DECLARED objective at its start beside the one it SEARCHED. An arm whose only nonzero trace difference is a single ringed point at index 0 declared a cost it never used |
+| `arms_groups` | the between-group contrast: convergence in each group's own units, every endpoint on ONE yardstick with its contract failures, and C6 drawn -- the scored dose window as a bar, the base singularity as a tick, the fitted one as a dot, an open red dot where no singularity exists anywhere in the window |
+| `arms_contract` | the six validity checks for every endpoint as a pass/fail grid. **Read this before any cost column**: a lower cost on a surface that fails C5 or C6 is not an improvement |
+| `arms_surfaces_<group>` | target and base beside every distinct endpoint surface of one search group, each panel carrying its OWN S_crit |
+| `arms_twist`, `arms_cycles` | twist curves and limit cycles per group; the cycle panel is the axis on which a "radialized" fit that stopped being a circadian oscillator is unmissable |
 
 ### Reading a PTC surface
 

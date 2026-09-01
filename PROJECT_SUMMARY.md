@@ -1826,8 +1826,69 @@ visible effect is the wider window it is also being asked to fit. The measuremen
 the fixture start, which is where the failure P2 targets actually occurs.
 
 Caveats that travel with this: `arm4` seed 1 (base) fails C4, and one seed is unstable, so this
-is 3 seeds per cell, not a converged statistic. And the whole comparison inherits the ramp,
-because both groups had it on -- **P1 is untested**, along with P3 and the bracketing barrier.
+is 3 seeds per cell, not a converged statistic. The whole comparison inherits the ramp, because
+both groups had it on -- **P1 is untested**, along with P3 and the bracketing barrier. And the
+floor is NOT free at fixed `n_dose`: see 5.15c-bis, which is the reason not to simply adopt it.
+
+#### 5.15c-bis THE DOSE FLOOR IS NOT FREE AT FIXED `n_dose`, AND THE PRICE IS THE TWIST
+
+P2 was costed as free -- "32x48 over [0.01, 8] S* is 20.9 s against 24.7 s over [0.5, 8]", i.e.
+low doses integrate quickly. That is true of WALL TIME and false of INFORMATION. `n_dose` was
+held at 14 while the window grew from 1.20 decades to 2.90, so the extra range was paid for out
+of the resolution of the part that carries the signal.
+
+| | `lo_factor` 0.5 | `lo_factor` 0.01 |
+|---|---|---|
+| window | 0.5 .. 8 x S_crit, 1.204 decades | 0.01 .. 8 x S_crit, 2.903 decades |
+| S_crit sits at | the **25th** log-percentile | the **69th** |
+| rows above S_crit (type-0, where the twist lives) | **9 of 14** | **4 of 14** |
+| row spacing | 1.238x | 1.672x |
+| rows within 2% of the IDENTITY | 0 of 14 | **5 of 14** |
+| rows within 5% of the identity | 0 of 14 | **7 of 14** |
+| share of the base cost below S_crit/2 | 4.4% (2 rows) | **7.1% (9 rows)** |
+
+**Nine of fourteen rows carry 7% of the cost, and the first seven carry 0.8% between them.**
+Per-row rms residual to the pinned target at the base point, extended grid:
+
+    dose    x S_crit    rms(base)    dose    x S_crit    rms(base)
+     0.250    0.007      0.0020      15.274    0.448      0.1492
+     0.418    0.012      0.0035      25.543    0.748      0.2199
+     0.698    0.020      0.0061      42.715    1.252      0.3736   <- S_crit
+     1.168    0.034      0.0103      71.433    2.093      0.2817
+     1.953    0.057      0.0173     119.457    3.500      0.1007
+     3.266    0.096      0.0289     199.768    5.853      0.3935
+     5.462    0.160      0.0486
+     9.134    0.268      0.0847
+
+This is a DIFFERENT kind of free cell from hazard 17's. There the high-dose rows are cheap
+because the TARGET is flat (old-phase span 0.05-0.26) and any surface scores well. Here the
+low-dose rows are cheap because model and target are both near the identity, so they agree
+whatever the parameters are. Both waste grid; only the second also costs twist resolution.
+
+Note too that `row_weight` (P3) would NOT fix this. It weights by the target's own old-phase
+span, which on the extended grid is ~0.95 for every one of the nine sub-threshold rows -- P3
+down-weights the flat high-dose asymptote and would UP-weight exactly the rows that are free
+here.
+
+**So the P2 result in 5.15c stands as "the bracketing failure is real and extending the window
+down fixes it", and not as "adopt `lo_factor=0.01` at `n_dose=14`."** Three ways to keep the
+bracketing without paying for it, none yet measured:
+
+  a. **Raise `n_dose` with the window.** Holding rows-above-S_crit at 9 across 2.90 decades
+     needs `n_dose` ~ 30. That is the budget question deferred in item 0's P4, and it is now
+     forced rather than optional.
+  b. **A NON-UNIFORM grid**: a few anchor rows below S_crit purely to bracket the transition,
+     the rest log-spaced above it. The bracketing evidence needs to KNOW there is a type-1
+     side; it does not need nine samples of it.
+  c. **The relative window** (5.14, batch 2), which follows the candidate's own S* instead of
+     widening to chase it -- the alternative direction, and the one that spends no rows on
+     being far from the transition.
+
+Also visible in `arms_surfaces_*`: the base point's MEASURED singularity is 32.79 on the
+control grid and 34.13 on the extended one, for the SAME parameter set. `detect_grid` is
+grid-quantised (hazard 5, hazard 12), and both disagree with the fixture S_crit of 24.971 that
+anchored the window in the first place -- 5.10e's open item, still open, and it is why the
+"25th percentile" design target lands nearer the 20th in practice.
 
 #### 5.15d What batch 1 costs, and what to re-submit
 

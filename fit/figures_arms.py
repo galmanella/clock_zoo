@@ -31,6 +31,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 
 import numpy as np
 import matplotlib
@@ -114,9 +115,33 @@ def objective_groups(runs):
 
 def _group_label(group, runs):
     """Name a group by the ONE setting its members' dose grids agree on, since that is the only
-    arm option that reached the pool. Falls back to listing the arms."""
-    lo = {round(float(r['doses'][0]), 6) for r in runs if r['arm'] in group}
-    return (f"lo dose {sorted(lo)[0]:g}" if len(lo) == 1 else '+'.join(group))
+    arm option that reached the pool. Falls back to listing the arms.
+
+    IN UNITS OF S_crit, NOT AS AN ABSOLUTE DOSE. The absolute floor of the extended grid is
+    0.2497 and the grid's S_crit is 24.97 -- one decimal place apart, and the label "lo dose
+    0.24971" was read as an S_crit value on first contact. `lo_factor` is what the config
+    actually sets, and it is the quantity that says where S_crit sits in the window.
+    """
+    lo = {round(float(r['z']['lo_factor']), 6) for r in runs if r['arm'] in group}
+    if len(lo) != 1:
+        return '+'.join(group)
+    f = sorted(lo)[0]
+    hi = {round(float(r['z']['max_factor']), 6) for r in runs if r['arm'] in group}
+    # where S_crit lands in a log-spaced window is the thing this trades off, so say it
+    pct = 100 * (0 - np.log10(f)) / (np.log10(sorted(hi)[0]) - np.log10(f)) if len(hi) == 1 else np.nan
+    return f"lo {f:g}xS_crit" + (f" (S* at {pct:.0f}%)" if np.isfinite(pct) else "")
+
+
+def _group_slug(group, runs):
+    """A FILENAME for a group. Separate from `_group_label` on purpose: the label carries `*`
+    and `%`, which Windows refuses in a path (and which mean something to a shell elsewhere).
+    A display string and a filename are different things and deriving one from the other by
+    character substitution is how you get an OSError three figures into a batch.
+    """
+    lo = {round(float(r['z']['lo_factor']), 6) for r in runs if r['arm'] in group}
+    if len(lo) != 1:
+        return re.sub(r'[^A-Za-z0-9]+', '-', '+'.join(group)).strip('-')
+    return 'lo' + f"{sorted(lo)[0]:g}".replace('.', 'p') + 'xScrit'
 
 
 # --------------------------------------------------------------------------- #
@@ -349,7 +374,7 @@ def fig_groups(runs, yard):
 # --------------------------------------------------------------------------- #
 #  3. surfaces, twist, cycles -- per search group
 # --------------------------------------------------------------------------- #
-def fig_surfaces(runs, group, tag):
+def fig_surfaces(runs, group, tag, slug):
     """Target, base and every distinct endpoint surface of one search group.
 
     Each panel carries ITS OWN S_crit as a dotted white line, never one global value: the fit
@@ -399,8 +424,7 @@ def fig_surfaces(runs, group, tag):
 
     fig.suptitle(f"PTC surfaces -- search group '{tag}'  ({' = '.join(group)})", fontsize=12,
                  y=0.995)
-    return _save(fig, f'arms_surfaces_{tag.replace(" ", "").replace(".", "p")}',
-                 group=' '.join(group))
+    return _save(fig, f'arms_surfaces_{slug}', group=' '.join(group))
 
 
 def fig_twist(runs):
@@ -570,7 +594,7 @@ def main(argv=None):
         fig_groups(runs, yard)
     if 'surfaces' in which:
         for g in groups:
-            fig_surfaces(runs, g, _group_label(g, runs))
+            fig_surfaces(runs, g, _group_label(g, runs), _group_slug(g, runs))
     if 'twist' in which:
         fig_twist(runs)
     if 'cycles' in which:

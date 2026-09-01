@@ -115,7 +115,7 @@ def scan_target(model, target, mode='pulse', lo=1e-3, hi=1e4, n_scan=40, n_phase
 def _report(r, n_scan):
     doses, W = r['doses'], r['W']
     valid = np.asarray(r['ymin']) >= -1e-8
-    live = np.asarray(r['n_dead']) == 0
+    live = np.asarray(r['n_dead']) < DEAD_FRAC * float(np.asarray(r['ptc']).shape[0])
     prof = ' '.join(
         f"{doses[j]:.2g}:"
         f"{'x' if not valid[j] else ('d' if not live[j] else ('?' if not np.isfinite(W[j]) else str(int(abs(W[j])))))}"
@@ -186,8 +186,36 @@ def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt, chunk=C
             w = winding_curve(impute(ptc[:, j][:, None])[:, 0])
             W[j] = np.nan if w is None else w
 
-    valid = valid_mask(ymin)
-    live = n_dead == 0
+    S, reentrant, d_max, reason = derive_scalars(doses, W, ymin, n_dead, n_phase)
+    return dict(target=target, mode=mode, doses=doses, W=W, amp=amp, ymin=ymin,
+                n_dead=n_dead, ptc=ptc, S_crit=S, reentrant=reentrant, d_max_valid=d_max,
+                ceiling_reason=reason, n_phase=n_phase)
+
+
+#: Fraction of a dose row's phases that must lose the oscillation before the row is called
+#: DEAD. Not `n_dead > 0`, and the difference changed an answer.
+#:
+#: A phase singularity IS a point of zero amplitude, so the dose row that contains one has a
+#: cell with no readable phase BY CONSTRUCTION. MEASURED on Goldbeter / MP / instant: exactly
+#: 1 of 32 phases dead, at exactly the dose where the winding flips 1 -> 0, and 0 dead at
+#: every dose above it. The strict rule read that single cell as the clock stopping, capped
+#: the target's validity at 242 -- and then let S_crit be taken from dose 554, ABOVE the cap
+#: the same function had just computed. A genuinely dying clock looks nothing like it: the
+#: same model's BC and BN lose ALL 32 phases for two consecutive doses.
+DEAD_FRAC = 0.25
+
+
+def derive_scalars(doses, W, ymin, n_dead, n_phase):
+    """(S_crit, reentrant, d_max_valid, ceiling_reason) from a saved scan.
+
+    Split out of `_scan_once` so `--rederive` can re-run it on stored raw arrays: a threshold
+    is a definition, and re-integrating 81 minutes of scan to change one is what REPO_MAP
+    hazard 9 says the raw arrays exist to prevent.
+    """
+    doses = np.asarray(doses, float)
+    n_scan = len(doses)
+    valid = np.asarray(ymin, float) >= -1e-8
+    live = np.asarray(n_dead, float) < DEAD_FRAC * float(n_phase)
     usable = valid & live
     # the ceiling is the first dose that fails, walking up from the bottom
     first_bad = int(np.argmin(usable)) if not np.all(usable) else n_scan
@@ -195,20 +223,21 @@ def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt, chunk=C
     reason = ('none' if first_bad >= n_scan
               else ('unstable' if not valid[first_bad] else 'dead'))
 
-    # S_crit: the first type-0 within the usable range
-    Wu = np.where(usable, W, np.nan)
+    # S_crit: the first type-0 STRICTLY BELOW the ceiling. Searching the whole usable mask
+    # instead let a transition be read from a dose above `d_max_valid` -- "the largest dose at
+    # which the result can be believed at all" -- which is a contradiction in terms, and it
+    # happened once in 54 scans.
+    Wu = np.where(usable, np.asarray(W, float), np.nan)
     typ0 = np.where(np.isfinite(Wu) & (np.abs(Wu) < 0.5))[0]
+    typ0 = typ0[typ0 < first_bad]
     if len(typ0):
-        j0 = typ0[0]
+        j0 = int(typ0[0])
         S = float(np.sqrt(doses[j0] * doses[max(j0 - 1, 0)]))
-        above = Wu[j0:]
+        above = Wu[j0:first_bad]
         reentrant = bool(np.any(np.abs(above[np.isfinite(above)]) > 0.5))
     else:
         S, reentrant = np.nan, False
-
-    return dict(target=target, mode=mode, doses=doses, W=W, amp=amp, ymin=ymin,
-                n_dead=n_dead, ptc=ptc, S_crit=S, reentrant=reentrant, d_max_valid=d_max,
-                ceiling_reason=reason, n_phase=n_phase)
+    return S, reentrant, d_max, reason
 
 
 def _fmt(x):
@@ -266,6 +295,61 @@ def run(model_name, mode='pulse', targets=None, n_scan=40, n_phase=32, lo=1e-3, 
     paths.savez(out, **blob)
     print(f"[scrit] -> {out}", flush=True)
     return rows
+
+
+def rederive(model_name, mode='pulse', tag=None, out_tag=None, verbose=True):
+    """Recompute S_crit / ceiling / grid from a SAVED scan, without integrating anything.
+
+    The scan arrays -- doses, W, ymin, n_dead, ptc -- are the measurement; S_crit, the ceiling
+    and the grid are DEFINITIONS applied to them. When a definition changes (a threshold, a
+    tie-break) the honest move is to re-apply it to the stored measurement and diff, not to
+    re-run the integration and hope nothing else moved. This is what REPO_MAP hazard 9 buys.
+
+    Writes to a NEW tag. The raw scan is never overwritten.
+    """
+    from analysis.dosegrid import _scrit_files
+    tag, files = _scrit_files(model_name, mode, tag)
+    if not files:
+        print(f"[rederive] no scrit_{mode} scan for {model_name}", file=sys.stderr)
+        return None
+    out_tag = out_tag or f'{tag}_rd'
+    changed = []
+    for fp in files:
+        z = dict(np.load(fp, allow_pickle=True))
+        ts = [str(x) for x in z['targets']]
+        S = np.array(z['S_crit'], float)
+        C = np.array(z['d_max_valid'], float)
+        R = np.array(z['reentrant'])
+        Q = np.array(z['ceiling_reason'], dtype=object)
+        for i, t in enumerate(ts):
+            ptc = np.asarray(z[f'ptc__{t}'])
+            s, re_, dm, why = derive_scalars(z[f'doses__{t}'], z[f'W__{t}'], z[f'ymin__{t}'],
+                                             z[f'n_dead__{t}'], ptc.shape[0])
+            old = (S[i], C[i], str(Q[i]))
+            if not (_same(s, S[i]) and _same(dm, C[i]) and why == str(Q[i])):
+                changed.append((model_name, mode, t, old, (s, dm, why)))
+            S[i], C[i], R[i], Q[i] = s, dm, bool(re_), why
+            z[f'grid__{t}'] = adaptive_grid(s, dm, float(np.min(z[f'doses__{t}'])))
+        z.update(S_crit=S, d_max_valid=C, reentrant=R,
+                 ceiling_reason=np.array([str(x) for x in Q]))
+        out = paths.out_path(model_name, 'scrit', os.path.basename(fp), out_tag)
+        paths.savez(out, **z)
+        if verbose:
+            print(f"[rederive] {os.path.basename(fp)} -> {out}", flush=True)
+    if verbose:
+        if changed:
+            print(f"[rederive] {len(changed)} target(s) CHANGED:")
+            for m, md, t, o, n in changed:
+                print(f"    {m}/{md}/{t}: S_crit {_fmt(o[0])} -> {_fmt(n[0])}   "
+                      f"ceiling {_fmt(o[1])} -> {_fmt(n[1])} ({o[2]} -> {n[2]})")
+        else:
+            print("[rederive] nothing changed -- the new definition agrees with the stored one")
+    return changed
+
+
+def _same(a, b):
+    return (not np.isfinite(a) and not np.isfinite(b)) or (
+        np.isfinite(a) and np.isfinite(b) and abs(a - b) <= 1e-12 * max(1.0, abs(b)))
 
 
 def merge(model_name, mode='pulse', tag=None):
@@ -331,7 +415,12 @@ def main(argv=None):
     ap.add_argument('--nshards', type=int, default=None)
     ap.add_argument('--tag', default=None)
     ap.add_argument('--merge', action='store_true')
+    ap.add_argument('--rederive', action='store_true',
+                    help='recompute S_crit/ceiling/grid from a SAVED scan, no integration')
+    ap.add_argument('--out-tag', default=None, help='tag --rederive writes to')
     a = ap.parse_args(argv)
+    if a.rederive:
+        return 0 if rederive(a.model, a.mode, a.tag, a.out_tag) is not None else 1
     if a.merge:
         return 0 if merge(a.model, a.mode, a.tag) is not None else 1
     run(a.model, mode=a.mode, targets=(a.targets.split(',') if a.targets else None),

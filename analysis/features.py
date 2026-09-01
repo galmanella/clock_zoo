@@ -53,12 +53,15 @@ from analysis import genemap as GM
 #: layout. `paths.out_dir` deliberately does not validate the model name against a registry.
 ZOO = 'zoo'
 
+#: Phase shift below which the anchor counts as already at 0 (1e-4 cyc ~ 9 s).
+PHASE_TOL = 1e-4
+
 #: Scalar columns of the table, in report order.
 COLUMNS = ('model', 'mode', 'target', 'gene', 'level',
            'S_scan', 'S_surf', 'phi_star', 'n_sing', 'pos_in_grid',
            'total_twist', 'acc_twist', 'signed_twist', 'span_top', 'span_hi_half',
            'type0_frac', 'type1_frac', 'unusable_frac', 'valid_frac', 'min_amp',
-           'ceiling', 'ceiling_reason', 'dt', 'scramble', 'passed')
+           'ceiling', 'ceiling_reason', 'dt', 'scramble', 'passed', 'phase_offset')
 
 
 def _load_char(model_name, mode, tag=None):
@@ -205,7 +208,7 @@ def row_of(model_name, mode, target, ch, sc):
         unusable_frac=float(np.mean(~np.isfinite(ptc))),
         valid_frac=float(np.mean(valid)), min_amp=ch['min_amp'],
         ceiling=ceiling, ceiling_reason=reason, dt=ch['dt'],
-        scramble=q['scramble'], passed=bool(q['passed']),
+        scramble=q['scramble'], passed=bool(q['passed']), phase_offset=0.0,
     )
 
 
@@ -214,10 +217,50 @@ def row_of(model_name, mode, target, ch, sc):
 SOURCES = ('scan', 'surface')
 
 
-def build(mode='pulse', models=GM.MODELS, char_tags=None, source='surface', verbose=True):
+def apply_phase_offset(ch, off):
+    """Move the phase ORIGIN of one surface to the common anchor (analysis.phaseref).
+
+    Both PTC axes carry the same origin -- the readout is calibrated so dose 0 is the identity
+    -- so ONE constant comes off BOTH: the old-phase labels and the new-phase values. The
+    old-phase samples stay exactly where they were measured, they are just relabelled and put
+    back in ascending order, so nothing is interpolated and no value is invented.
+
+    Every difference-based feature (total / accumulated / signed twist, the old-phase span) is
+    invariant under this by construction; only the ABSOLUTE phases move -- phi*, the twist
+    curve's height, and the surface's colour.
+    """
+    off = float(off)
+    # Below PHASE_TOL the "offset" is the peak-finder's own noise, not a displacement: Almeida
+    # and Goldbeter come back at 1.6e-06 and -1.2e-05 cyc, i.e. already on the anchor. Shifting
+    # by that much would rotate the sample grid off 0 for no reason and make two panels that
+    # ARE aligned look like they start in different places.
+    if abs(((off + 0.5) % 1.0) - 0.5) < PHASE_TOL:
+        return ch
+    ch = dict(ch)
+    old = (np.asarray(ch['old'], float) - off) % 1.0
+    order = np.argsort(old)                      # a pure roll: the cyclic order is preserved
+    ch['old'] = old[order]
+    ch['ptc'] = (np.asarray(ch['ptc'], float)[order] - off) % 1.0
+    for k in ('amp', 'valid'):                   # row-permute the per-cell companions only;
+        a = np.asarray(ch[k])                    # the scan stores `amp` per DOSE, 1-D
+        if a.ndim == 2 and a.shape[0] == len(order):
+            ch[k] = a[order]
+    ch['twist'] = (np.asarray(ch['twist'], float) - off) % 1.0
+    ch['sing_phi'] = (np.asarray(ch['sing_phi'], float) - off) % 1.0
+    ch['phi'] = float((ch['phi'] - off) % 1.0) if np.isfinite(ch['phi']) else ch['phi']
+    return ch
+
+
+def build(mode='pulse', models=GM.MODELS, char_tags=None, source='surface',
+          scope=True, phase_tag=None, verbose=True):
     """Every model's rows for one mode, plus the raw surfaces keyed (model, target)."""
     if source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
+    from analysis.phaseref import load as _load_phaseref
+    offsets, _pr = _load_phaseref(phase_tag)
+    if verbose and not offsets:
+        print("[features] NO COMMON PHASE ORIGIN -- run `$PY -m analysis.phaseref`. "
+              "Absolute phases are model-local and NOT comparable.")
     rows, surfaces, tags = [], {}, {}
     for m in models:
         ch, ctag = (_load_scan(m, mode, (char_tags or {}).get(m)) if source == 'scan'
@@ -226,11 +269,19 @@ def build(mode='pulse', models=GM.MODELS, char_tags=None, source='surface', verb
             if verbose:
                 print(f"[features] {m}/{mode}: no {source} run -- skipping")
             continue
+        keep = GM.scope_targets(m) if scope else list(ch)
+        skipped = [t for t in ch if t not in keep]
+        if verbose and skipped:
+            print(f"[features] {m}: out of comparison scope, skipping {skipped}")
         sc, stag = _load_scrit(m, mode)
         tags[m] = dict(source=ctag, scrit=stag)
-        for t in sorted(ch, key=lambda x: list(ch).index(x)):
-            rows.append(row_of(m, mode, t, ch[t], sc.get(t)))
-            surfaces[(m, t)] = ch[t]
+        off = float(offsets.get(m, 0.0))
+        for t in [x for x in keep if x in ch]:
+            surf = apply_phase_offset(ch[t], off)
+            r = row_of(m, mode, t, surf, sc.get(t))
+            r['phase_offset'] = off
+            rows.append(r)
+            surfaces[(m, t)] = surf
     return rows, surfaces, tags
 
 
@@ -281,7 +332,8 @@ def load(mode='pulse', tag=None, source='surface'):
         r['passed'] = str(r['passed']) in ('True', 'true', '1')
         for c in ('S_scan', 'S_surf', 'phi_star', 'pos_in_grid', 'total_twist', 'acc_twist',
                   'signed_twist', 'span_top', 'span_hi_half', 'type0_frac', 'type1_frac',
-                  'unusable_frac', 'valid_frac', 'min_amp', 'ceiling', 'dt', 'scramble'):
+                  'unusable_frac', 'valid_frac', 'min_amp', 'ceiling', 'dt', 'scramble',
+                  'phase_offset'):
             r[c] = float(r[c])
         r['n_sing'] = int(float(r['n_sing']))
     surfaces = {}
@@ -337,6 +389,9 @@ def main(argv=None):
     ap.add_argument('--char-tag', default=None,
                     help='source run tag (characterize or scrit), or model=tag,model=tag')
     ap.add_argument('--tag', default=None, help='output tag')
+    ap.add_argument('--all-targets', action='store_true',
+                    help='ignore the comparison scope and tabulate every target')
+    ap.add_argument('--phase-tag', default=None, help='analysis.phaseref run tag')
     ap.add_argument('--no-csv', action='store_true')
     a = ap.parse_args(argv)
     models = [m.strip() for m in a.models.split(',') if m.strip()]
@@ -344,7 +399,8 @@ def main(argv=None):
     if a.char_tag:
         ct = ({k: v for k, v in (p.split('=', 1) for p in a.char_tag.split(','))}
               if '=' in a.char_tag else {m: a.char_tag for m in models})
-    rows, surf, tags = build(a.mode, models, ct, source=a.source)
+    rows, surf, tags = build(a.mode, models, ct, source=a.source,
+                             scope=not a.all_targets, phase_tag=a.phase_tag)
     if not rows:
         raise SystemExit("[features] nothing to tabulate")
     print_table(rows, a.mode, a.source)

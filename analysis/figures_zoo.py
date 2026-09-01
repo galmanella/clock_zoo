@@ -57,7 +57,14 @@ LEVEL_MARKER = {'mrna': 'o', 'protein': 's', 'nuclear': '^', 'complex': 'D'}
 
 NL = chr(10)
 
-_CTX = dict(tag=None, publish=False, source='surface')
+_CTX = dict(tag=None, publish=False, source='surface', anchor=None)
+
+
+def _phase_label():
+    """What the phase axes are measured FROM. Never silently omit this: an unanchored
+    old phase is model-local and two models' values are not the same time of day."""
+    a = _CTX.get('anchor')
+    return f'old phase  (0 = {a} peak)' if a else 'old phase  (MODEL-LOCAL origin)'
 
 
 def _sfx():
@@ -93,6 +100,7 @@ def _surface_panel(ax, ch, r, ylim=None, show_y=True, title=None):
     im = ax.pcolormesh(old, doses, np.ma.masked_invalid(ptc.T), cmap=phase_cmap(),
                        vmin=0, vmax=1, shading='nearest', rasterized=True)
     ax.set_yscale('log')
+    ax.set_xlim(0.0, 1.0)                     # phase is a full circle in every panel
     if ylim:
         ax.set_ylim(*ylim)
     for phi, d, sg in zip(ch['sing_phi'], ch['sing_dose'], ch['sing_sign']):
@@ -101,7 +109,7 @@ def _surface_panel(ax, ch, r, ylim=None, show_y=True, title=None):
     S = r['S_scan'] if r is not None and np.isfinite(r['S_scan']) else np.nan
     if np.isfinite(S):
         ax.axhline(S, color='white', ls='--', lw=1.2)
-    ax.set_xlabel('old phase', fontsize=8)
+    ax.set_xlabel(_phase_label(), fontsize=8)
     ax.set_ylabel('dose' if show_y else '', fontsize=8)
     if not show_y:
         ax.set_yticklabels([])
@@ -157,7 +165,8 @@ def _twist_panel(ax, ch, r, xlim=None, show_y=True, xlabel='dose', bands=True):
     if xlim:
         ax.set_xlim(*xlim)
     ax.set_xlabel(xlabel, fontsize=8)
-    ax.set_ylabel('stable FP phase' if show_y else '', fontsize=8)
+    ax.set_ylabel(('stable FP phase' if _CTX.get('anchor') else 'stable FP phase (local)')
+                  if show_y else '', fontsize=8)
     if not show_y:
         ax.set_yticklabels([])
     ax.tick_params(labelsize=7)
@@ -423,6 +432,7 @@ def main(argv=None):
     ap.add_argument('--models', default=','.join(GM.MODELS))
     ap.add_argument('--genes', default=None, help='default: every gene in >=1 model')
     ap.add_argument('--feat-tag', default=None, help='analysis.features run tag')
+    ap.add_argument('--phase-tag', default=None, help='analysis.phaseref run tag')
     ap.add_argument('--source', default='surface', choices=('scan', 'surface'),
                     help="which feature table to draw: the wide screen or the refined render")
     ap.add_argument('--tag', default=None, help='output tag for the figures')
@@ -431,7 +441,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
     from analysis.features import load as load_features
 
-    _CTX.update(tag=paths.run_tag(a.tag), publish=a.publish, source=a.source)
+    from analysis.phaseref import load as _load_phaseref
+    _off, _pr = _load_phaseref(a.phase_tag)
+    _CTX.update(tag=paths.run_tag(a.tag), publish=a.publish, source=a.source,
+                anchor=(str(_pr['anchor_gene']) if _pr is not None else None))
+    if _pr is None:
+        print('[figures_zoo] no common phase origin -- absolute phases are MODEL-LOCAL; '
+              'run `$PY -m analysis.phaseref`', flush=True)
     want = (['surfaces', 'genes', 'features', 'modes'] if a.which == 'all'
             else a.which.split(','))
     modes = ('pulse', 'instant') if a.mode == 'both' else (a.mode,)

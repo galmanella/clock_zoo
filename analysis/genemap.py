@@ -184,3 +184,57 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------- #
+#  SCOPE
+# --------------------------------------------------------------------------- #
+#: WHICH LEVEL each model contributes to the comparison.
+#:
+#: The experiment perturbs a GENE, and the honest cross-model row is the one closest to
+#: "more transcript of gene X". So where a model resolves transcription, only its mRNA
+#: species are in scope; the protein forms, the phospho-forms and the complexes are internal
+#: machinery, not things an experiment expresses. Almeida is the exception BY CONSTRUCTION:
+#: it is a reduced, transcription-factor-level model with no mRNA species at all, so its
+#: regulator states ARE its gene products and they stand in for the mRNA row.
+#:
+#: Complexes are out of scope everywhere -- Almeida's PER_CRY as much as Goldbeter's
+#: PCC/PCN -- because "overexpress the heterodimer" is not an experiment, and keeping one
+#: model's complex while dropping another's would put a structural difference into the
+#: comparison as if it were a biological one.
+SCOPE_LEVELS = {
+    'almeida':   ('protein',),      # no mRNA exists; the TFs are the gene products
+    'korencic':  ('mrna',),         # the x stage; y and z are the delay chain
+    'goldbeter': ('mrna',),         # MP / MC / MB (and MR in the Rev-erb variant)
+}
+
+
+def scope_targets(model, levels=None):
+    """The in-scope states of a model, in gene order."""
+    want = set(levels or SCOPE_LEVELS.get(model, LEVELS))
+    return [st for g in GENES for st, lv in GENE_MAP[g].get(model, []) if lv in want]
+
+
+def in_scope(model, state, levels=None):
+    _g, lv = gene_of(model, state)
+    return lv in set(levels or SCOPE_LEVELS.get(model, LEVELS))
+
+
+def scope_report():
+    print(f"\n{'=' * 78}\nCOMPARISON SCOPE\n{'=' * 78}")
+    tot = 0
+    for m in MODELS:
+        ts = scope_targets(m)
+        tot += len(ts)
+        allt = [s for g in GENES for s, _l in GENE_MAP[g].get(m, [])]
+        drop = [s for s in allt if s not in ts]
+        print(f"  {m:10s} level={'/'.join(SCOPE_LEVELS.get(m, ())):8s} "
+              f"{len(ts)}/{len(allt)} in scope: {', '.join(ts)}")
+        if drop:
+            print(f"             dropped: {', '.join(drop)}")
+    print(f"\n  {tot} targets in the comparison.")
+    for g in GENES:
+        ms = sorted({m for m in MODELS if any(s in scope_targets(m)
+                                              for s, _l in GENE_MAP[g].get(m, []))},
+                    key=MODELS.index)
+        print(f"    {g:8s} {len(ms)} model(s): {', '.join(ms) if ms else '--'}")

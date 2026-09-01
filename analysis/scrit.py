@@ -186,10 +186,12 @@ def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt, chunk=C
             w = winding_curve(impute(ptc[:, j][:, None])[:, 0])
             W[j] = np.nan if w is None else w
 
-    S, reentrant, d_max, reason, S_first = derive_scalars(doses, W, ymin, n_dead, n_phase)
+    S, reentrant, d_max, reason, phi, nsing = derive_scalars(doses, W, ymin, n_dead,
+                                                             n_phase, ptc)
     return dict(target=target, mode=mode, doses=doses, W=W, amp=amp, ymin=ymin,
-                n_dead=n_dead, ptc=ptc, S_crit=S, S_first=S_first, reentrant=reentrant,
-                d_max_valid=d_max, ceiling_reason=reason, n_phase=n_phase)
+                n_dead=n_dead, ptc=ptc, S_crit=S, phi_star=phi, n_sing=nsing,
+                reentrant=reentrant, d_max_valid=d_max, ceiling_reason=reason,
+                n_phase=n_phase)
 
 
 #: Fraction of a dose row's phases that must lose the oscillation before the row is called
@@ -204,21 +206,30 @@ def _scan_once(model, target, mode, lo, hi, n_scan, n_phase, skip_p, dt, chunk=C
 #: same model's BC and BN lose ALL 32 phases for two consecutive doses.
 DEAD_FRAC = 0.25
 
-#: How many CONSECUTIVE usable doses must read type-0 before the transition is believed.
-#: 2, not 1: one dose is a coin flip on a surface whose amplitude is dipping, and the
-#: surface-side detector already demands topological persistence via the dipole filter, so
-#: 1 made the two measurements disagree by 3.5x on Korencic/Bmalx/instant.
-MIN_TYPE0_RUN = 2
 
 
-def derive_scalars(doses, W, ymin, n_dead, n_phase):
-    """(S_crit, reentrant, d_max_valid, ceiling_reason, S_first) from a saved scan.
+def derive_scalars(doses, W, ymin, n_dead, n_phase, ptc):
+    """(S_crit, reentrant, d_max_valid, ceiling_reason, phi_star, n_sing) from a saved scan.
 
-    Split out of `_scan_once` so `--rederive` can re-run it on stored raw arrays: a threshold
-    is a definition, and re-integrating 81 minutes of scan to change one is what REPO_MAP
-    hazard 9 says the raw arrays exist to prevent.
+    S_CRIT IS THE DOSE OF THE SINGULARITY, FULL STOP.
+    It is read from `analysis.winding.detect_grid` -- the dipole-filtered lowest-dose
+    surviving singularity of this scan's own surface -- and NOT from a rule about where the
+    winding-vs-dose curve first touches zero. Those are two different measurements of one
+    quantity, and letting them diverge is what produced an S_crit of 10.9 on
+    Korencic/Bmalx/instant against a singularity at 38.6: the winding curve dipped to 0 for a
+    single dose and came straight back, and the scan believed it while the dipole filter --
+    which requires topological persistence -- did not.
+
+    Defining S_crit AS the singularity dose makes the disagreement impossible by construction:
+    a dose with no singularity at it can no longer be reported as S_crit, and the detector is
+    the one that has been hardened (dipole filter, circular imputation, base continuation).
+
+    Split out of `_scan_once` so `--rederive` can re-run it on stored raw arrays: a definition
+    change must not cost another integration -- REPO_MAP hazard 9.
     """
+    from analysis.winding import detect_grid
     doses = np.asarray(doses, float)
+    ptc = np.asarray(ptc, float)
     n_scan = len(doses)
     valid = np.asarray(ymin, float) >= -1e-8
     live = np.asarray(n_dead, float) < DEAD_FRAC * float(n_phase)
@@ -229,55 +240,23 @@ def derive_scalars(doses, W, ymin, n_dead, n_phase):
     reason = ('none' if first_bad >= n_scan
               else ('unstable' if not valid[first_bad] else 'dead'))
 
-    # S_crit: the first PERSISTENT type-0 strictly below the ceiling.
-    #
-    # Two corrections to "the first type-0", both of which changed an answer.
-    #
-    # BELOW THE CEILING. Searching the whole usable mask let a transition be read from a dose
-    # above `d_max_valid` -- "the largest dose at which the result can be believed at all" --
-    # which is a contradiction in terms. Happened once in 54 scans.
-    #
-    # PERSISTENT. A single dose whose winding dips to 0 and comes straight back to 1 is not a
-    # type-1 -> type-0 transition, it is a misread. MEASURED on Korencic / Bmalx / instant, the
-    # winding over dose runs
-    #       8.9:1   13.4:0   20.3:1   30.7:1   46.4:0   70.2:0   106:0  ...
-    # and the isolated 0 at 13.4 sits exactly where the relative amplitude dips to 0.35, i.e.
-    # where the phase readout is weakest. Taking it gave S_crit = 10.9 while the surface's own
-    # dipole-filtered singularity -- which requires topological persistence -- sat at 38.6.
-    # Requiring the winding to STAY at 0 for MIN_TYPE0_RUN consecutive usable doses gives 37.8
-    # and the two measurements agree. `reentrant` still records that the winding is messy.
-    # BOTH are reported, because on a re-entrant target they are different QUESTIONS and
-    # choosing one silently would hide the ambiguity rather than resolve it:
-    #   S_first       the lowest dose that reads type-0 at all
-    #   S_crit        the lowest dose from which it STAYS type-0 for MIN_TYPE0_RUN doses
-    # They agree wherever the transition is clean. Where they do not, `reentrant` is True and
-    # the gap between them IS the width of the messy band -- Almeida/PER/instant reads type-0
-    # at 46.4, type-1 again at 70 and 106, then type-0 from 160 up, with the clock at full
-    # amplitude (1.000) throughout, so that is real re-entrancy and not a weak readout. The
-    # dose grid follows S_crit, because that is the one the surface's dipole-filtered detector
-    # measures -- it demands the same persistence -- and disagreeing with it by 3.5x on
-    # Korencic/Bmalx/instant is what exposed the whole issue.
+    # Look for the singularity ONLY below the ceiling: above it the surface is the
+    # integrator's, not the model's, and a defect found there is not a measurement.
+    old = np.arange(ptc.shape[0]) / ptc.shape[0]
+    if first_bad >= 2:
+        S, phi, nsing = detect_grid(old, doses[:first_bad], ptc[:, :first_bad])
+    else:
+        S, phi, nsing = np.nan, np.nan, 0.0
+
+    # re-entrancy stays a WINDING observation -- it is about the curve's shape above S_crit,
+    # which is exactly what a single singularity dose cannot tell you.
     Wu = np.where(usable, np.asarray(W, float), np.nan)[:first_bad]
-    idx = np.where(np.isfinite(Wu))[0]
-    seq = np.abs(Wu[idx]) < 0.5
-    S_first = float(np.sqrt(doses[int(idx[np.argmax(seq)])]
-                            * doses[max(int(idx[np.argmax(seq)]) - 1, 0)])) \
-        if np.any(seq) else np.nan
-    j0 = None
-    for a in range(len(idx) - MIN_TYPE0_RUN + 1):
-        if np.all(seq[a:a + MIN_TYPE0_RUN]):
-            j0 = int(idx[a])
-            break
-    if j0 is not None:
-        S = float(np.sqrt(doses[j0] * doses[max(j0 - 1, 0)]))
-        above = Wu[j0:]
+    if np.isfinite(S):
+        above = Wu[doses[:first_bad] >= S]
         reentrant = bool(np.any(np.abs(above[np.isfinite(above)]) > 0.5))
     else:
-        S, reentrant = np.nan, False
-    # a type-0 that never persists is re-entrant by definition, even with no S_crit
-    if np.isfinite(S_first) and not np.isfinite(S):
-        reentrant = True
-    return S, reentrant, d_max, reason, S_first
+        reentrant = False
+    return float(S), reentrant, d_max, reason, float(phi), float(nsing)
 
 
 def _fmt(x):
@@ -320,7 +299,8 @@ def run(model_name, mode='pulse', targets=None, n_scan=40, n_phase=32, lo=1e-3, 
 
     blob = dict(model=model_name, mode=mode, targets=np.array([r['target'] for r in rows]),
                 S_crit=np.array([r['S_crit'] for r in rows]),
-                S_first=np.array([r['S_first'] for r in rows]),
+                phi_star=np.array([r['phi_star'] for r in rows]),
+                n_sing=np.array([r['n_sing'] for r in rows]),
                 reentrant=np.array([r['reentrant'] for r in rows]),
                 d_max_valid=np.array([r['d_max_valid'] for r in rows]),
                 ceiling_reason=np.array([r['ceiling_reason'] for r in rows]),
@@ -359,21 +339,22 @@ def rederive(model_name, mode='pulse', tag=None, out_tag=None, verbose=True):
         z = dict(np.load(fp, allow_pickle=True))
         ts = [str(x) for x in z['targets']]
         S = np.array(z['S_crit'], float)
-        F = np.array(z['S_first'], float) if 'S_first' in z else np.full(len(ts), np.nan)
+        F = np.array(z['phi_star'], float) if 'phi_star' in z else np.full(len(ts), np.nan)
+        NS = np.array(z['n_sing'], float) if 'n_sing' in z else np.full(len(ts), np.nan)
         C = np.array(z['d_max_valid'], float)
         R = np.array(z['reentrant'])
         Q = np.array(z['ceiling_reason'], dtype=object)
         for i, t in enumerate(ts):
             ptc = np.asarray(z[f'ptc__{t}'])
-            s, re_, dm, why, sf = derive_scalars(z[f'doses__{t}'], z[f'W__{t}'],
-                                                 z[f'ymin__{t}'], z[f'n_dead__{t}'],
-                                                 ptc.shape[0])
+            s, re_, dm, why, sf, ns = derive_scalars(z[f'doses__{t}'], z[f'W__{t}'],
+                                                     z[f'ymin__{t}'], z[f'n_dead__{t}'],
+                                                     ptc.shape[0], ptc)
             old = (S[i], C[i], str(Q[i]))
             if not (_same(s, S[i]) and _same(dm, C[i]) and why == str(Q[i])):
                 changed.append((model_name, mode, t, old, (s, dm, why)))
-            S[i], F[i], C[i], R[i], Q[i] = s, sf, dm, bool(re_), why
+            S[i], F[i], NS[i], C[i], R[i], Q[i] = s, sf, ns, dm, bool(re_), why
             z[f'grid__{t}'] = adaptive_grid(s, dm, float(np.min(z[f'doses__{t}'])))
-        z.update(S_crit=S, S_first=F, d_max_valid=C, reentrant=R,
+        z.update(S_crit=S, phi_star=F, n_sing=NS, d_max_valid=C, reentrant=R,
                  ceiling_reason=np.array([str(x) for x in Q]))
         out = paths.out_path(model_name, 'scrit', os.path.basename(fp), out_tag)
         paths.savez(out, **z)
@@ -408,8 +389,8 @@ def merge(model_name, mode='pulse', tag=None):
             if '__' in k:
                 blob[k] = v
     cat = lambda k: np.concatenate([np.atleast_1d(s[k]) for s in shards])
-    for k in ('targets', 'S_crit', 'S_first', 'reentrant', 'd_max_valid', 'ceiling_reason',
-              'mu', 'skip_p', 'dt_used', 'S_converged'):
+    for k in ('targets', 'S_crit', 'phi_star', 'n_sing', 'reentrant', 'd_max_valid',
+              'ceiling_reason', 'mu', 'skip_p', 'dt_used', 'S_converged'):
         blob[k] = cat(k)
     blob['model'] = model_name
     blob['mode'] = mode

@@ -94,15 +94,36 @@ def _row(rows, model, target):
 # --------------------------------------------------------------------------- #
 #  panels
 # --------------------------------------------------------------------------- #
+def _mesh_edges(old, doses):
+    """Cell EDGES for pcolormesh, so the map fills its frame with no sliver of blank axis.
+
+    `shading='nearest'` centres a cell on each sample, so the map spans only
+    [x0 - dx/2, xN + dx/2] and forcing xlim to (0, 1) leaves a half-cell gap at one end. Old
+    phase is PERIODIC, so the honest fix is to wrap: the column at phase 0 is also the column
+    at phase 1, and with it appended the mesh covers [0, 1] exactly. Dose is log-spaced, so
+    its edges are the GEOMETRIC midpoints, extrapolated by half a cell at each end.
+    """
+    o = np.asarray(old, float)
+    d = np.asarray(doses, float)
+    dx = np.diff(o).mean() if len(o) > 1 else 1.0
+    xe = np.concatenate([o - dx / 2, [o[-1] + dx / 2, o[-1] + 3 * dx / 2]])
+    lg = np.log(d)
+    mid = 0.5 * (lg[:-1] + lg[1:])
+    ye = np.exp(np.concatenate([[lg[0] - (mid[0] - lg[0])], mid,
+                                [lg[-1] + (lg[-1] - mid[-1])]])) if len(d) > 1 else         np.array([d[0] * 0.9, d[0] * 1.1])
+    return xe, ye
+
+
 def _surface_panel(ax, ch, r, ylim=None, show_y=True, title=None):
     """One PTC surface with its singularities, its S_crit line and its QC verdict."""
     old, doses, ptc = ch['old'], ch['doses'], np.asarray(ch['ptc'], float)
-    im = ax.pcolormesh(old, doses, np.ma.masked_invalid(ptc.T), cmap=phase_cmap(),
-                       vmin=0, vmax=1, shading='nearest', rasterized=True)
+    wrapped = np.vstack([ptc, ptc[:1]])       # phase 1 IS phase 0 -- see _mesh_edges
+    xe, ye = _mesh_edges(old, doses)
+    im = ax.pcolormesh(xe, ye, np.ma.masked_invalid(wrapped.T), cmap=phase_cmap(),
+                       vmin=0, vmax=1, shading='flat', rasterized=True)
     ax.set_yscale('log')
     ax.set_xlim(0.0, 1.0)                     # phase is a full circle in every panel
-    if ylim:
-        ax.set_ylim(*ylim)
+    ax.set_ylim(*(ylim if ylim else (ye[0], ye[-1])))
     for phi, d, sg in zip(ch['sing_phi'], ch['sing_dose'], ch['sing_sign']):
         ax.plot(phi, d, marker=('o' if sg > 0 else 'x'), ms=7, mfc='white', mec='white',
                 mew=1.6, ls='none')
@@ -116,9 +137,11 @@ def _surface_panel(ax, ch, r, ylim=None, show_y=True, title=None):
     ax.tick_params(labelsize=7)
     if title:
         ax.set_title(title, fontsize=8.5)
-    if r is not None and not r['passed']:
-        ax.text(0.5, 0.5, 'QC FAIL', transform=ax.transAxes, ha='center', va='center',
-                fontsize=13, color='red', alpha=0.75, weight='bold', rotation=18)
+    # NO 'QC FAIL' stamp across the surface. The gate's complaints are almost always about a
+    # SUBSET of the grid -- a NaN block above the ceiling, a few scrambled cells near the
+    # defect -- and a banner over the whole panel reads as "this result is void", which is a
+    # stronger claim than the check makes. The verdict travels in the feature table, in the
+    # printed report, and as hollow markers in the scalar figure.
     return im
 
 

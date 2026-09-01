@@ -238,6 +238,38 @@ def run(cfg, seed=None, tag=None, v_start=None):
     C = make_cost(model, target, doses, tgt, n_phase=n_phase, mode=mode,
                   backend=backend, dt=dt, w_osc=w_osc, w_amp=w_amp,
                   pulse=cfg.pulse, skip_p=cfg.skip_p, readout_ref=readout, **cost_opts)
+
+    # THE OPTIMIZED OBJECTIVE AND THE DIAGNOSED ONE ARE ALLOWED TO DIFFER.
+    #
+    # In 'relative' mode the search minimises a window that follows the candidate (fit/relcost),
+    # but every before/after number this run reports -- twist, S_crit, the quality gate, the
+    # rendered surfaces -- stays on the FIXED absolute grid. That is deliberate: a diagnostic
+    # measured in units of the thing being fitted cannot detect that the thing moved, which is
+    # exactly the failure the relative window is designed to survive rather than hide.
+    C_opt = C
+    if cfg.window_mode == 'relative':
+        if optimizer not in ('cma', 'bobyqa'):
+            raise SystemExit(f"window_mode='relative' needs a gradient-free optimizer "
+                             f"(cma, bobyqa); got {optimizer!r}. The window is frozen inside "
+                             f"autodiff, so `grad` is biased -- see fit/relcost.py.")
+        from fit.relcost import make_relative_cost
+        C_opt = make_relative_cost(model, target, n_phase=n_phase, n_dose=cfg.n_dose,
+                                   span=(cfg.span_lo, cfg.span_hi), s_crit_base=s_crit,
+                                   mode=mode, backend=backend, dt=dt, pulse=cfg.pulse,
+                                   skip_p=cfg.skip_p, readout_ref=readout,
+                                   amp_ramp=cost_opts['amp_ramp'], w_osc=w_osc, w_amp=w_amp,
+                                   w_anchor=cfg.w_anchor, basis=C['B'])
+        _p0 = C_opt['parts'](C_opt['v0'])
+        print(f"[radial] window RELATIVE: {cfg.span_lo:g}..{cfg.span_hi:g} x the candidate's own "
+              f"S*; anchor proxy calibrated by {C_opt['calibration']:.4g} against S_crit="
+              f"{s_crit:.4g}", flush=True)
+        print(f"[radial]   base anchor S*={_p0['s_star']:.4g} ({_p0['where']}), "
+              f"disp_max={_p0['disp_max']:.3f}, c_ptc={_p0['c_ptc']:.5f}, "
+              f"anchor penalty={_p0['anchor_pen']:.3g}", flush=True)
+        if _p0['anchor_pen'] > 0:
+            print("[radial]   WARNING: the BASE point already fails anchor validity. The run "
+                  "can still proceed, but its starting score is dominated by the penalty.",
+                  flush=True)
     before = _diagnose_safe(model, C, C['v0'], 'base')
     # The BASE surface has to be usable or nothing downstream means anything. A run was allowed
     # to proceed from a base that failed the gate (scramble 0.0563 at 16x10) and its "before"
@@ -272,12 +304,16 @@ def run(cfg, seed=None, tag=None, v_start=None):
                 target_k=(tgt.k if tgt.k is not None else None),
                 target_psi=(tgt.psi if tgt.k is not None else None),
                 section=section, readout=readout,
-                pulse=cfg.pulse, skip_p=cfg.skip_p), workers)
+                pulse=cfg.pulse, skip_p=cfg.skip_p,
+                # the pool must build the SAME objective the parent is optimising
+                window_mode=cfg.window_mode, span=(cfg.span_lo, cfg.span_hi),
+                w_anchor=cfg.w_anchor, s_crit_base=s_crit, n_dose=cfg.n_dose,
+                amp_ramp=cost_opts['amp_ramp'], basis=C['B']), workers)
             print(f"[radial] population parallelism: {workers} workers, popsize {ps} "
                   f"(oversubscribed so fast members fill the gaps behind a straggler)",
                   flush=True)
         try:
-            runs = [search.cma(C, v0=v_start, bound=bound, seed=seed, mode=cfg.cma_mode,
+            runs = [search.cma(C_opt, v0=v_start, bound=bound, seed=seed, mode=cfg.cma_mode,
                                sigma0=cfg.sigma0, maxfev=cfg.maxfev,
                                restarts=cfg.restarts, popsize=ps, evaluator=ev,
                                log_every=cfg.log_every, verbose=cfg.verbose)]
@@ -294,7 +330,7 @@ def run(cfg, seed=None, tag=None, v_start=None):
         # region fits a quadratic through interpolation points spread across a region wide
         # enough to average over the fine-scale ruggedness that stalls a gradient and that CMA
         # can only sample through.
-        runs = [search.bobyqa(C, C['v0'], bound=bound, maxfev=cfg.maxfev,
+        runs = [search.bobyqa(C_opt, C_opt['v0'], bound=bound, maxfev=cfg.maxfev,
                               seek_global=True, verbose=cfg.verbose)]
     elif n_starts > 1:
         runs = search.multistart(C, n_starts=n_starts, bound=bound, maxiter=maxiter, seed=seed)
@@ -413,6 +449,8 @@ def run(cfg, seed=None, tag=None, v_start=None):
                 amp_lo=(np.nan if cfg.amp_lo is None else float(cfg.amp_lo)),
                 amp_hi=float(cfg.amp_hi), row_weight=bool(cfg.row_weight),
                 w_brack=float(cfg.w_brack), include_zero=bool(cfg.include_zero),
+                window_mode=str(cfg.window_mode), span_lo=float(cfg.span_lo),
+                span_hi=float(cfg.span_hi), w_anchor=float(cfg.w_anchor),
                 lo_factor=float(cfg.lo_factor),
                 off_regime=bool(off_regime), re_lambda_fit=float(re_fit),
                 target_pinned=bool(tgt.k is not None),

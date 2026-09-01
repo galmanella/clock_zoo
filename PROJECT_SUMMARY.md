@@ -1568,6 +1568,72 @@ out not to be what was wanted.
 
 ---
 
+### 5.14 Direction 2 built: the relative window, and why it is unsafe without an anchor guard
+
+`fit/relcost.py`, reached with `RunConfig(window_mode='relative')`. The scored dose window is
+`[1.2, 8.0] x S*(v)`, the candidate's OWN transition, so moving S* relabels the dose axis
+instead of walking the transition out of view. SHAPE QUESTIONS ONLY -- it declares the dose
+scale a nuisance, which is legitimate for "are these isochrons radial" and wrong for fitting
+real data, where dose is measured. `fit/cost.py` remains the general PTC objective.
+
+**The anchor is a dispersion crossing, and it had to be calibrated.** S* is the dose where per-
+row circular dispersion crosses 0.5, interpolated in log dose -- the same observable as the
+bracketing barrier, and smooth where a singularity finder is a staircase. It sits SYSTEMATICALLY
+ABOVE the true S_crit (65.5 against 25.0 at base, a factor 2.62), so an uncalibrated span of
+"1.2-8 x S*" put the window top at 20.97 x the real S_crit, past the ~18x where hazard 11's
+pathology starts: the cost stayed smooth (0.4324 -> 0.4331) while `|grad|` read **1.3e+93**. The
+finite differences were right the whole time; only autodiff was destroyed. `span` is therefore
+quoted in units of the real S_crit and converted through a measured calibration factor.
+
+**A relative window ALONE rewards the very collapse it was built to stop.** Scored on the five
+real points -- base, the promoted seed-2 start, and three Aug-30 endpoints:
+
+| point | S*/S_crit | where | disp_max | raw c_ptc | anchor pen | total |
+|---|---|---|---|---|---|---|
+| base | 2.66 | in | 1.000 | 0.4811 | 0.00 | 0.4811 |
+| seed2 | 0.48 | in | 1.000 | 0.7515 | 0.00 | 0.7515 |
+| seed7 | 3.4e-4 | in | 0.877 | **0.3449** | 1.45 | 1.7988 |
+| seed15 | 2.2e-3 | in | 0.873 | **0.2727** | 1.54 | 1.8174 |
+| seed0 | -- | dead | -- | 1.0000 | 4.00 | 5.0000 |
+
+seeds 7 and 15 put their crossing 3.5 and 2.6 decades below S_crit and their raw shape term
+**beats base** (0.345 and 0.273 against 0.481). The window followed them down and rewarded them
+for it. But their dispersion never exceeds ~0.88 anywhere in six decades: there is no type-1
+side, so the "transition" is a crossing between two type-0 regimes. `anchor_penalty` charges
+exactly that (`DISP_FLOOR = 0.95`), plus the two unreachable cases -- transition above the last
+row with a live orbit, and no live orbit anywhere (`DEAD_PEN = 4.0`). Each clause reaches >= 1
+when fully violated and `circ_cost` is bounded in [0,1], so no invalid candidate can outscore a
+valid one. Set `w_anchor=0` to recover the unguarded behaviour.
+
+**The probe bounds are measured, not chosen.** `PROBE = (1e-5, 12.0) x S_crit` over 24 points.
+The floor is below the collapsed endpoints' actual crossings; the ceiling is where seed 2's
+orbit dies, consistent with hazard 11. `locate` restricts itself to rows that HAVE a limit
+cycle -- dead rows read resultant 0, i.e. dispersion 1.0, indistinguishable from perfect type-1,
+which previously reported a dead surface as "still transitioning above the ceiling".
+
+**Gradient-free optimizers only, and this is enforced.** The window is frozen inside autodiff,
+which is not Danskin -- S* is a feature location, not the argmin of anything -- so it drops the
+`dC/dS* . dS*/dv` term. Measured against finite differences that DO move the window: **13%** on
+the largest components (the 92% first measured was probe resolution in the FD, not the dropped
+term). `total` is correct and smooth either way -- a sweep along the steepest coordinate moves
+S* and the cost monotonically with max/median step ratios of 2.05 and 2.02, no jumps -- so CMA
+and BOBYQA are unaffected. `window_mode='relative'` refuses `lm` and `lbfgs` outright.
+
+**What it does NOT guard.** The degeneracy guards from `fit/cost.py` (`osc`, the amplitude
+floor) are reused rather than restated, because with the shape term alone an 8-evaluation
+plumbing smoke drove the relative cost 0.481 -> 0.310 while the fixed-grid diagnosis returned
+DEGENERATE. Adding them did not change that endpoint, and the decomposition says why: it passes
+every in-cost guard -- amp_lc 1.651 (94% of base), disp_max 0.998, `where='in'`, alive 1.00,
+anchor penalty 0 -- and fails only on Floquet `mu = nan`. **A cycle that looks healthy and is
+not attracting is invisible to this cost**, as it is to the absolute one; that remains
+`fit/stability.py`'s post-hoc walker. (`mu = nan` can also be a diagnosis failure rather than a
+verdict, and 8 evaluations is a smoke test, not a fit -- the point here is guard COVERAGE.)
+
+**Parent and pool build the same objective, bit-identically.** `fit.parallel.cost_spec` carries
+the relative fields, and `basis` is REQUIRED and refused if absent: a worker re-deriving the
+gauge quotient gets a different valid basis and the same `v` then means different parameters
+(hazard 18, measured at 3.0 decades). Verified 0.0e+00 disagreement at four points.
+
 ## 6. Figures
 
 ### Where they live

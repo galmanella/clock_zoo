@@ -806,6 +806,10 @@ def make_cost(model, target_state, doses, tgt, n_phase=24, mode='instant', backe
                 residual=residual, jac=jac,
                 v0=np.zeros(n_free), doses=np.asarray(doses), old=np.asarray(old),
                 amp_base=amp_base, amp_floor=amp_floor, target=tgt.name,
+                # exposed so a cost built on a DIFFERENT dose window (fit/relcost) can
+                # apply the identical degeneracy guards instead of restating the
+                # formulas -- REPO_MAP hazard 15.
+                osc_fn=osc, y_fp_seed=y_fp_seed, w_osc=w_osc, w_amp=w_amp,
                 theta=lambda v: np.asarray(_theta(jnp.asarray(v, jnp.float64))),
                 total=lambda v: float(_total(jnp.asarray(v, jnp.float64))),
                 # WHOLE POPULATION IN ONE LAUNCH. CMA has a parallel axis that a quasi-Newton

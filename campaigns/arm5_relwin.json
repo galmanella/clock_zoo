@@ -1,0 +1,48 @@
+{
+  "amp_lo": null,
+  "backend": "diffrax",
+  "bound": 3.5,
+  "cma_mode": "anneal",
+  "dt": 0.02,
+  "lo_factor": 0.5,
+  "log_every": 10,
+  "max_factor": 8.0,
+  "maxfev": 8000,
+  "mode": "instant",
+  "model": "almeida",
+  "n_dose": 14,
+  "n_phase": 20,
+  "notes": "2026-08-31 BATCH 2, direction 2 (PROJECT_SUMMARY 5.14). Built on arm0_ctl and differing from it in window_mode ONLY, so the batch-1 control is still the control and no new control run is needed. The window is [span_lo, span_hi] x the CANDIDATE's own transition, so 'walk S* out of the window' stops existing rather than being penalised -- the complement of arm2_brack, which penalises it on a fixed window. SHAPE QUESTION ONLY: this declares the dose scale a nuisance, which is legitimate for radialization and wrong for fitting real data. Compare ONLY through fit.compare_arms, which re-scores every endpoint under arm0's objective: an arm minimising a window that moves with the candidate has cost values that are not comparable to anything, INCLUDING to its own values at other points. ARM 5: relative window WITH the anchor-validity guard. Predicts endpoints keep a real type-1 side (disp_max >= 0.95) and a locatable transition, and that contract C6 passes by construction rather than by penalty.",
+  "optimizer": "cma",
+  "popsize": 32,
+  "readout": "REV",
+  "restarts": 2,
+  "section": "PER",
+  "seeds": [
+    [
+      0
+    ],
+    [
+      1
+    ],
+    [
+      2
+    ]
+  ],
+  "sigma0": 0.5,
+  "span_hi": 8.0,
+  "span_lo": 1.2,
+  "start": [
+    "base",
+    "fixture_seed2"
+  ],
+  "tag": "arm5_relwin",
+  "target": "BMAL1",
+  "target_mode": "pinned",
+  "verbose": true,
+  "w_amp": 1.0,
+  "w_anchor": 1.0,
+  "w_osc": 0.2,
+  "window_mode": "relative",
+  "workers": 32
+}

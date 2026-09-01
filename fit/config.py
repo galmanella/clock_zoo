@@ -104,6 +104,19 @@ class RunConfig:
     #: identity, so a miscalibrated readout pays for it in the cost rather than only in a report.
     include_zero: bool = False
 
+    #: WINDOW MODE (docs/FIT_VALIDITY.md direction 2, fit/relcost.py).
+    #: 'absolute' -- the historical behaviour: one fixed dose grid from `fit_dose_grid`.
+    #: 'relative' -- the scored window follows the candidate's OWN transition, so the escape
+    #: "walk S* out of the window" stops existing instead of being penalised. SHAPE QUESTIONS
+    #: ONLY: it declares the dose scale a nuisance, which is legitimate for "are these isochrons
+    #: radial" and WRONG for fitting real data, where dose is measured. It also forces a
+    #: gradient-free optimizer -- the window is held fixed inside autodiff, which drops the
+    #: dC/dS* . dS*/dv term (measured at 13% of the gradient).
+    window_mode: str = 'absolute'
+    span_lo: float = 1.2      #: window bottom, in units of the candidate's S* (calibrated)
+    span_hi: float = 8.0      #: window top; above ~18x S_crit hazard 11's pathology begins
+    w_anchor: float = 1.0     #: weight on the anchor-validity penalty; 0 disables it
+
     # ---- optimizer ------------------------------------------------------------------- #
     optimizer: str = 'cma'                      # 'cma' | 'bobyqa' | 'lbfgs' | 'lm'
     #: TOTAL cost evaluations. One currency for every optimizer, so budgets are comparable.

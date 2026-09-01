@@ -90,7 +90,9 @@ _W = {}
 
 def cost_spec(model_name, target, doses, n_phase, mode='instant', backend='diffrax', dt=0.02,
               w_osc=0.2, w_amp=1.0, target_k=None, target_psi=None, section=None,
-              readout=None, pulse=8.0, skip_p=None):
+              readout=None, pulse=8.0, skip_p=None, window_mode='absolute',
+              span=None, w_anchor=1.0, s_crit_base=None, amp_ramp=None, basis=None,
+              n_dose=None):
     """A picklable description of a cost, sufficient to rebuild it in a worker.
 
     Everything here is a primitive or an array. `section`/`readout` are carried explicitly
@@ -104,7 +106,20 @@ def cost_spec(model_name, target, doses, n_phase, mode='instant', backend='diffr
                 target_k=None if target_k is None else float(target_k),
                 target_psi=None if target_psi is None else float(target_psi),
                 section=section, readout=readout, pulse=float(pulse),
-                skip_p=None if skip_p is None else int(skip_p))
+                skip_p=None if skip_p is None else int(skip_p),
+                # RELATIVE-WINDOW FIELDS. `basis` is carried EXPLICITLY and is not optional:
+                # the gauge quotient is an SVD of a projector whose nonzero singular values are
+                # all 1, so a worker re-deriving it gets a different valid basis and the same
+                # `v` then means different parameters -- measured at 3.0 DECADES (hazard 18).
+                # A worker that rebuilt its own basis would score a different model than the
+                # parent asked about, silently.
+                window_mode=str(window_mode),
+                span=None if span is None else (float(span[0]), float(span[1])),
+                w_anchor=float(w_anchor),
+                s_crit_base=None if s_crit_base is None else float(s_crit_base),
+                amp_ramp=None if amp_ramp is None else (float(amp_ramp[0]), float(amp_ramp[1])),
+                basis=None if basis is None else np.asarray(basis, float),
+                n_dose=None if n_dose is None else int(n_dose))
 
 
 def build_cost(spec):
@@ -118,6 +133,20 @@ def build_cost(spec):
         model.reference_variable = spec['section']
     if spec.get('readout'):
         model.readout_variable = spec['readout']
+    if spec.get('window_mode') == 'relative':
+        from fit.relcost import make_relative_cost
+        if spec.get('basis') is None:
+            raise ValueError("a relative-window spec must carry `basis`: a worker that "
+                             "re-derives the gauge quotient gets a different valid basis and "
+                             "the same v then means different parameters (hazard 18).")
+        return make_relative_cost(
+            model, spec['target'], n_phase=spec['n_phase'], n_dose=spec.get('n_dose') or 14,
+            span=spec.get('span') or (1.2, 8.0), s_crit_base=spec.get('s_crit_base'),
+            mode=spec['mode'], backend=spec['backend'], dt=spec['dt'],
+            pulse=spec.get('pulse', 8.0), skip_p=spec.get('skip_p'),
+            readout_ref=spec.get('readout'), amp_ramp=spec.get('amp_ramp'),
+            w_osc=spec['w_osc'], w_amp=spec['w_amp'], w_anchor=spec.get('w_anchor', 1.0),
+            basis=spec['basis'])
     tgt = (RadialTarget(k=spec['target_k'], psi=spec['target_psi'])
            if spec['target_k'] is not None else RadialTarget())
     return make_cost(model, spec['target'], spec['doses'], tgt, n_phase=spec['n_phase'],

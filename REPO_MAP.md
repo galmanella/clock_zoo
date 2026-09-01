@@ -49,6 +49,7 @@ different code.
 | **Do the fitted orbits actually ATTRACT?** | `$PY -m fit.stability --model M --tag <c>` (`--selftest` first) |
 | Are the fitted surfaces flat, or is the transition just below the window? | `$PY -m fit.rescan --model M --tag <c>` |
 | Their figures | `$PY -m fit.figures --which cycles\|rescan --tag <c>` |
+| **Compare campaigns with different objectives** | `$PY -m fit.compare_arms --model M --arms A B C --control A` |
 
 Order matters: `scrit` derives the dose grid and the integrator step that `characterize` and
 `ptc_sens` consume, and `coupling` is a pure read of `lc_sens` + `ptc_sens`.
@@ -105,6 +106,8 @@ until the tasks are joined.
 | `stability.py` | **ENTRY. The stability guard.** Perturb the fitted cycle and integrate: does it come back, run away, or settle on a point? Measures each orbit's own numerical FLOOR first, because that spans five orders across a campaign and a perturbation below it measures noise (hazard 19). |
 | `rescan.py` | ENTRY. Re-renders a campaign's fitted PTCs finer and down to dose 0, with the dose-0 identity row as the readout-calibration control. Pins the run's gauge basis (hazard 18). |
 | `contract.py` | **ENTRY. The six-check surface validity contract** (orbit / attractor / dose-0 calibration / phase resolution / aliveness / bracketing), pinned to a regression fixture. Five of six are free from what `_surface` already computes. |
+| `compare_arms.py` | **ENTRY. Compares campaigns that used DIFFERENT objectives**, by re-scoring every endpoint under the CONTROL arm's objective -- the only column comparable across arms. Refuses to report a number for an endpoint where the cost is not well defined at double precision. |
+| `promote_start.py` | ENTRY. Promotes a finished fit's parameters into `fixtures/starts/` so a later run can START there, without `out/` becoming an input (hazard 16). Keyed on THETA, not `v` (hazard 18). |
 | `probe_window.py` | ENTRY. Decision probe: is a dose window anchored to the candidate's own transition continuous in parameters? (Yes, where an orbit exists -- PROJECT_SUMMARY 5.13b.) |
 | `figures.py` | Pure read. `--which radial\|recover` for one run; `seeds\|genes\|cycles\|rescan` for a campaign. |
 | `benchmark.py`, `multires.py` | Optimizer head-to-head; multi-resolution helpers. |

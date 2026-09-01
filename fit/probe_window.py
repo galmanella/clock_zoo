@@ -3,7 +3,7 @@ fit/probe_window.py
 ===================
 DOES A RELATIVE DOSE WINDOW GIVE A CONTINUOUS COST? -- the decision probe for direction 2.
 
-    python -m fit.probe_window
+    $PY -m fit.probe_window
 
 WHAT DIRECTION 2 PROPOSES
     Instead of a dose window fixed in absolute units, define it RELATIVE to each candidate's own

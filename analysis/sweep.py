@@ -3,7 +3,7 @@ analysis/sweep.py
 =================
 Walk a RANGE of displacements along one parameter direction and watch what moves.
 
-    python -m analysis.sweep --model almeida --target BMAL1 [--direction decoupled]
+    $PY -m analysis.sweep --model almeida --target BMAL1 [--direction decoupled]
                              [--eps-max 0.6 --n-eps 9]
 
 `analysis/confirm.py` answers "does this direction do what the jacobian claims" at a single

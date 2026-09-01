@@ -3,7 +3,7 @@ analysis/coupling.py
 ====================
 OBJECTIVE (b), part 3: HOW COUPLED are the limit cycle and the PTC, locally at base?
 
-    python -m analysis.coupling --model almeida --target BMAL1
+    $PY -m analysis.coupling --model almeida --target BMAL1
 
 Pure read: it consumes the npz files written by `analysis.lc_sens` and `analysis.ptc_sens`
 and adds no new integration. Three levels, cheapest first.

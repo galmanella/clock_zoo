@@ -4,8 +4,8 @@ analysis/levelset.py
 GLOBAL identifiability by construction: walk the manifold of parameter sets that leave one
 observable unchanged, and watch what happens to the other.
 
-    python -m analysis.levelset --model almeida --target BMAL1 --hold lc    # hold LC, watch PTC
-    python -m analysis.levelset --model almeida --target BMAL1 --hold ptc   # hold PTC, watch LC
+    $PY -m analysis.levelset --model almeida --target BMAL1 --hold lc    # hold LC, watch PTC
+    $PY -m analysis.levelset --model almeida --target BMAL1 --hold ptc   # hold PTC, watch LC
 
 WHY THIS AND NOT ANOTHER RANK NUMBER
     Every Jacobian-based statement in this project -- rank, condition number, principal angles,

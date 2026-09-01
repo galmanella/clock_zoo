@@ -4,7 +4,7 @@ analysis/scrit.py
 OBJECTIVE (a), step 1: for every perturbable target of a model, find where the PTC changes
 type, and derive the dose grid the rest of the analysis should use.
 
-    python -m analysis.scrit --model almeida [--mode pulse|instant] [--targets A,B]
+    $PY -m analysis.scrit --model almeida [--mode pulse|instant] [--targets A,B]
                              [--shard i --nshards n] [--merge]
 
 WHAT IT PRODUCES, PER (target, mode)

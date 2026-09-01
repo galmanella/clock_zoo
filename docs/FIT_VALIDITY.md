@@ -212,7 +212,7 @@ must be wide enough to bracket every candidate the search can reach — which is
 The first draft listed five steps. Four of them are `fit/rescan.py` with different arguments, so
 this is one command run at the corners of the search box rather than a procedure:
 
-    python -m fit.rescan --model M --tag <commissioning> --n-phase P --n-dose D --decades A
+    $PY -m fit.rescan --model M --tag <commissioning> --n-phase P --n-dose D --decades A
 
 Rescan the base point AND the box corners, and read off: does the window bracket the transition
 (C6)? does the twist converge (§5.9b — per gene, and it varies 16×: BMAL1 needs ≥48 dose

@@ -4,7 +4,7 @@ fit/target.py
 The analytic radial-isochron PTC -- the phase-transition surface of a Poincare oscillator whose
 isochrons are exact rays -- and the machinery to align it to a model surface for free.
 
-    python -m fit.target --selftest
+    $PY -m fit.target --selftest
 
 THE TARGET
     A Poincare oscillator sits on the unit circle at exp(2i*pi*theta). An INSTANT kick of size

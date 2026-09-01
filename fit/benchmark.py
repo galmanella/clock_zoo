@@ -3,7 +3,7 @@ fit/benchmark.py
 ================
 Head-to-head on ONE problem, with a matched evaluation budget.
 
-    python -m fit.benchmark --evals 1500
+    $PY -m fit.benchmark --evals 1500
 
 The problem is the T1 self-recovery control at eps = 0.3, seed 0, 12 phases x 8 doses -- exactly
 the setting in which the existing runs scored:

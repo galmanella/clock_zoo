@@ -5,7 +5,7 @@ Every figure, regenerated from saved npz. PURE READ -- nothing here integrates, 
 can always be rebuilt without re-running a sweep, and a change to how something is drawn never
 costs compute.
 
-    python -m analysis.figures --model almeida --target BMAL1 [--which all]
+    $PY -m analysis.figures --model almeida --target BMAL1 [--which all]
 
 Figures produced (into docs/figures/):
 

@@ -3,7 +3,7 @@ fit/radial.py
 =============
 T3: fit a clock model so its single-gene PTC matches a RADIAL-ISOCHRON (Poincare) target.
 
-    python -m fit.radial --model almeida --target BMAL1 [--starts 8]
+    $PY -m fit.radial --model almeida --target BMAL1 [--starts 8]
 
     RUN fit/recover.py FIRST. If the optimizer cannot recover the model's own displaced
     parameter set (an in-class target, guaranteed reachable), it certainly cannot fit an

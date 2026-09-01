@@ -4,8 +4,15 @@ One place to answer "which module is canonical for X?". Companion to
 [`PROJECT_SUMMARY.md`](PROJECT_SUMMARY.md) (the scientific narrative); this is the *code*
 index.
 
-Everything runs as a module from the repo root: `python -m engine.orbit`,
-`python -m analysis.scrit --model almeida`.
+Everything runs as a module from the repo root, **with the interpreter called by its full
+path** -- see [README](README.md#running); `$PY` below is that path:
+
+    export PY=/home/galmanel/miniconda3/envs/mirsky/bin/python     # cluster
+    export PY=/c/Users/galma/anaconda3/python.exe                  # local
+
+so `$PY -m engine.orbit`, `$PY -m analysis.scrit --model almeida`. A bare `python` picks up
+whatever is on PATH, which is how a dry-run and the array job it validated end up running
+different code.
 
 ## Layout
 
@@ -27,21 +34,21 @@ Everything runs as a module from the repo root: `python -m engine.orbit`,
 
 | Task | Run |
 |---|---|
-| Check a new model is wired up correctly | `python -m models.api <name>` then `python -m engine.validate <name>` |
-| **The full gate** (nothing in `analysis/` is trusted until this passes) | `python -m engine.validate` |
-| Where does each target change PTC type, and on what dose grid? | `python -m analysis.scrit --model M` |
-| The base PTC surfaces and their features | `python -m analysis.characterize --model M` |
-| How much does each parameter move the limit cycle? | `python -m analysis.lc_sens --model M` |
-| How much does each parameter move the PTC? | `python -m analysis.ptc_sens --model M --target T` |
-| **Are the LC and the PTC coupled?** (the batch-1 question) | `python -m analysis.coupling --model M --target T` |
-| Is the gauge declaration right? | `python -m gauge.validate [identity\|algebra\|invariance]` |
+| Check a new model is wired up correctly | `$PY -m models.api <name>` then `$PY -m engine.validate <name>` |
+| **The full gate** (nothing in `analysis/` is trusted until this passes) | `$PY -m engine.validate` |
+| Where does each target change PTC type, and on what dose grid? | `$PY -m analysis.scrit --model M` |
+| The base PTC surfaces and their features | `$PY -m analysis.characterize --model M` |
+| How much does each parameter move the limit cycle? | `$PY -m analysis.lc_sens --model M` |
+| How much does each parameter move the PTC? | `$PY -m analysis.ptc_sens --model M --target T` |
+| **Are the LC and the PTC coupled?** (the batch-1 question) | `$PY -m analysis.coupling --model M --target T` |
+| Is the gauge declaration right? | `$PY -m gauge.validate [identity\|algebra\|invariance]` |
 | Launch a campaign (after `--dry-run`) | `sbatch --array=0-N slurm/campaign_cpu.sh campaigns/<c>.json` |
-| **Join a finished campaign's tasks into one result** | `python -m fit.aggregate --model M --tag <c> [--kind genes]` |
-| The campaign figures (pure read of that npz) | `python -m fit.figures --which seeds\|genes --tag <c>` |
-| One run's figure | `python -m fit.figures --which radial --tag <run-tag>` |
-| **Do the fitted orbits actually ATTRACT?** | `python -m fit.stability --model M --tag <c>` (`--selftest` first) |
-| Are the fitted surfaces flat, or is the transition just below the window? | `python -m fit.rescan --model M --tag <c>` |
-| Their figures | `python -m fit.figures --which cycles\|rescan --tag <c>` |
+| **Join a finished campaign's tasks into one result** | `$PY -m fit.aggregate --model M --tag <c> [--kind genes]` |
+| The campaign figures (pure read of that npz) | `$PY -m fit.figures --which seeds\|genes --tag <c>` |
+| One run's figure | `$PY -m fit.figures --which radial --tag <run-tag>` |
+| **Do the fitted orbits actually ATTRACT?** | `$PY -m fit.stability --model M --tag <c>` (`--selftest` first) |
+| Are the fitted surfaces flat, or is the transition just below the window? | `$PY -m fit.rescan --model M --tag <c>` |
+| Their figures | `$PY -m fit.figures --which cycles\|rescan --tag <c>` |
 
 Order matters: `scrit` derives the dose grid and the integrator step that `characterize` and
 `ptc_sens` consume, and `coupling` is a pure read of `lc_sens` + `ptc_sens`.
@@ -119,7 +126,7 @@ until the tasks are joined.
    the indictment is of fixed-step RK4, and input_screen's own resolution was the adaptive
    backend, with which its gradient optimizer outperformed CMA-ES. That backend is now ported
    (`engine/flow.py`, `backend='diffrax'`). The enforceable rule is therefore: **a gradient
-   requires the adaptive backend AND a passing `python -m fit.cost --gradcheck`.** Do not
+   requires the adaptive backend AND a passing `$PY -m fit.cost --gradcheck`.** Do not
    assume the check passes -- it FAILS on an unrestricted dose grid, which is why
    `fit/doses.py` exists; see hazard 11.
 2. **A small BVP residual does not mean you have a limit cycle.** Any equilibrium satisfies
@@ -181,7 +188,7 @@ tracking.
 
     `fit/cost.py` is built against exactly this: a POINTWISE surface match (not a feature
     match), with unusable cells scored at the MAXIMUM rather than dropped, plus an amplitude
-    floor and the Hopf barrier. `python -m fit.cost --selftest` asserts the invariant --
+    floor and the Hopf barrier. `$PY -m fit.cost --selftest` asserts the invariant --
     measured base 0.292 against collapsed 2.748 -- and if it ever fails, the degeneracy has
     been rebuilt and no result from that pipeline should be believed.
 11. **The PTC gradient explodes at far-supercritical dose, adaptive backend or not.** Measured
@@ -294,7 +301,7 @@ tracking.
     THE RULE IS ABSOLUTE, and it is not only about S_crit. If a result is needed as the basis
     of another run, PROMOTE it:
 
-        python -m fit.doses --promote --model almeida --mode instant [--dry-run]
+        $PY -m fit.doses --promote --model almeida --mode instant [--dry-run]
         git add fixtures/scrit/almeida && git commit
 
     Promotion is deliberate, reviewable, and shows up as a diff. "The dose window changed"
@@ -417,7 +424,7 @@ tracking.
         decaying deviation stops decaying there and a slope fitted through the flat tail
         returned 0.727 for an orbit whose Floquet multiplier is 0.546.
       * **Cross-check the walk where Floquet IS trustworthy.** At the base point the monodromy
-        is well conditioned; `python -m fit.stability --selftest` asserts the walk recovers
+        is well conditioned; `$PY -m fit.stability --selftest` asserts the walk recovers
         0.546 within 10% (it measures 0.549). Assert the VALUE, not the sign -- the
         tail-contaminated version passed a sign test.
 

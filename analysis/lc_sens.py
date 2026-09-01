@@ -3,7 +3,7 @@ analysis/lc_sens.py
 ===================
 OBJECTIVE (b), part 1: how much does each parameter move the LIMIT CYCLE?
 
-    python -m analysis.lc_sens --model almeida [--shard i --nshards n] [--merge]
+    $PY -m analysis.lc_sens --model almeida [--shard i --nshards n] [--merge]
 
 For every parameter x every factor in a fixed multiplicative grid, re-solve the periodic orbit
 and measure how far the cycle moved from base:

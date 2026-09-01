@@ -17,7 +17,7 @@ When a fit stops away from the truth, WHY did it stop? Two very different answer
 `fit/recover.py` reported both L-BFGS and CMA-ES as "NOT RECOVERED" without distinguishing
 these, which is not a conclusion about anything.
 
-    python -m analysis.minimum --tags T1d,T1cma
+    $PY -m analysis.minimum --tags T1d,T1cma
 
 TWO PROBES
     1. RANDOM. Sample directions around the stopping point at several radii and count how many

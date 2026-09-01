@@ -3,7 +3,7 @@ engine/validate.py
 ==================
 THE GATE. Nothing in analysis/ runs against a model until this passes for it.
 
-    python -m engine.validate [model ...] [--quick]
+    $PY -m engine.validate [model ...] [--quick]
 
 Eight checks, each of which has already caught something real:
 

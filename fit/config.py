@@ -27,6 +27,7 @@ import dataclasses
 import itertools
 import json
 import os
+import sys
 from dataclasses import dataclass, field, fields
 from typing import Any, Optional
 
@@ -442,7 +443,7 @@ def load_start_fixture(model_name, name, n_free):
                       'fixtures', 'starts', model_name, name + '.npz')
     if not os.path.exists(fp):
         raise SystemExit(f"no start fixture {fp}. Promote one with "
-                         f"`python -m fit.promote_start --help`.")
+                         f"`{sys.executable} -m fit.promote_start --help`.")
     z = np.load(fp, allow_pickle=True)
     theta = np.asarray(z['theta'], float)
     names, z_base, B, _g = quotient_basis(get_model(model_name))

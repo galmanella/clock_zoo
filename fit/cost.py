@@ -3,8 +3,8 @@ fit/cost.py
 ===========
 The objective for fitting a clock model to a PTC surface.
 
-    python -m fit.cost --selftest                 # the anti-degeneracy invariant
-    python -m fit.cost --gradcheck                # autodiff vs finite differences
+    $PY -m fit.cost --selftest                 # the anti-degeneracy invariant
+    $PY -m fit.cost --gradcheck                # autodiff vs finite differences
 
     C(v) = C_ptc(v) + w_osc * B_osc(v) + w_amp * A(v)
 

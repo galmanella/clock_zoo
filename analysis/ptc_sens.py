@@ -3,7 +3,7 @@ analysis/ptc_sens.py
 ====================
 OBJECTIVE (b), part 2: how much does each parameter move the PTC?
 
-    python -m analysis.ptc_sens --model almeida --target BMAL1 [--shard i --nshards n] [--merge]
+    $PY -m analysis.ptc_sens --model almeida --target BMAL1 [--shard i --nshards n] [--merge]
 
 For every parameter x every factor (the SAME grid as analysis/lc_sens.py, so the two pair up),
 recompute the PTC on the target's FIXED base dose grid and measure three features against the

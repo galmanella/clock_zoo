@@ -3,7 +3,7 @@ fit/promote_start.py
 ====================
 Promote a finished fit's parameters into `fixtures/starts/` so a later run can START there.
 
-    python -m fit.promote_start --model almeida --tag bmal1seeds --label 2 --name seed2 \
+    $PY -m fit.promote_start --model almeida --tag bmal1seeds --label 2 --name seed2 \
         --why "attracting orbit, but fails contract C5 and C6 -- the pathological arm start"
     git add fixtures/starts/almeida && git commit
 

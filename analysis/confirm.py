@@ -3,7 +3,7 @@ analysis/confirm.py
 ===================
 Turn a decoupling CANDIDATE into a result, or retract it.
 
-    python -m analysis.confirm --model almeida --target BMAL1 [--eps 0.15]
+    $PY -m analysis.confirm --model almeida --target BMAL1 [--eps 0.15]
 
 `analysis/coupling.py` reports directions that a linear, finite-difference summary says move
 the PTC a lot per unit of limit-cycle movement. That is a jacobian claim. This module takes a

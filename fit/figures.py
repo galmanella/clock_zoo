@@ -4,8 +4,8 @@ fit/figures.py
 Figures for the fitting runs. PURE READ -- every panel comes from a saved npz, so replotting
 never re-runs a fit.
 
-    python -m fit.figures --which radial  [--tag T]
-    python -m fit.figures --which recover [--tag T]
+    $PY -m fit.figures --which radial  [--tag T]
+    $PY -m fit.figures --which recover [--tag T]
 
 WHY THE LIMIT-CYCLE PANELS ARE HERE
     The first radial run returned VERDICT: RADIALIZED. Residual 0.258 -> 0.011, twist
@@ -21,6 +21,7 @@ WHY THE LIMIT-CYCLE PANELS ARE HERE
 import argparse
 import glob
 import os
+import sys
 
 import numpy as np
 import matplotlib
@@ -537,7 +538,7 @@ def fig_seeds(z):
         raise SystemExit(
             f"this looks like a PER-TASK seeds npz, not an aggregated one (missing "
             f"{', '.join(missing)}). It compares only the seeds that shared one array task. "
-            f"Run `python -m fit.aggregate --model {_CTX['model']} --tag <campaign>` and plot "
+            f"Run `{sys.executable} -m fit.aggregate --model {_CTX['model']} --tag <campaign>` and plot "
             f"the tag it writes.")
     lab, cost = z['labels'], np.asarray(z['cost'], float)
     D, ok = np.asarray(z['dist'], float), _usable(z)
@@ -1295,7 +1296,7 @@ def main(argv=None):
     ap.add_argument('--model', default='almeida')
     ap.add_argument('--which', default='radial', choices=tuple(_WHICH),
                     help="'radial'/'recover': one run. 'seeds'/'genes': a CAMPAIGN, from the "
-                         "npz written by `python -m fit.aggregate`.")
+                         "npz written by `fit.aggregate` -- see README on calling the interpreter.")
     ap.add_argument('--tag', default=None)
     ap.add_argument('--publish', action='store_true',
                     help='ALSO copy to docs/figures/<model>_<name>.png with a .source.txt. '
@@ -1307,7 +1308,7 @@ def main(argv=None):
         raise SystemExit(
             f"no {a.which} npz ({pattern}) for {a.model}/{analysis}"
             + (f" under tag {tag!r}" if tag else "")
-            + (f"\nRun `python -m fit.aggregate --model {a.model} --tag <campaign> "
+            + (f"\nRun `{sys.executable} -m fit.aggregate --model {a.model} --tag <campaign> "
                f"--kind {a.which}` first." if a.which in ('seeds', 'genes') else ""))
     for k in ('model', 'target', 'mode', 'optimizer', 'campaign_tag', 'key',
               'section', 'readout'):

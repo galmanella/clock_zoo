@@ -3,10 +3,10 @@ fit/campaign.py
 ===============
 Turn ONE config file with list-valued fields into a matrix of runs, and execute or enumerate it.
 
-    python -m fit.campaign --config campaigns/genes.json --list      # what would run
-    python -m fit.campaign --config campaigns/genes.json --dry-run   # + validate every one
-    python -m fit.campaign --config campaigns/genes.json --index 3   # run one (SLURM array)
-    python -m fit.campaign --config campaigns/genes.json --all       # run all, in order
+    $PY -m fit.campaign --config campaigns/genes.json --list      # what would run
+    $PY -m fit.campaign --config campaigns/genes.json --dry-run   # + validate every one
+    $PY -m fit.campaign --config campaigns/genes.json --index 3   # run one (SLURM array)
+    $PY -m fit.campaign --config campaigns/genes.json --all       # run all, in order
 
 WHY AN INDEX RATHER THAN A LOOP
     A campaign is a set of INDEPENDENT experiments, and that maps onto a SLURM array exactly:

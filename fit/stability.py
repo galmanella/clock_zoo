@@ -3,9 +3,9 @@ fit/stability.py
 ================
 IS THE THING THE BVP RETURNED ACTUALLY WHERE THE SYSTEM LIVES?
 
-    python -m fit.stability --model almeida --tag bmal1seeds          # audit a campaign
-    python -m fit.stability --model almeida --tag genes --kind genes
-    python -m fit.stability --selftest                                # known answers
+    $PY -m fit.stability --model almeida --tag bmal1seeds          # audit a campaign
+    $PY -m fit.stability --model almeida --tag genes --kind genes
+    $PY -m fit.stability --selftest                                # known answers
 
 THE FAILURE THIS EXISTS TO CATCH
     A converged periodic-orbit solve says `phi_T(y0) = y0` to machine precision. It says
@@ -87,6 +87,7 @@ USE IT AS A GATE, NOT AS A REPORT
 import argparse
 import json
 import os
+import sys
 
 import numpy as np
 
@@ -408,7 +409,7 @@ def audit(model_name, tag, analysis='fit_radial', kind='seeds', n_blocks=24, ndi
     pat = 'seeds_*.npz' if kind == 'seeds' else 'genes_*.npz'
     fs = sorted(glob.glob(os.path.join(d, pat)))
     if not fs:
-        raise SystemExit(f"no aggregated {pat} under {d}. Run `python -m fit.aggregate "
+        raise SystemExit(f"no aggregated {pat} under {d}. Run `{sys.executable} -m fit.aggregate "
                          f"--model {model_name} --tag {tag}"
                          + ('' if kind == 'seeds' else ' --kind genes') + "` first.")
     z = dict(np.load(fs[-1], allow_pickle=True))

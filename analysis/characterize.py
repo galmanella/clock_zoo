@@ -4,7 +4,7 @@ analysis/characterize.py
 OBJECTIVE (a), step 2: the full PTC surface of every target at the BASE parameter set, on the
 adaptive dose grid `analysis.scrit` derived, with its features extracted.
 
-    python -m analysis.characterize --model almeida [--mode pulse|instant] [--targets A,B]
+    $PY -m analysis.characterize --model almeida [--mode pulse|instant] [--targets A,B]
 
 Per target it saves the raw surface plus:
     winding vs dose        type-1 / type-0 / unusable, per dose

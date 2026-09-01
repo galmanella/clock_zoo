@@ -456,7 +456,7 @@ produced a plausible-looking wrong number.
 
 ### 4.1 Validation status
 
-`python -m engine.validate` — eight checks, all four models PASS:
+`$PY -m engine.validate` — eight checks, all four models PASS:
 
 | check | Almeida | Korencic | Goldbeter | Goodwin |
 |---|---|---|---|---|
@@ -552,7 +552,7 @@ Both terms of that cost (twist span, singularity position) are *minimized* by a 
 oscillator. The cost here inverts that: it is a **pointwise match over the whole surface**, and
 an unusable cell scores the **maximum** rather than being dropped. A dead oscillator therefore
 becomes the worst point in the space instead of the best. Asserted by
-`python -m fit.cost --selftest`: base **0.3615**, Hopf-collapsed **2.4813**.
+`$PY -m fit.cost --selftest`: base **0.3615**, Hopf-collapsed **2.4813**.
 
 *(Re-measured at HEAD. The pair quoted here until 2026-08-30 was 0.292 / 2.748; the
 invariant is unchanged and the drift predates the P1 aliveness ramp -- verified by an A/B
@@ -1582,15 +1582,15 @@ distinguishable batch instead of silently overwriting.
 `--publish` and prefixed by model name. Regenerate everything with:
 
 ```bash
-python -m analysis.figures --model almeida --target BMAL1 --tag batch1 --publish
+$PY -m analysis.figures --model almeida --target BMAL1 --tag batch1 --publish
 ```
 
 A CAMPAIGN's figures need its tasks joined first -- the comparison they draw does not exist
 until then:
 
 ```bash
-python -m fit.aggregate --model almeida --tag bmal1seeds          # then --which seeds
-python -m fit.figures   --model almeida --which seeds --tag bmal1seeds
+$PY -m fit.aggregate --model almeida --tag bmal1seeds          # then --which seeds
+$PY -m fit.figures   --model almeida --which seeds --tag bmal1seeds
 ```
 
 Pure read of the saved npz -- no figure costs compute to rebuild.

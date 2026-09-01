@@ -4,7 +4,7 @@ analysis/quality.py
 A PASS/FAIL gate on a PTC surface, run BEFORE any feature (S_crit, phi*, twist, rho) is quoted
 from it.
 
-    python -m analysis.quality --model almeida --mode instant [--tag T] [--targets A,B]
+    $PY -m analysis.quality --model almeida --mode instant [--tag T] [--targets A,B]
 
 WHY THIS EXISTS
     The CRY surface in the pulse-mode batch-1 run was reported with an S_crit of 138.1, a twist

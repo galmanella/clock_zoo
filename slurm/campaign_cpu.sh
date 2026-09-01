@@ -7,10 +7,9 @@
 #SBATCH --time=12:00:00
 #
 # Usage:
-#   mkdir -p /central/home/galmanel/slurmout/clock_zoo      # ONCE -- sbatch will not create it
-#
+#   export PY=/home/galmanel/miniconda3/envs/mirsky/bin/python   # full path, never `python`
 #   cd <repo root>                                          # NOT slurm/, NOT the parent.
-#   $PYTHON_EXE -m fit.campaign --config campaigns/genes.json --dry-run   # ALWAYS first
+#   $PY -m fit.campaign --config campaigns/genes.json --dry-run           # ALWAYS first
 #   sbatch --array=0-3 slurm/campaign_cpu.sh campaigns/genes.json
 #
 #   `python -m` puts the CURRENT DIRECTORY on sys.path, so the dry-run finds `fit` only from
@@ -119,8 +118,8 @@ MODEL=$("$PYTHON_EXE" -c "import json,sys;print(json.load(open(sys.argv[1])).get
 cat <<EOF
 
   ONCE THE WHOLE ARRAY HAS FINISHED, join it before reading anything:
-      python -m fit.aggregate --model ${MODEL:-almeida} --tag ${CAMPAIGN_TAG:-campaign}
-      python -m fit.figures   --model ${MODEL:-almeida} --which seeds --tag ${CAMPAIGN_TAG:-campaign}
+      $PYTHON_EXE -m fit.aggregate --model ${MODEL:-almeida} --tag ${CAMPAIGN_TAG:-campaign}
+      $PYTHON_EXE -m fit.figures   --model ${MODEL:-almeida} --which seeds --tag ${CAMPAIGN_TAG:-campaign}
   (a one-gene-per-task campaign uses --kind genes / --which genes)
 EOF
 exit $rc

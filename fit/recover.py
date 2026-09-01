@@ -3,7 +3,7 @@ fit/recover.py
 ==============
 T1, the self-recovery control -- and the go/no-go for the whole radial-fit programme.
 
-    python -m fit.recover --model almeida --target BMAL1 --eps 0.3
+    $PY -m fit.recover --model almeida --target BMAL1 --eps 0.3
 
 WHAT IT ASKS
     Generate a PTC surface from the model itself at a KNOWN displaced parameter set, then try

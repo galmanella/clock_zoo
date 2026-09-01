@@ -3,9 +3,9 @@ fit/aggregate.py
 ================
 Join the per-task outputs of a CAMPAIGN into one campaign-level result.
 
-    python -m fit.aggregate --model almeida --tag bmal1seeds            # aggregate + report
-    python -m fit.aggregate --model almeida --tag bmal1seeds --list     # what it would join
-    python -m fit.aggregate --model almeida --tag genes --kind genes    # the per-gene campaign
+    $PY -m fit.aggregate --model almeida --tag bmal1seeds            # aggregate + report
+    $PY -m fit.aggregate --model almeida --tag bmal1seeds --list     # what it would join
+    $PY -m fit.aggregate --model almeida --tag genes --kind genes    # the per-gene campaign
 
 WHY THIS EXISTS AT ALL
     `fit.radial.run_seeds` compares the seeds that share ONE array task, because that is all

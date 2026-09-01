@@ -3,8 +3,8 @@ fit/rescan.py
 =============
 Re-render a campaign's fitted PTC surfaces on a BIGGER, FINER dose grid -- reaching down to 0.
 
-    python -m fit.rescan --model almeida --tag bmal1seeds
-    python -m fit.rescan --model almeida --tag genes --kind genes --n-phase 48 --n-dose 48
+    $PY -m fit.rescan --model almeida --tag bmal1seeds
+    $PY -m fit.rescan --model almeida --tag genes --kind genes --n-phase 48 --n-dose 48
 
 WHY THE FIT WINDOW IS THE WRONG WINDOW TO LOOK AT THE ANSWER IN
     `fit/doses.fit_dose_grid` spans `0.5x` to `max_factor x S_crit`, and that is the right
@@ -40,6 +40,7 @@ import argparse
 import glob
 import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -82,7 +83,7 @@ def rescan(model_name, tag, analysis='fit_radial', kind='seeds', n_phase=48, n_d
     pat = 'seeds_*.npz' if kind == 'seeds' else 'genes_*.npz'
     fs = sorted(glob.glob(os.path.join(d, pat)))
     if not fs:
-        raise SystemExit(f"no aggregated {pat} under {d}. Run `python -m fit.aggregate "
+        raise SystemExit(f"no aggregated {pat} under {d}. Run `{sys.executable} -m fit.aggregate "
                          f"--model {model_name} --tag {tag}"
                          + ('' if kind == 'seeds' else ' --kind genes') + "` first.")
     z = dict(np.load(fs[-1], allow_pickle=True))

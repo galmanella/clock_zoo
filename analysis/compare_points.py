@@ -4,7 +4,7 @@ analysis/compare_points.py
 Put the actual surfaces side by side: what do the SEED, the TRUTH, the two optimizers' local
 minima, and the BARRIER PEAKS between them actually look like?
 
-    python -m analysis.compare_points --model almeida --target BMAL1
+    $PY -m analysis.compare_points --model almeida --target BMAL1
 
 Everything in this project so far has been scalars -- ranks, condition numbers, barrier heights,
 costs. Those are inferences about surfaces nobody has looked at. This renders the surfaces.

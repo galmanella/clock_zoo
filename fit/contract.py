@@ -3,8 +3,8 @@ fit/contract.py
 ===============
 IS THIS SURFACE SCOREABLE? Six checks, computed from the production surface.
 
-    python -m fit.contract --model almeida --tag bmal1seeds     # audit a campaign
-    python -m fit.contract --selftest                           # the regression fixture
+    $PY -m fit.contract --model almeida --tag bmal1seeds     # audit a campaign
+    $PY -m fit.contract --selftest                           # the regression fixture
 
 WHY A CONTRACT AND NOT MORE PENALTY TERMS
     The Aug-30 campaign's pathologies look like the optimizer finding cheap corners. Measured,
@@ -42,6 +42,7 @@ import argparse
 import glob
 import json
 import os
+import sys
 
 import numpy as np
 
@@ -207,7 +208,7 @@ def main(argv=None):
     d = paths.out_dir(a.model, a.analysis, tag, create=False)
     fs = sorted(glob.glob(os.path.join(d, 'seeds_*.npz')))
     if not fs:
-        raise SystemExit(f"no aggregated seeds_*.npz under {d}; run `python -m fit.aggregate` "
+        raise SystemExit(f"no aggregated seeds_*.npz under {d}; run `{sys.executable} -m fit.aggregate` "
                          f"--model {a.model} --tag {tag}` first.")
     z = dict(np.load(fs[-1], allow_pickle=True))
     cfg = json.loads(str(z['cfg_json']))

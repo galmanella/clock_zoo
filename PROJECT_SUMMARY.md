@@ -1832,10 +1832,17 @@ floor is NOT free at fixed `n_dose`: see 5.15c-bis, which is the reason not to s
 
 #### 5.15c-bis THE DOSE FLOOR IS NOT FREE AT FIXED `n_dose`, AND THE PRICE IS THE TWIST
 
-P2 was costed as free -- "32x48 over [0.01, 8] S* is 20.9 s against 24.7 s over [0.5, 8]", i.e.
-low doses integrate quickly. That is true of WALL TIME and false of INFORMATION. `n_dose` was
-held at 14 while the window grew from 1.20 decades to 2.90, so the extra range was paid for out
-of the resolution of the part that carries the signal.
+**This is not a new finding; it is the measured version of one `fit/doses.py` already carries.**
+`fit_dose_grid`'s docstring states the tension and tabulates it -- "reaching down and resolving
+twist are in tension AT FIXED n, and the only way to have both is more rows -- which is why P2
+and P4 of docs/FIT_VALIDITY.md have to be decided together", with 10.5 rows above S_crit at
+lo=0.5 against 4.3 at lo=0.01, n=14. What batch 1 adds is the same trade seen on real fitted
+surfaces rather than on the grid arithmetic, plus where the cost actually lands.
+
+P2 was costed as free in the FIT_VALIDITY table -- "32x48 over [0.01, 8] S* is 20.9 s against
+24.7 s over [0.5, 8]", i.e. low doses integrate quickly -- and that table is about WALL TIME.
+`n_dose` was held at 14 while the window grew from 1.20 decades to 2.90, so the extra range was
+paid for out of the resolution of the part that carries the signal.
 
 | | `lo_factor` 0.5 | `lo_factor` 0.01 |
 |---|---|---|
@@ -1875,8 +1882,11 @@ down fixes it", and not as "adopt `lo_factor=0.01` at `n_dose=14`."** Three ways
 bracketing without paying for it, none yet measured:
 
   a. **Raise `n_dose` with the window.** Holding rows-above-S_crit at 9 across 2.90 decades
-     needs `n_dose` ~ 30. That is the budget question deferred in item 0's P4, and it is now
-     forced rather than optional.
+     needs `n_dose` ~ 30. That is the budget question deferred in item 0's P4, which
+     `fit/doses.py` already says must be decided together with P2 -- batch 1 is the evidence
+     that it cannot be deferred any longer. Note its own figure: 48 rows at lo=0.01 gives MORE
+     absolute type-0 coverage (15) than 14 rows at lo=0.5 (10.5), plus 33 rows below the
+     transition. The floor is affordable; the floor AT n_dose=14 is not.
   b. **A NON-UNIFORM grid**: a few anchor rows below S_crit purely to bracket the transition,
      the rest log-spaced above it. The bracketing evidence needs to KNOW there is a type-1
      side; it does not need nine samples of it.

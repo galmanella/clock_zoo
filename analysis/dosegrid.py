@@ -111,17 +111,37 @@ def shared_grid(S, n=N_DOSE, below=BELOW_FRAC, decades=DECADES, anchor='median',
 
 
 # --------------------------------------------------------------------------- #
+def _scrit_files(model_name, mode, tag):
+    """(tag, files) of the newest scrit run that actually holds THIS MODE.
+
+    `paths.latest_run` returns the newest tag directory, full stop -- and the two modes are
+    routinely run under different tags (Almeida's pulse scan lives in `batch1`, its instant
+    scan in `instant01`). Taking the newest directory therefore silently returned "no scrit
+    for pulse" whenever the instant run happened to be more recent. Search every tag, newest
+    first, and take the first that has files for the mode asked for."""
+    base = os.path.join(paths.OUT, str(model_name), 'scrit')
+    if tag is not None:
+        tags = [tag]
+    elif os.path.isdir(base):
+        tags = sorted((t for t in os.listdir(base) if os.path.isdir(os.path.join(base, t))),
+                      key=lambda t: os.path.getmtime(os.path.join(base, t)), reverse=True)
+    else:
+        tags = []
+    for t in tags:
+        d = paths.out_dir(model_name, 'scrit', t, create=False)
+        files = sorted(f for f in glob.glob(os.path.join(d, f'scrit_{mode}*.npz'))
+                       if 'dosegrid' not in os.path.basename(f))
+        if files:
+            return t, files
+    return (tag, []) if tag is not None else (None, [])
+
+
 def read_scrit(model_name, mode, tag=None):
     """Merge every scrit npz of a run into {targets, S_crit, d_max_valid, dt_used, ...}."""
-    tag = tag or paths.latest_run(model_name, 'scrit')
-    if tag is None:
-        raise SystemExit(f"run `$PY -m analysis.scrit --model {model_name} "
-                         f"--mode {mode}` first")
-    d = paths.out_dir(model_name, 'scrit', tag, create=False)
-    files = sorted(f for f in glob.glob(os.path.join(d, f'scrit_{mode}*.npz'))
-                   if 'dosegrid' not in os.path.basename(f))
+    tag, files = _scrit_files(model_name, mode, tag)
     if not files:
-        raise SystemExit(f"no scrit_{mode}*.npz under {d}")
+        raise SystemExit(f"no scrit_{mode}*.npz for {model_name}; run "
+                         f"`$PY -m analysis.scrit --model {model_name} --mode {mode}` first")
     per = ['S_crit', 'd_max_valid', 'dt_used', 'ceiling_reason', 'reentrant', 'S_converged']
     targets, acc = [], {k: [] for k in per}
     for fp in files:
@@ -174,7 +194,7 @@ def derive(model_name, mode='pulse', tag=None, n=N_DOSE, below=BELOW_FRAC, decad
 
 def load(model_name, mode='pulse', tag=None):
     """The saved shared grid: (grid, dt, blob). Raises with the command to run if absent."""
-    tag = tag or paths.latest_run(model_name, 'scrit')
+    tag, _files = _scrit_files(model_name, mode, tag)
     fp = None if tag is None else paths.out_path(model_name, 'scrit',
                                                  f'dosegrid_{mode}.npz', tag)
     if fp is None or not os.path.exists(fp):

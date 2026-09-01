@@ -1629,6 +1629,20 @@ not attracting is invisible to this cost**, as it is to the absolute one; that r
 `fit/stability.py`'s post-hoc walker. (`mu = nan` can also be a diagnosis failure rather than a
 verdict, and 8 evaluations is a smoke test, not a fit -- the point here is guard COVERAGE.)
 
+**The dead-oscillator terms are inherited from batch 1, not re-invented -- and that is a
+SEPARATE failure mode from the one this arm addresses.** `w_osc=0.2` and `w_amp=1.0` are in
+every batch-1 arm and are carried into the relative cost by reusing `fit.cost`'s own `osc` and
+`amp_floor`: measured identical `amp_floor` (0.08765) and agreement to 6e-12 on values of order
+5-16, firing at 7 of 8 probe points. The anchor-validity penalty is the RUNAWAY solution -- the
+counterpart of arm2's bracketing barrier -- and charges a missing type-1 side, an unreachable
+transition, or a dead surface. None of those is an amplitude or Floquet verdict. Keeping the two
+straight matters for the batch: whether `w_osc`/`w_amp` alone suffice, or the aliveness ramp is
+also needed, is what `arm1_ramp` is measuring, so **batch 2 should not be submitted until
+batch 1 reports** -- otherwise the runaway comparison is confounded by dead ends the other arm
+already knows how to prevent. If the ramp wins, set `amp_lo=0.05` in BOTH relwin arms and the
+batch-2 control becomes `arm1_ramp` (arm5 still differs from it in `window_mode` alone). The
+rule is recorded in both campaign files' `notes`.
+
 **Parent and pool build the same objective, bit-identically.** `fit.parallel.cost_spec` carries
 the relative fields, and `basis` is REQUIRED and refused if absent: a worker re-deriving the
 gauge quotient gets a different valid basis and the same `v` then means different parameters

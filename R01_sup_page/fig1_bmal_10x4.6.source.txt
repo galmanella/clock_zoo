@@ -1,0 +1,9 @@
+fig1_bmal_10x4.6.png / .svg
+script   R01_sup_page/panels.py
+commit   4fb42ca
+built    2026-09-01T18:29:01
+size     10.00 x 4.60 cm at 600 dpi
+data:
+  almeida    BMAL1   tag=zoo04lin  n_phase=32  n_dose=97  S*=26.56
+  korencic   Bmalx   tag=korph256  n_phase=256  n_dose=97  S*=23.44
+  goldbeter  MB      tag=zoo04lin  n_phase=32  n_dose=97  S*=9.896

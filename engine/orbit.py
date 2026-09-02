@@ -73,9 +73,30 @@ def _rk4_step(rhs, y, h, T, P):
     return y + (h * T / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
 
-def _flow(rhs, y0, T, P, n_steps, full=False):
+#: Default integrator for the orbit BVP. ADAPTIVE, because a fixed step's accuracy is a
+#: property of the MODEL rather than of the code, and this project keeps paying for that: the
+#: dose ceilings in analysis/scrit are a step-size artefact (REPO_MAP hazard 4), the whole
+#: dt-refinement loop exists only to chase them, and goldbeter_rev -- whose state vector spans
+#: 4.5 decades -- is where it finally breaks. MEASURED on that model, fixed-step RK4 at the
+#: default 1024 steps is CONDITIONAL on where it starts: it converges from `solver.guess`
+#: (|F| = 1.2e-13) but returns NaN from the model's own declared IC plus nominal period, and
+#: from a rough start at 16384 steps it diverges to 6.5e+59. It needs 4096 steps to be
+#: unconditional. Tsit5 converges from all three. A solver whose success depends on the guess
+#: is one that will fail silently at a displaced parameter set, which is where fits live.
+#: Pass backend='rk4' for the old fixed-step path, e.g. to A/B against it.
+ORBIT_BACKEND = 'diffrax'
+
+
+def _flow(rhs, y0, T, P, n_steps, full=False, backend=None, grad_mode='fwd'):
     """Integrate (1) over one period. full=False -> endpoint; True -> (n_steps+1, n) trace
-    whose row i is the state at phase i/n_steps. The tau grid IS the phase grid."""
+    whose row i is the state at phase i/n_steps. The tau grid IS the phase grid.
+
+    `backend=None` uses ORBIT_BACKEND. On the adaptive path `n_steps` selects only how many
+    samples come back, not how accurately they are computed."""
+    if (backend or ORBIT_BACKEND) == 'diffrax':
+        from engine.flow import orbit_flow
+        return orbit_flow(rhs, y0, T, P, n_steps, full=full, grad_mode=grad_mode)
+
     h = 1.0 / n_steps
 
     def step(y, _):
@@ -99,8 +120,8 @@ class OrbitSolver:
     guess(P)               -> x0 = concat([y0, T])   (host-side, never differentiated)
     """
 
-    def __init__(self, model, n_steps=1024, ref=None, newton_iters=8, damping=1.0,
-                 phase_condition=None):
+    def __init__(self, model, n_steps=None, ref=None, newton_iters=8, damping=1.0,
+                 phase_condition=None, backend=None):
         # newton_iters=8 by default, not 4: Almeida converges to |F| ~ 1e-13 in 4, but Goodwin
         # (whose guess starts further out) still sits at 1.8e-6 after 4 and only reaches 8e-16
         # at 8. Under-convergence is invisible in the self-convergence check -- a coarse and a
@@ -110,7 +131,10 @@ class OrbitSolver:
         self.model = model
         self.rhs = model.jax_rhs
         self.n = int(model.n_states)
-        self.n_steps = int(n_steps)
+        # None -> the model's own declaration, then the default. An EXPLICIT value always
+        # wins, so nothing that already passes a number changes behaviour.
+        self.n_steps = int(n_steps or getattr(model, 'orbit_steps', None) or 1024)
+        self.backend = backend or ORBIT_BACKEND
         self.newton_iters = int(newton_iters)
         self.damping = float(damping)
         ref = ref or getattr(model, 'reference_variable', None) or model.state_names[0]
@@ -123,7 +147,8 @@ class OrbitSolver:
     # -- residual + Newton -------------------------------------------------- #
     def residual(self, x, P):
         y0, T = x[:self.n], x[self.n]
-        return jnp.concatenate([_flow(self.rhs, y0, T, P, self.n_steps) - y0,
+        return jnp.concatenate([_flow(self.rhs, y0, T, P, self.n_steps,
+                                      backend=self.backend) - y0,
                                 jnp.array([self._phase(y0, P)])])
 
     def _newton(self, x0, P):
@@ -160,7 +185,8 @@ class OrbitSolver:
     def cycle(self, P, y0, T, m=None):
         """States at m evenly spaced phases starting at y0 (phase 0). If m divides n_steps the
         samples are exact RK4 grid points -- no interpolation anywhere."""
-        tr = _flow(self.rhs, y0, T, P, self.n_steps, full=True)[:-1]      # drop the wrap point
+        tr = _flow(self.rhs, y0, T, P, self.n_steps, full=True,
+                   backend=self.backend)[:-1]                            # drop the wrap point
         if m is None or m == self.n_steps:
             return tr
         idx = (jnp.arange(m) * (self.n_steps // m)) if self.n_steps % m == 0 else \
@@ -171,7 +197,8 @@ class OrbitSolver:
     def monodromy(self, P, y0, T):
         """d(phi_T(y0))/dy0 -- the linearised period map. Its eigenvalues are the Floquet
         multipliers."""
-        return jax.jacfwd(lambda y: _flow(self.rhs, y, T, P, self.n_steps))(y0)
+        return jax.jacfwd(lambda y: _flow(self.rhs, y, T, P, self.n_steps,
+                                          backend=self.backend))(y0)
 
     def floquet(self, P, y0, T):
         """(mu_lead, all_multipliers) with the trivial phase direction removed.

@@ -1,7 +1,7 @@
 fig1_bmal_8.7x4.png / .svg
 script   R01_sup_page/panels.py
-commit   4fb42ca
-built    2026-09-01T18:29:02
+commit   aeb092a (DIRTY)
+built    2026-09-01T20:15:23
 size     8.70 x 4.00 cm at 600 dpi
 data:
   almeida    BMAL1   tag=zoo04lin  n_phase=32  n_dose=97  S*=26.56

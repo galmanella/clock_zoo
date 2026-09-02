@@ -38,6 +38,19 @@ class ClockModel(ABC):
     #: true period is solved for, not assumed.
     approx_period = None
 
+    #: RK4 steps per period the ORBIT SOLVER needs, when the default is not enough. None means
+    #: use the solver's default (1024), which is right for every model whose states live within
+    #: a couple of decades of each other.
+    #:
+    #: This exists because a fixed-step solver's accuracy is a property of the MODEL, not of
+    #: the code, and the failure is silent-looking: goldbeter_rev spans 4.5 decades inside one
+    #: state vector (CC ~ 4.2e2 against PCP ~ 1.3e-2), at 1024 steps its flow closes the loop
+    #: only to 2.4e-04, and Newton then diverges to NaN -- which reads as "the model has no
+    #: limit cycle" when the model is fine and the step is too coarse. At 4096 the same solve
+    #: closes to 3.2e-07 and converges to |F| = 1.1e-13. So the model declares what it needs,
+    #: exactly as it declares its period and its section.
+    orbit_steps = None
+
     # --- parameters -------------------------------------------------------- #
     def get_parameters(self):
         return self.params.copy()

@@ -33,6 +33,7 @@ from models.base import ClockModel, JaxDictParams, MODEL_REGISTRY, register_mode
 from models import goodwin    # noqa: E402,F401  smoke-test control
 from models import korencic   # noqa: E402,F401
 from models import goldbeter  # noqa: E402,F401
+from models import goldbeter_rev  # noqa: E402,F401  2003 + explicit REV-ERBalpha
 from models import almeida    # noqa: E402,F401
 
 __all__ = ['ClockModel', 'JaxDictParams', 'MODEL_REGISTRY', 'register_model', 'get_model', 'ROOT']

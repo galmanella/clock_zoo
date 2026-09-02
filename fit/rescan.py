@@ -239,3 +239,96 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------- #
+#  ONE run, on a dose grid the caller chooses
+# --------------------------------------------------------------------------- #
+def rescan_run(run_npz, doses, n_phase=32, verbose=True):
+    """Re-render a SINGLE fitted run on an arbitrary dose grid, through the production path.
+
+    `rescan()` above walks an aggregated campaign and builds its own log grid. Two things make
+    that the wrong tool sometimes, and both apply to the R01 supplementary figure:
+
+      * the arm campaigns were never aggregated, so there is no joined npz to walk; and
+      * a figure that sits beside another figure has to share ITS dose axis exactly, which
+        means the grid is an input, not something the renderer derives.
+
+    So this takes the path to one run's own npz and an explicit `doses` array -- linear, log,
+    including zero, whatever the companion figure uses -- and returns the same quantities:
+    the fitted surface, the radial target on that same grid, and the features of both.
+
+    Everything that makes `rescan` trustworthy is kept: the run's own gauge basis is pinned
+    (hazard 18) and the theta round-trip is CHECKED before any surface is believed, the cost is
+    built with the run's own section, readout, mode, backend and dt, and the surface comes from
+    `make_cost(...)['surface']` rather than a reimplementation of it (hazard 15).
+    """
+    import json
+    import numpy as _np
+    from models import get_model
+    from fit.cost import make_cost, RadialTarget
+    from fit.target import radial_z as _radial_z
+    from analysis import winding as W
+    from analysis import quality as Q
+
+    z = dict(_np.load(run_npz, allow_pickle=True))
+    cfg = json.loads(str(z['cfg_json'])) if 'cfg_json' in z else {}
+    model_name = str(z['model'])
+    model = get_model(model_name)
+    if 'section' in z and str(z['section']):
+        model.reference_variable = str(z['section'])
+    readout = str(z['readout']) if 'readout' in z else None
+    mode, target = str(z['mode']), str(z['target'])
+    basis = _np.asarray(z['B']) if 'B' in z else None
+    if basis is None:
+        raise SystemExit(f"{run_npz}: no gauge-quotient basis `B` -- its `v` cannot be turned "
+                         f"back into the parameters it was fitted at (hazard 18).")
+    doses = _np.asarray(doses, float)
+
+    C = make_cost(model, target, doses, RadialTarget(), n_phase=n_phase, mode=mode,
+                  backend=str(cfg.get('backend', 'diffrax')), dt=float(cfg.get('dt', 0.02)),
+                  w_osc=0.0, w_amp=0.0, pulse=float(cfg.get('pulse', 8.0)),
+                  skip_p=cfg.get('skip_p'), readout_ref=readout, basis=basis)
+    v = _np.asarray(z['v_fit'])
+    th = _np.asarray(C['theta'](v))
+    drift = float(_np.max(_np.abs(_np.log10(th / _np.asarray(z['theta_fit'])))))
+    if drift > 1e-8:
+        raise SystemExit(f"basis mismatch: theta reconstructed from the stored v differs from "
+                         f"theta_fit by {drift:.3g} decades. Refusing to render a parameter "
+                         f"set the run never evaluated.")
+    if verbose:
+        print(f"[rescan-run] {os.path.basename(os.path.dirname(run_npz))}  {model_name}/"
+              f"{target}/{mode}  {n_phase} phase x {len(doses)} dose  "
+              f"[theta round-trip {drift:.1e} decades]", flush=True)
+
+    zz, aa, am = C['surface'](v)
+    old = _np.asarray(C['old'])
+    ptc = _np.where(_np.asarray(aa), (_np.angle(_np.asarray(zz)) / (2 * _np.pi)) % 1.0, _np.nan)
+    k_u, psi_u = float(z['k_used']), float(z['psi_used'])
+    tgt = (_np.angle(_np.asarray(_radial_z(old, doses, k_u, psi_u))) / (2 * _np.pi)) % 1.0
+    # signed circular residual, fitted MINUS target, in [-0.5, 0.5)
+    delta = ((ptc - tgt + 0.5) % 1.0) - 0.5
+
+    S, phi, ns = W.detect_grid(old, doses, ptc)
+    q = Q.score(old, doses, ptc)
+    tw = W.twist_curve(old, doses, ptc)
+    out = dict(model=model_name, target=target, mode=mode, run=str(run_npz),
+               old=old, doses=doses, n_phase=int(n_phase),
+               ptc=ptc, ptc_target=tgt, delta=delta,
+               alive=_np.asarray(aa), amp=_np.asarray(am), twist=tw,
+               k_used=k_u, psi_used=psi_u, target_S=1.0 / k_u if k_u else _np.nan,
+               theta_fit=th, names=_np.array([str(s) for s in z['names']]),
+               S_crit=S, phi_sing=phi, n_sing=ns, scramble=q['scramble'],
+               quality=bool(q['passed']), accum=W.accumulated_twist(tw),
+               span_total=W.total_twist(tw), fit_doses=_np.asarray(z['doses']),
+               rms_delta=float(_np.sqrt(_np.nanmean(delta ** 2))))
+    if 0.0 in set(doses.tolist()):
+        j = int(_np.where(doses == 0.0)[0][0])
+        out['identity_err'] = float(_np.nanmax(_np.abs(((ptc[:, j] - old) + 0.5) % 1.0 - 0.5)))
+    if verbose:
+        print(f"  S*={S:.4g}  n_sing={int(ns)}  twist={out['span_total']:.4f} "
+              f"(accum {out['accum']:.3f})  rms|delta|={out['rms_delta']:.4f}  "
+              f"target S*={out['target_S']:.4g}  quality={'ok' if q['passed'] else 'FAIL'}"
+              + (f"  dose-0 identity err={out['identity_err']:.2e}"
+                 if 'identity_err' in out else ''), flush=True)
+    return out

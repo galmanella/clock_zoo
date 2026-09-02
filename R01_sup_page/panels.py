@@ -128,7 +128,10 @@ def fig_bmal(sources, width_cm=10.0, height_cm=4.0, cbar=True):
         cb.set_label('New Phase (cyc)', fontsize=FS_LABEL, labelpad=1.5)
         cb.ax.tick_params(labelsize=FS_TICK, length=2, pad=1.2, width=0.6)
         cb.outline.set_linewidth(0.6)
-    fig.text((left + right) / 2, 0.045, 'Old Phase (cyc)', ha='center',
+    # Sits just under the tick labels rather than at the frame. The panels' bottom edge is
+    # at `bottom`; 6 pt tick labels with 1.5 pt pad reach to about bottom - 0.066 of the
+    # figure height, so a baseline at 0.095 clears them and closes the gap.
+    fig.text((left + right) / 2, 0.095, 'Old Phase (cyc)', ha='center',
              fontsize=FS_LABEL)
     fig.text(0.012, (bottom + top) / 2, 'Dose (a.u.)', va='center', rotation='vertical',
              fontsize=FS_LABEL)
@@ -222,3 +225,114 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------- #
+#  Figure 2: the BMAL1 radialization -- target, fitted, and their difference
+# --------------------------------------------------------------------------- #
+#: Half-range of the delta colour scale, in cycles. 0.5 is the FULL fair range: a
+#: circular difference wrapped to the shortest arc cannot exceed half a cycle, so
+#: this shows the residual against everything it could possibly have been. A tighter
+#: window exaggerates a good fit, and one fitted per panel would make a good fit and
+#: a bad one look identical -- which is the one thing this panel exists to tell apart.
+DELTA_HALF = 0.5
+
+
+def fig_radial_fit(res, width_cm=10.0, height_cm=4.6, delta_half=DELTA_HALF,
+                   absolute=False):
+    """Target PTC, fitted PTC, and their circular difference, on one shared dose axis.
+
+    `res` is the dict `fit.rescan.rescan_run` returns. Base is deliberately absent: it is
+    already figure 1's first panel, and a supplementary page has no room to print the same
+    surface twice.
+
+    LAYOUT: the phase colourbar sits BETWEEN panels 2 and 3, because it serves the first two
+    panels and not the third. Parked on the far right it reads as if it applied to all three,
+    which is exactly the misreading a delta panel invites.
+
+    `absolute=True` plots |delta|. Note that a circular difference wrapped to the shortest arc
+    cannot exceed HALF a cycle, so its range is [0, 0.5] -- not [0, 1].
+    """
+    from matplotlib.colors import TwoSlopeNorm
+    old, doses = np.asarray(res['old'], float), np.asarray(res['doses'], float)
+    xe, ye = _mesh_edges(old, doses)
+    D = np.asarray(res['delta'], float)
+    D = np.abs(D) if absolute else D
+    panels = [('Target', np.asarray(res['ptc_target'], float), 'phase'),
+              ('Fitted', np.asarray(res['ptc'], float), 'phase'),
+              ('|Fitted − Target|' if absolute else 'Fitted − Target', D, 'delta')]
+
+    fig = plt.figure(figsize=(width_cm * CM, height_cm * CM))
+    bottom, top = 0.215, 0.875
+    # The phase bar sits between panels 2 and 3 with its label on the RIGHT, so `cbroom`
+    # must clear the bar's tick labels AND the rotated label before panel 3 starts --
+    # otherwise the title reads as panel 3's y-axis. That gap is also what visually
+    # separates the delta panel from the two phase panels, which is the point.
+    x0, gap, cbw, cbpad, cbroom = 0.070, 0.026, 0.016, 0.022, 0.098
+    # room: panel2 -> [label][bar][ticks] -> panel3, then panel3 -> [bar][ticks][label]
+    w = (1.0 - x0 - gap - (cbpad + cbw + cbroom) - (0.021 + cbw + 0.077)) / 3.0
+    xs = [x0, x0 + w + gap]
+    x_cb1 = xs[1] + w + cbpad                       # phase bar: BETWEEN panels 2 and 3
+    xs.append(x_cb1 + cbw + cbroom)
+    x_cb2 = xs[2] + w + 0.021
+    ims = {}
+    for i, (title, M, kind) in enumerate(panels):
+        ax = fig.add_axes([xs[i], bottom, w, top - bottom])
+        wrapped = np.vstack([M[-1:], M, M[:1]])
+        if kind == 'phase':
+            im = ax.pcolormesh(xe, ye, np.ma.masked_invalid(wrapped.T), cmap=phase_cmap(),
+                               vmin=0, vmax=1, shading='flat', rasterized=True)
+        elif absolute:
+            im = ax.pcolormesh(xe, ye, np.ma.masked_invalid(wrapped.T), cmap='magma_r',
+                               vmin=0.0, vmax=delta_half, shading='flat', rasterized=True)
+        else:
+            im = ax.pcolormesh(xe, ye, np.ma.masked_invalid(wrapped.T), cmap='RdBu_r',
+                               norm=TwoSlopeNorm(0.0, -delta_half, delta_half),
+                               shading='flat', rasterized=True)
+        ims[kind] = im
+        ax.set_yscale('log' if _log_dose(doses) else 'linear')
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(ye[0], ye[-1])
+        ax.set_xticks([0, 0.5, 1.0])
+        lb = ax.get_xticklabels()
+        lb[0].set_horizontalalignment('left')
+        lb[-1].set_horizontalalignment('right')
+        ax.tick_params(labelsize=FS_TICK, length=2, pad=1.5, width=0.6)
+        for sp in ax.spines.values():
+            sp.set_linewidth(0.6)
+        if i:
+            ax.set_yticklabels([])
+        ax.set_title(title, fontsize=FS_TITLE, pad=2.5)
+
+    cb = fig.colorbar(ims['phase'], cax=fig.add_axes([x_cb1, bottom, cbw, top - bottom]),
+                      ticks=[0, 0.5, 1])
+    cb.set_label('New Phase (cyc)', fontsize=FS_LABEL, labelpad=1.5)
+    t2 = ([0, delta_half / 2, delta_half] if absolute
+          else [-delta_half, 0, delta_half])
+    cb2 = fig.colorbar(ims['delta'], cax=fig.add_axes([x_cb2, bottom, cbw, top - bottom]),
+                       ticks=t2)
+    cb2.set_label(('|Δ| (cyc)' if absolute else 'Δ (cyc)'),
+                  fontsize=FS_LABEL, labelpad=1.0)
+    for c in (cb, cb2):
+        c.ax.tick_params(labelsize=FS_TICK, length=2, pad=1.2, width=0.6)
+        c.outline.set_linewidth(0.6)
+    fig.text((x0 + xs[2] + w) / 2, 0.095, 'Old Phase (cyc)', ha='center',
+             fontsize=FS_LABEL)
+    fig.text(0.010, (bottom + top) / 2, 'Dose (a.u.)', va='center', rotation='vertical',
+             fontsize=FS_LABEL)
+    return fig
+
+
+def build_radial(npz, width_cm=10.0, height_cm=4.6, dpi=600, name=None,
+                 absolute=False):
+    res = dict(np.load(npz, allow_pickle=True))
+    fig = fig_radial_fit(res, width_cm, height_cm, absolute=absolute)
+    g = lambda k: float(res[k]) if k in res else float('nan')
+    note = (f"data:\n  run {str(res['run'])}\n"
+            f"  {int(res['n_phase'])} phase x {len(res['doses'])} dose, "
+            f"{res['doses'].min():g}..{res['doses'].max():g} linear\n"
+            f"  fitted S*={g('S_crit'):.4g}  target S*={g('target_S'):.4g}  "
+            f"twist={g('span_total'):.4f}  rms|delta|={g('rms_delta'):.4f}\n"
+            f"  dose-0 identity err={g('identity_err'):.2e}  "
+            f"quality={'ok' if bool(res['quality']) else 'FAIL'}")
+    return save(fig, name or 'fig2_radial', dpi=dpi, note=note)

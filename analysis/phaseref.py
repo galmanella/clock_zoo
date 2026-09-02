@@ -83,7 +83,7 @@ def measure(model_name, anchor_gene=ANCHOR_GENE, m_cycle=M_CYCLE):
     from engine.orbit import OrbitSolver
 
     model = get_model(model_name)
-    s = OrbitSolver(model, n_steps=1024)
+    s = OrbitSolver(model)   # n_steps from the model's own declaration
     P = model.jax_params()
     y0, T, resid = jax.jit(s.solve)(P, s.guess(P))
     mu, _ev = s.floquet(P, y0, T)

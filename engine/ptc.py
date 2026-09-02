@@ -62,7 +62,7 @@ def _sample_uniform(cyc, phase):
     return (1.0 - frac) * cyc[i0] + frac * cyc[(i0 + 1) % m]
 
 
-def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=1024, verbose=True):
+def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=None, verbose=True):
     """How many periods to skip before reading the asymptotic phase, DERIVED from the model's
     leading Floquet multiplier: skip = log(tol)/log(mu).
 
@@ -91,10 +91,10 @@ def recommended_skip(model, tol=1e-2, cap=40, floor=4, n_steps=1024, verbose=Tru
     return skip, mu, resid
 
 
-def make_ptc(model, target, mode='pulse', n_steps=1024, m_cycle=256, dt=0.02, pulse=8.0,
+def make_ptc(model, target, mode='pulse', n_steps=None, m_cycle=256, dt=0.02, pulse=8.0,
              settle_p=1, skip_p=None, ev_p=3, readout='phase', readout_ref=None,
              eps=1e-6, newton_iters=8,
-             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='rk4', grad_mode='rev', ev_sp=64):
+             gp=None, skip_tol=1e-2, verbose=False, track_min=False, backend='diffrax', grad_mode='rev', ev_sp=64):
     # skip_p=None means "derive it from the Floquet multiplier" (see recommended_skip). Pass an
     # integer to override. ev_p=3, not 2: it must be >= 2 for exactness (below), and 3 leaves
     # margin. MEASURED on Almeida at dose 2.0 against the adaptive reference engine: skip_p=3

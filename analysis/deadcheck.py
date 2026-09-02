@@ -128,7 +128,7 @@ def check(model_name, target, mode='pulse', dose=None, phases=(0.0, 0.25, 0.5, 0
     from engine.perturb import resolve_target
 
     model = get_model(model_name)
-    s = OrbitSolver(model, n_steps=1024)
+    s = OrbitSolver(model)   # n_steps from the model's own declaration
     P = model.jax_params()
     y0, T, _r = jax.jit(s.solve)(P, s.guess(P))
     T = float(T)

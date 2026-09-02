@@ -266,3 +266,63 @@ def selftest(name='almeida', hours=48.0, dt=0.02):
 if __name__ == '__main__':
     import sys
     raise SystemExit(0 if selftest(*(sys.argv[1:] or ['almeida'])) else 1)
+
+
+# --------------------------------------------------------------------------- #
+#  The ORBIT flow: one period of the UNFORCED system, in phase coordinates
+# --------------------------------------------------------------------------- #
+#: Initial step for the orbit solve, in TAU units (one period == 1.0), so 0.01 is a hundredth
+#: of a period. The controller adapts from there; this only has to be a sane starting guess.
+ORBIT_DT0 = 0.01
+
+#: TIGHTER than RTOL/ATOL above, and deliberately so. Those are tuned for the perturbation
+#: flow, where the answer is a phase and 1e-7 is far below what the Fourier readout resolves.
+#: The orbit solve is a ROOT-FIND, and Newton cannot drive the residual below the accuracy of
+#: the integrator inside it -- MEASURED on goldbeter_rev: |F| bottoms out at 2.4e-08 with
+#: rtol 1e-7 against 1.1e-13 for fixed-step RK4 at 4096 steps, and reaches 1.9e-12 at
+#: rtol 1e-11. A loosely solved cycle is not a cheap cycle, it is a wrong one: everything
+#: downstream (the phase origin, the Floquet multiplier, every PTC) is measured from it.
+ORBIT_RTOL, ORBIT_ATOL = 1e-11, 1e-13
+
+
+def orbit_flow(rhs, y0, T, P, n_steps, full=False, grad_mode='fwd'):
+    """Adaptive Tsit5 counterpart of `engine.orbit._flow`: integrate
+
+        dy/dtau = T * f(y; P),      tau in [0, 1]
+
+    so tau IS the phase and `T` is the (traced, solved-for) period. `full=False` returns the
+    endpoint; `full=True` returns states at tau = 0, 1/n_steps, ..., 1 -- the same uniform
+    phase grid the fixed-step path produces, so downstream code is backend-independent and an
+    A/B difference is attributable to the integrator alone.
+
+    WHY FORWARD MODE IS THE DEFAULT HERE, unlike the perturbation flow.
+        The orbit solver differentiates this with `jax.jacfwd`, in three places: the Newton
+        Jacobian, the single differentiable step that makes dx*/dP exact, and the monodromy.
+        diffrax's RecursiveCheckpointAdjoint is a reverse-mode construction; ForwardMode
+        integrates the variational equation alongside the state, which is what a jvp needs.
+        It also has no backward-in-time pass -- and a limit cycle is contracting by definition,
+        so a reverse pass turns its stable directions into growing ones.
+
+    N_STEPS IS A SAMPLING PARAMETER HERE, NOT AN ACCURACY ONE.
+        On the fixed-step path `n_steps` sets both how finely the trajectory is resolved and
+        how accurate it is, which is why a stiff model needed 4096 of them. Here it sets only
+        how many points come back; accuracy is the controller's business.
+    """
+    check_backend('diffrax')
+
+    def field(_t, y, args):
+        TT, PP = args
+        return TT * rhs(y, PP)
+
+    ts = jnp.linspace(0.0, 1.0, int(n_steps) + 1) if full else None
+    sol = dfx.diffeqsolve(
+        dfx.ODETerm(field), dfx.Tsit5(), 0.0, 1.0, ORBIT_DT0, y0, args=(T, P),
+        stepsize_controller=dfx.PIDController(rtol=ORBIT_RTOL, atol=ORBIT_ATOL),
+        saveat=(dfx.SaveAt(ts=ts) if full else dfx.SaveAt(t1=True)),
+        max_steps=MAX_STEPS, throw=False, adjoint=_adjoint(grad_mode))
+    # A solver failure must not masquerade as a state. NaN propagates into the residual, the
+    # caller sees a non-finite orbit, and `monodromy` already treats a non-finite result as
+    # "not measurable" rather than raising (see engine/orbit.floquet).
+    good = _ok(sol.result)
+    ys = jnp.where(good, sol.ys, jnp.nan)
+    return ys if full else ys[-1]

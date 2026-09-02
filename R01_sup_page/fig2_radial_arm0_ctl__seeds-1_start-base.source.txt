@@ -1,0 +1,10 @@
+fig2_radial_arm0_ctl__seeds-1_start-base.png / .svg
+script   R01_sup_page/panels.py
+commit   aeb092a (DIRTY)
+built    2026-09-01T20:15:24
+size     10.00 x 4.60 cm at 600 dpi
+data:
+  run out/almeida/fit_radial/arm0_ctl__seeds-1_start-base/radial_BMAL1_instant_cma.npz
+  32 phase x 97 dose, 0..100 linear
+  fitted S*=30.73  target S*=32.79  twist=0.0314  rms|delta|=0.0281
+  dose-0 identity err=5.61e-04  quality=ok

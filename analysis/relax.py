@@ -136,7 +136,7 @@ def run(model_name, targets=None, mode='pulse', dt=0.005, pulse=8.0, max_p=MAX_P
 
     model = get_model(model_name)
     targets = targets or GM.scope_targets(model_name) or list(model.perturbable_targets())
-    s = OrbitSolver(model, n_steps=1024)
+    s = OrbitSolver(model)   # n_steps from the model's own declaration
     P = model.jax_params()
     y0, T, _r = jax.jit(s.solve)(P, s.guess(P))
     T = float(T)

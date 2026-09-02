@@ -480,12 +480,36 @@ produced a plausible-looking wrong number.
 | 8x self-convergence | 2.9e-09 | 1.3e-11 | 4.4e-11 | 6.7e-12 |
 | gauge identity | 1.3e-13 | 6.3e-15 | 1.6e-15 | 3.6e-16 |
 | gauge covariance of the orbit | 1.4e-14 | 3.9e-15 | 2.6e-15 | 1.5e-14 |
-| **two PTC engines agree** | **1.6e-05** | **7.8e-04** | — | **2.6e-04** |
+| **two PTC engines agree** | **1.6e-05** | **7.8e-04** | **2.3e-03** | **2.6e-04** |
 
-The last row is the one that matters: `engine/ptc.py` (JAX, fixed-step RK4, Fourier phase)
-against `engine/reference.py` (scipy LSODA, peak-matching phase) — no shared numerical
-machinery, **no offset fitting**, and agreement required on which cells are dead as well as on
-the live phases.
+The last row is the one that matters: `engine/ptc.py` (JAX, Fourier phase) against
+`engine/reference.py` (scipy LSODA, peak-matching phase) — no shared numerical machinery,
+**no offset fitting**, and agreement required on which cells are dead as well as on the live
+phases.
+
+**Goldbeter is the one that misses**, at 2.3e-03 cyc against a 1e-03 threshold, and the dash
+above was not a pass — it had never been measured. Three things pin down what it is and is
+not, so it does not get rediscovered as a regression:
+
+* **It is not the integrator.** Forced through the same cross-check, fixed-step RK4 gives
+  2.36e-03 and adaptive Tsit5 gives 2.29e-03 — the adaptive path is marginally *better*.
+  (`$PY tools/gb_backend_ab.py`.)
+* **It is confined to the top of the dose probe.** Per-dose rms: 7.6e-06 / 1.4e-05 /
+  1.25e-03 at doses 0, 0.5, 2.0 on RK4. Both engines agree on the period to 7e-09 and on
+  which cells are dead.
+* **It is what this model's readout can do.** Goldbeter's phospho-forms run at amplitude
+  0.031 (BCP) and 0.067 (PCP) against MB at 7.6, so its Fourier phase estimate is the
+  noisiest of the four by construction — see the CONDITIONING note in `models/goldbeter.py`.
+
+2.3e-03 cyc is ~3 minutes of a 23.85 h period: invisible on a surface, and far below anything
+a feature is read at. It is recorded rather than waived because a threshold that is quietly
+relaxed stops being a gate.
+
+**One asymmetry worth knowing** when comparing the backends: at DOSE 0 the adaptive path is
+20x *worse* than the fixed-step one (1.5e-04 vs 7.6e-06). That is expected rather than
+alarming — the adaptive readout evaluates its dense interpolant at the window's grid points
+instead of landing on them exactly, so it carries an interpolation error the RK4 scan does not.
+It is still 20x under the gate threshold.
 
 ---
 

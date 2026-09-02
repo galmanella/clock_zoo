@@ -247,7 +247,10 @@ def apply_phase_offset(ch, off):
             ch[k] = a[order]
     ch['twist'] = (np.asarray(ch['twist'], float) - off) % 1.0
     ch['sing_phi'] = (np.asarray(ch['sing_phi'], float) - off) % 1.0
-    ch['phi'] = float((ch['phi'] - off) % 1.0) if np.isfinite(ch['phi']) else ch['phi']
+    # 'phi' is present on a freshly loaded surface but not on one read back from the saved
+    # table (where it lives in the row, not the surface), so shift it only if it is here.
+    if 'phi' in ch and np.isfinite(ch['phi']):
+        ch['phi'] = float((ch['phi'] - off) % 1.0)
     return ch
 
 

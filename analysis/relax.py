@@ -226,3 +226,85 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------- #
+#  The schedule the PTC engine consumes
+# --------------------------------------------------------------------------- #
+#: Distinct skip values a schedule may use. Each one costs a separate XLA compile, so the set
+#: is deliberately small; rounding UP to the next bucket is also the safety margin on a
+#: relaxation time measured with a 10% amplitude tolerance.
+SKIP_BUCKETS = (8, 16, 32, 48, 64)
+
+
+def skip_for_doses(model_name, target, mode, doses, cap=48, floor=None, tag=None,
+                   buckets=SKIP_BUCKETS):
+    """Per-dose transient skip, measured rather than assumed.
+
+    `recommended_skip` returns ONE number for the whole surface, from the Floquet multiplier,
+    and that is a linearisation about the cycle -- fine at low dose and badly short at high
+    dose (see this module's header). But the requirement is not uniform either: relaxation
+    grows with dose, so paying the worst case on every row multiplies the whole surface's cost
+    by the price of its most stubborn corner.
+
+    So: interpolate the MEASURED relaxation onto the requested doses, round up to a bucket,
+    and never go below the Floquet floor. `lax.scan` needs a static length, so the skip cannot
+    vary per cell -- but it can vary per DOSE ROW, and since relaxation is monotone in dose the
+    rows group into a handful of contiguous blocks.
+
+    Returns (skip[n_dose], info). `info['capped']` counts rows whose measured relaxation
+    EXCEEDS the cap: those are rows whose phase is not asymptotic and the caller must either
+    raise the cap or drop them, not quietly keep them.
+    """
+    z = load(model_name, mode, tag)
+    d = np.asarray(doses, float)
+    if z is None:
+        f = int(floor or max(buckets[0], 8))
+        return np.full(len(d), f, int), dict(measured=False, capped=0, floor=f)
+    dz = np.asarray(z['doses'], float)
+    w = np.asarray(z[f'relax_worst__{target}'], float)
+    floor = int(floor if floor is not None else z['skip_p'])
+    need = np.interp(np.log(d), np.log(dz), w, left=w[0], right=w[-1])
+    bs = np.array(sorted(set(int(b) for b in buckets) | {floor}), int)
+    bs = bs[bs <= int(cap)] if np.any(bs <= int(cap)) else bs[:1]
+    out = np.array([bs[np.searchsorted(bs, max(n, floor))] if max(n, floor) <= bs[-1]
+                    else bs[-1] for n in need], int)
+    return out, dict(measured=True, capped=int(np.sum(need > int(cap))),
+                     floor=floor, need=need,
+                     blocks=int(len(np.where(np.diff(out) != 0)[0]) + 1))
+
+
+def identity_lo(model_name, target, mode, thr=0.02, tag=None):
+    """Lowest scanned dose whose PTC departs from the identity by more than `thr` cycles.
+
+    The bottom of a wide dose scan is all identity -- MEASURED, 20-45% of the screen's rows
+    for the BMAL targets -- and those rows cost exactly as much as informative ones while
+    telling you only that a small perturbation does little. This is where a grid should start.
+    """
+    from analysis.dosegrid import _scrit_files
+    tag2, files = _scrit_files(model_name, mode, tag)
+    for fp in files:
+        z = np.load(fp, allow_pickle=True)
+        if target not in [str(x) for x in z['targets']]:
+            continue
+        d = np.asarray(z[f'doses__{target}'], float)
+        p = np.asarray(z[f'ptc__{target}'], float)
+        old = np.arange(p.shape[0]) / p.shape[0]
+        for k in range(len(d)):
+            col = p[:, k]
+            if not np.any(np.isfinite(col)):
+                continue
+            dev = np.nanmax(np.abs(((col - old + 0.5) % 1.0) - 0.5))
+            if dev > thr:
+                return float(d[k])
+    return np.nan
+
+
+def relax_ceiling(model_name, target, mode, skip_cap=48, tag=None):
+    """Highest dose whose worst cell relaxes within `skip_cap` periods. Above it the readout
+    is inside the transient however long the skip, so the grid should stop."""
+    z = load(model_name, mode, tag)
+    if z is None:
+        return np.nan
+    return suggest_ceiling(np.asarray(z['doses'], float),
+                           np.asarray(z[f'relax_worst__{target}'], float), int(skip_cap))

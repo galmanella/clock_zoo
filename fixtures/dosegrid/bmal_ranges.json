@@ -1,0 +1,42 @@
+{
+  "_what": "Dose ranges for the BMAL1 cross-model comparison, measured 2026-09-01 (tag zoo03).",
+  "_two_kinds": [
+    "per_model: each model's OWN best range -- lo at its identity departure, hi at whichever",
+    "  ceiling binds (integrator stability, or the dose above which the clock has not relaxed",
+    "  within a skip we are willing to pay), span capped by the 3-decade rule. Puts that",
+    "  model's S_crit at ~30% of its own log range, which is what reading twist wants.",
+    "  THIS IS THE DEFAULT FOR ANY SINGLE-MODEL WORK.",
+    "shared: ONE range per mode across all three models, so a cross-model figure can use a",
+    "  common y-axis. Capped at the most sensitive model and floored low enough that the",
+    "  first dose row is still the identity in EVERY model. The cost is that S_crit no longer",
+    "  sits at 30% -- it lands at 40-60% -- so the type-0 side is under-sampled relative to",
+    "  the per-model grids. Narrow purpose: the BMAL1 comparison figure only."
+  ],
+  "_ceilings_measured": {
+    "almeida/BMAL1/pulse":    {"5e-3": 28.5, "1.25e-3": 117.6, "3.125e-4": 340.3},
+    "almeida/BMAL1/instant":  {"1.25e-3": 578.9, "3.125e-4": 2388},
+    "goldbeter/MB/pulse":     {"5e-3": 70.2, "1.25e-3": 362.1, "3.125e-4": 1200},
+    "goldbeter/MB/instant":   {"5e-3": 736.8, "1.25e-3": ">2000"},
+    "korencic/Bmalx/both":    {"5e-3": 10000.0}
+  },
+  "_identity_departure_dose": {
+    "pulse":   {"almeida": 0.326, "korencic": 0.0273, "goldbeter": 0.0413},
+    "instant": {"almeida": 1.70,  "korencic": 0.143,  "goldbeter": 0.326}
+  },
+  "per_model": {
+    "almeida/BMAL1/pulse":    {"lo": 0.6147, "hi": 340.0,  "dt": 3.125e-4, "S_crit": 4.883,  "S_pct": 33},
+    "almeida/BMAL1/instant":  {"lo": 3.211,  "hi": 2388.0, "dt": 3.125e-4, "S_crit": 25.51,  "S_pct": 31},
+    "korencic/Bmalx/pulse":   {"lo": 0.1177, "hi": 117.7,  "dt": 5e-3,     "S_crit": 0.9349, "S_pct": 30},
+    "korencic/Bmalx/instant": {"lo": 4.854,  "hi": 4854.0, "dt": 5e-3,     "S_crit": 38.56,  "S_pct": 30},
+    "goldbeter/MB/pulse":     {"lo": 0.1779, "hi": 70.17,  "dt": 5e-3,     "S_crit": 1.413,  "S_pct": 35},
+    "goldbeter/MB/instant":   {"lo": 1.405,  "hi": 837.7,  "dt": 5e-3,     "S_crit": 11.16,  "S_pct": 32}
+  },
+  "shared": {
+    "pulse":   {"lo": 0.02, "hi": 300.0,  "n": 48,
+                "dt": {"almeida": 3.125e-4, "korencic": 5e-3, "goldbeter": 1.25e-3},
+                "S_pct": {"almeida": 57, "korencic": 40, "goldbeter": 44}},
+    "instant": {"lo": 0.1,  "hi": 2000.0, "n": 48,
+                "dt": {"almeida": 3.125e-4, "korencic": 5e-3, "goldbeter": 1.25e-3},
+                "S_pct": {"almeida": 56, "korencic": 60, "goldbeter": 48}}
+  }
+}

@@ -57,14 +57,16 @@ LEVEL_MARKER = {'mrna': 'o', 'protein': 's', 'nuclear': '^', 'complex': 'D'}
 
 NL = chr(10)
 
-_CTX = dict(tag=None, publish=False, source='surface', anchor=None)
+_CTX = dict(tag=None, publish=False, source='surface', anchor=None, roll=0.0)
 
 
 def _phase_label():
     """What the phase axes are measured FROM. Never silently omit this: an unanchored
     old phase is model-local and two models' values are not the same time of day."""
     a = _CTX.get('anchor')
-    return f'old phase  (0 = {a} peak)' if a else 'old phase  (MODEL-LOCAL origin)'
+    r = float(_CTX.get('roll') or 0.0)
+    base = f'old phase  (0 = {a} peak)' if a else 'old phase  (MODEL-LOCAL origin)'
+    return base if abs(r) < 1e-9 else base[:-1] + f', rolled {r:+.2f} cyc for display)'
 
 
 def _sfx():
@@ -94,6 +96,20 @@ def _row(rows, model, target):
 # --------------------------------------------------------------------------- #
 #  panels
 # --------------------------------------------------------------------------- #
+def _log_dose(doses):
+    """Is this dose grid log-spaced or linear? Detected, not declared.
+
+    A linear grid resolves the HIGH-dose end far better at equal row count, which is where the
+    isochrons wind fastest and where a log grid aliases. Both are legitimate and the figure
+    must not mislabel one as the other, so the axis follows the data."""
+    d = np.asarray(doses, float)
+    if len(d) < 3 or d.min() <= 0:
+        return d.min() > 0
+    lin = np.std(np.diff(d)) / max(abs(np.mean(np.diff(d))), 1e-300)
+    lg = np.std(np.diff(np.log(d))) / max(abs(np.mean(np.diff(np.log(d)))), 1e-300)
+    return lg <= lin
+
+
 def _mesh_edges(old, doses):
     """Cell EDGES for pcolormesh, so the map fills its frame with no sliver of blank axis.
 
@@ -106,28 +122,46 @@ def _mesh_edges(old, doses):
     o = np.asarray(old, float)
     d = np.asarray(doses, float)
     dx = np.diff(o).mean() if len(o) > 1 else 1.0
-    xe = np.concatenate([o - dx / 2, [o[-1] + dx / 2, o[-1] + 3 * dx / 2]])
-    lg = np.log(d)
-    mid = 0.5 * (lg[:-1] + lg[1:])
-    ye = np.exp(np.concatenate([[lg[0] - (mid[0] - lg[0])], mid,
-                                [lg[-1] + (lg[-1] - mid[-1])]])) if len(d) > 1 else         np.array([d[0] * 0.9, d[0] * 1.1])
+    # WRAP AT BOTH ENDS. One wrapped column is enough only when the samples start exactly at
+    # phase 0. They do not once a model carries a phase offset: Korencic's 0.444-cycle shift
+    # to the common Per anchor rolls its grid so old[0] = 0.0243, the mesh then began at
+    # +0.0086, and a sliver of blank axis showed between the y-axis and the surface -- in that
+    # one panel only. Prepending the last column and appending the first makes the mesh span
+    # [o0 - 1.5dx, oN + 1.5dx], which contains [0, 1] whatever the offset.
+    xe = np.concatenate([[o[0] - 1.5 * dx], o - dx / 2, [o[-1] + dx / 2, o[-1] + 1.5 * dx]])
+    if len(d) < 2:
+        return xe, np.array([d[0] * 0.9, d[0] * 1.1])
+    if _log_dose(d):
+        lg = np.log(d)
+        mid = 0.5 * (lg[:-1] + lg[1:])
+        ye = np.exp(np.concatenate([[lg[0] - (mid[0] - lg[0])], mid,
+                                    [lg[-1] + (lg[-1] - mid[-1])]]))
+    else:
+        mid = 0.5 * (d[:-1] + d[1:])
+        ye = np.concatenate([[d[0] - (mid[0] - d[0])], mid, [d[-1] + (d[-1] - mid[-1])]])
     return xe, ye
 
 
 def _surface_panel(ax, ch, r, ylim=None, show_y=True, title=None):
     """One PTC surface with its singularities, its S_crit line and its QC verdict."""
     old, doses, ptc = ch['old'], ch['doses'], np.asarray(ch['ptc'], float)
-    wrapped = np.vstack([ptc, ptc[:1]])       # phase 1 IS phase 0 -- see _mesh_edges
+    wrapped = np.vstack([ptc[-1:], ptc, ptc[:1]])   # periodic in phase -- see _mesh_edges
     xe, ye = _mesh_edges(old, doses)
     im = ax.pcolormesh(xe, ye, np.ma.masked_invalid(wrapped.T), cmap=phase_cmap(),
                        vmin=0, vmax=1, shading='flat', rasterized=True)
-    ax.set_yscale('log')
+    ax.set_yscale('log' if _log_dose(doses) else 'linear')
     ax.set_xlim(0.0, 1.0)                     # phase is a full circle in every panel
     ax.set_ylim(*(ylim if ylim else (ye[0], ye[-1])))
     for phi, d, sg in zip(ch['sing_phi'], ch['sing_dose'], ch['sing_sign']):
         ax.plot(phi, d, marker=('o' if sg > 0 else 'x'), ms=7, mfc='white', mec='white',
                 mew=1.6, ls='none')
-    S = r['S_scan'] if r is not None and np.isfinite(r['S_scan']) else np.nan
+    # THE LINE AND THE MARKER MUST BE THE SAME MEASUREMENT. This drew `S_scan` -- the
+    # transition found on the 7-decade SCREEN -- while the white marker is the singularity
+    # detected on THIS surface, so the two sat apart by the difference between two dose grids
+    # (Almeida/pulse: line 4.88, marker 3.71) and read as a detection failure. The line is now
+    # the surface's own S*, so line and marker coincide by construction and any visible gap is
+    # a real disagreement worth chasing.
+    S = r['S_surf'] if r is not None and np.isfinite(r['S_surf']) else np.nan
     if np.isfinite(S):
         ax.axhline(S, color='white', ls='--', lw=1.2)
     ax.set_xlabel(_phase_label(), fontsize=8)
@@ -159,8 +193,12 @@ def _winding_bands(ax, doses, Wv):
     Wv = np.asarray(Wv, float)
     if Wv.shape != d.shape:
         return
-    edges = np.sqrt(d[:-1] * d[1:])                      # log-midpoints between samples
-    edges = np.concatenate([[d[0] ** 2 / edges[0]], edges, [d[-1] ** 2 / edges[-1]]])
+    if _log_dose(d):
+        edges = np.sqrt(d[:-1] * d[1:])                  # log-midpoints between samples
+        edges = np.concatenate([[d[0] ** 2 / edges[0]], edges, [d[-1] ** 2 / edges[-1]]])
+    else:
+        edges = 0.5 * (d[:-1] + d[1:])
+        edges = np.concatenate([[2 * d[0] - edges[0]], edges, [2 * d[-1] - edges[-1]]])
     for k in range(len(d)):
         if not np.isfinite(Wv[k]):
             ax.axvspan(edges[k], edges[k + 1], color='0.86', lw=0, zorder=0, hatch='///',
@@ -177,13 +215,19 @@ def _twist_panel(ax, ch, r, xlim=None, show_y=True, xlabel='dose', bands=True):
     ax.axhline(0, color='0.75', lw=0.5, ls=':')
     ax.axhline(1, color='0.75', lw=0.5, ls=':')
     ax.plot(*broken(doses, tw), color='k', lw=1.8, zorder=5)
-    S = r['S_scan'] if r is not None and np.isfinite(r['S_scan']) else np.nan
+    S = r['S_surf'] if r is not None and np.isfinite(r['S_surf']) else np.nan
     if np.isfinite(S):
         ax.axvline(S, color='0.55', ls='--', lw=0.9, zorder=1)
-        k = int(np.argmin(np.abs(doses - S)))
-        if np.isfinite(tw[k]):
+        # Mark the nearest dose row THAT HAS A FIXED POINT, not the nearest row outright. The
+        # row nearest S* is often NaN: below a type-1 -> type-0 transition the PTC is a degree-1
+        # circle map, which need not have a fixed point at all, so there is no entrainment phase
+        # to mark. Goldbeter/MB is exactly this -- S* = 9.90, the row at 9.38 is NaN and the
+        # first finite one is 10.42 -- and the marker simply vanished from that panel.
+        fin = np.where(np.isfinite(tw))[0]
+        if len(fin):
+            k = int(fin[np.argmin(np.abs(doses[fin] - S))])
             ax.plot([doses[k]], [tw[k]], 'o', ms=5, mfc='white', mec='k', mew=0.8, zorder=7)
-    ax.set_xscale('log')
+    ax.set_xscale('log' if _log_dose(doses) else 'linear')
     ax.set_ylim(-0.03, 1.03)
     if xlim:
         ax.set_xlim(*xlim)
@@ -207,7 +251,7 @@ def _phase_colorbar(fig, im, label='new phase (cyc)'):
 # --------------------------------------------------------------------------- #
 #  1. one figure per MODEL, one panel per gene
 # --------------------------------------------------------------------------- #
-def fig_model_surfaces(rows, surfaces, model, mode, ncol=5):
+def fig_model_surfaces(rows, surfaces, model, mode, ncol=5, panel_w=2.85):
     """Every perturbable target of one model, on ONE dose axis."""
     ts = [r['target'] for r in rows if r['model'] == model]
     if not ts:
@@ -220,8 +264,11 @@ def fig_model_surfaces(rows, surfaces, model, mode, ncol=5):
     shared = all(np.allclose(surfaces[(model, ts[0])]['doses'],
                              surfaces[(model, t)]['doses']) for t in ts)
 
+    # panel_w exists so a SINGLE surface can be rendered big enough to inspect. The default
+    # sizes a panel for a multi-column contact sheet, which is unreadable when the question is
+    # "what does this one surface actually look like at 256 phases".
     fig, axes = plt.subplots(2 * nblk, ncol, squeeze=False,
-                             figsize=(2.85 * ncol, 5.1 * nblk),
+                             figsize=(panel_w * ncol, 1.79 * panel_w * nblk),
                              gridspec_kw={'height_ratios': [1.5, 1] * nblk})
     im = None
     for k, t in enumerate(ts):
@@ -456,10 +503,15 @@ def main(argv=None):
     ap.add_argument('--genes', default=None, help='default: every gene in >=1 model')
     ap.add_argument('--feat-tag', default=None, help='analysis.features run tag')
     ap.add_argument('--phase-tag', default=None, help='analysis.phaseref run tag')
+    ap.add_argument('--phase-roll', type=float, default=0.0,
+                    help='rotate the old-phase axis by this many cycles FOR DISPLAY, to put '
+                         'a feature sitting on the 0/1 wrap into the middle of the panel')
     ap.add_argument('--source', default='surface', choices=('scan', 'surface'),
                     help="which feature table to draw: the wide screen or the refined render")
     ap.add_argument('--tag', default=None, help='output tag for the figures')
     ap.add_argument('--ncol', type=int, default=5)
+    ap.add_argument('--panel-w', type=float, default=2.85,
+                    help='inches per surface panel; raise it to inspect one surface closely')
     ap.add_argument('--publish', action='store_true')
     a = ap.parse_args(argv)
     from analysis.features import load as load_features
@@ -467,7 +519,8 @@ def main(argv=None):
     from analysis.phaseref import load as _load_phaseref
     _off, _pr = _load_phaseref(a.phase_tag)
     _CTX.update(tag=paths.run_tag(a.tag), publish=a.publish, source=a.source,
-                anchor=(str(_pr['anchor_gene']) if _pr is not None else None))
+                anchor=(str(_pr['anchor_gene']) if _pr is not None else None),
+                roll=float(a.phase_roll))
     if _pr is None:
         print('[figures_zoo] no common phase origin -- absolute phases are MODEL-LOCAL; '
               'run `$PY -m analysis.phaseref`', flush=True)
@@ -479,10 +532,22 @@ def main(argv=None):
 
     for md in modes:
         rows, surfaces, _z = load_features(md, a.feat_tag, source=a.source)
+        if abs(a.phase_roll) > 1e-9:
+            # Reuse the offset machinery rather than a second rotation path: it relabels both
+            # phase axes together and leaves every twist measure invariant, which is exactly
+            # what a display roll must also do. A feature sitting ON the 0/1 wrap is split
+            # across both edges of the panel and reads as two features; rolling it to the
+            # middle is the only way to see whether it is one thing or two.
+            from analysis.features import apply_phase_offset
+            surfaces = {k: apply_phase_offset(v, -a.phase_roll) for k, v in surfaces.items()}
+            for r in rows:
+                if np.isfinite(r['phi_star']):
+                    r['phi_star'] = float((r['phi_star'] + a.phase_roll) % 1.0)
         rows_by_mode[md] = rows
         if 'surfaces' in want:
             for m in models:
-                p = fig_model_surfaces(rows, surfaces, m, md, ncol=a.ncol)
+                p = fig_model_surfaces(rows, surfaces, m, md, ncol=a.ncol,
+                                       panel_w=a.panel_w)
                 if p:
                     made.append(p)
         if 'genes' in want:

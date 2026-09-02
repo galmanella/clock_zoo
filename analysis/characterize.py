@@ -47,26 +47,40 @@ def characterize_target(model, target, doses, mode='pulse', n_phase=32, dt=0.02,
 
     if skip_p is None:
         skip_p, _mu, _r = recommended_skip(model, tol=1e-2, verbose=False)
-    f, solver = make_ptc(model, target, mode=mode, readout='raw', skip_p=skip_p, dt=dt,
-                         track_min=True)
+    nd = len(doses)
+    # skip_p may be ONE number or ONE PER DOSE ROW. Per-row is the point: the transient after a
+    # large kick is far longer than the Floquet estimate (analysis/relax.py), but the
+    # requirement grows WITH dose, so paying the worst row's price on every row multiplies the
+    # whole surface by the cost of its most stubborn corner. lax.scan needs a static length so
+    # the skip cannot vary per cell -- but it can vary per row, and relaxation is monotone in
+    # dose, so the rows fall into a handful of contiguous blocks and a handful of compiles.
+    sk = np.broadcast_to(np.asarray(skip_p, int).ravel(), (nd,)) if np.ndim(skip_p)         else np.full(nd, int(skip_p))
     P = model.jax_params()
-    x0 = solver.guess(P)
-    ph, dz = grid_points(n_phase, doses)
-    # CHUNKED. A high-resolution surface is ~5k points and every one carries a checkpointed
-    # RK4 scan; asking for the whole grid in one vmap makes peak memory a function of the
-    # resolution knob, which is how a figure request turns into an OOM two hours in.
-    fj, ck, n = jax.jit(f), int(chunk or CHUNK), int(ph.shape[0])
-    zs, ms = [], []
+    ck = int(chunk or CHUNK)
+    Z = np.empty((nd, n_phase), complex)
+    MN = np.empty((nd, n_phase), float)
     t0 = time.time()
-    for s in range(0, n, ck):
-        z_, m_ = fj(P, x0, ph[s:min(s + ck, n)], dz[s:min(s + ck, n)])
-        zs.append(np.asarray(z_))
-        ms.append(np.asarray(m_))
-        if verbose and n > ck:
-            done = min(s + ck, n)
-            print(f"    [ptc] {target:9s} {done}/{n} pts  {time.time() - t0:.0f}s "
-                  f"(eta {(time.time() - t0) * (n - done) / max(done, 1):.0f}s)", flush=True)
-    z, mn = np.concatenate(zs), np.concatenate(ms)
+    x0 = None
+    for sv in sorted(set(int(v) for v in sk)):
+        rows = np.where(sk == sv)[0]
+        f, solver = make_ptc(model, target, mode=mode, readout='raw', skip_p=int(sv), dt=dt,
+                             track_min=True)
+        if x0 is None:
+            x0 = solver.guess(P)
+        fj = jax.jit(f)
+        ph, dz = grid_points(n_phase, np.asarray(doses, float)[rows])
+        n = int(ph.shape[0])
+        zs, ms = [], []
+        for a in range(0, n, ck):
+            z_, m_ = fj(P, x0, ph[a:min(a + ck, n)], dz[a:min(a + ck, n)])
+            zs.append(np.asarray(z_))
+            ms.append(np.asarray(m_))
+        Z[rows] = np.concatenate(zs).reshape(len(rows), n_phase)
+        MN[rows] = np.concatenate(ms).reshape(len(rows), n_phase)
+        if verbose:
+            print(f"    [ptc] {target:9s} skip_p={sv:<3d} {len(rows):3d} dose row(s)  "
+                  f"{time.time() - t0:.0f}s", flush=True)
+    z, mn = Z.ravel(), MN.ravel()
     p, a = phase_or_nan(z)
     v = valid_mask(mn)
     p = np.where(v, p, np.nan)
@@ -81,9 +95,11 @@ def characterize_target(model, target, doses, mode='pulse', n_phase=32, dt=0.02,
     S, phi, nsing = W.detect_grid(old, doses, ptc)
     tw = W.twist_curve(old, doses, ptc)
     res = dict(target=target, mode=mode, doses=doses, old=old, ptc=ptc, amp=amp, valid=val,
+               skip_row=np.asarray(sk),
                W=Wv, S=S, phi=phi, n_sing=nsing, twist=tw,
                total_twist=W.total_twist(tw), min_amp=float(np.nanmin(amp)),
-               n_unusable=int(np.sum(~np.isfinite(ptc))), dt=dt, skip_p=skip_p,
+               n_unusable=int(np.sum(~np.isfinite(ptc))), dt=dt,
+               skip_p=int(np.max(sk)),
                sing_phi=np.array([s['phi'] for s in sings]),
                sing_dose=np.array([s['dose'] for s in sings]),
                sing_sign=np.array([s['sign'] for s in sings]))
@@ -127,7 +143,8 @@ def load_grids(model_name, mode, tag=None, shared=False):
 
 
 def run(model_name, mode='pulse', targets=None, n_phase=32, shard=None, nshards=None,
-        tag=None, scrit_tag=None, shared=False, chunk=None):
+        tag=None, scrit_tag=None, shared=False, chunk=None, skip_cap=None,
+        relax_tag=None):
     from models import get_model
     model = get_model(model_name)
     grids, stag = load_grids(model_name, mode, scrit_tag, shared=shared)
@@ -150,7 +167,17 @@ def run(model_name, mode='pulse', targets=None, n_phase=32, shard=None, nshards=
     for k, t in enumerate(mine):
         g, dt = grids[t]
         ts = time.time()
+        sk = None
+        if skip_cap:
+            from analysis.relax import skip_for_doses
+            sk, si = skip_for_doses(model_name, t, mode, g, cap=int(skip_cap),
+                                    tag=relax_tag)
+            print(f"  [skip] {t}: measured schedule {sorted(set(int(v) for v in sk))} over "
+                  f"{si.get('blocks', 1)} block(s)"
+                  + (f"  -- {si['capped']} row(s) EXCEED the cap and are NOT asymptotic"
+                     if si.get('capped') else ''), flush=True)
         rows.append(characterize_target(model, t, g, mode=mode, n_phase=n_phase, dt=dt,
+                                        skip_p=(sk if sk is not None else None),
                                         chunk=chunk))
         save_rows(model_name, mode, rows[-1:], tag, shared=shared, n_phase=n_phase)
         el = time.time() - t0
@@ -244,12 +271,17 @@ def main(argv=None):
     ap.add_argument('--shared', action='store_true',
                     help='use the ONE dose grid analysis.dosegrid derived for this model, '
                          'so every gene panel shares an axis')
+    ap.add_argument('--skip-cap', type=int, default=None,
+                    help='use the MEASURED per-dose relaxation (analysis.relax) as the '
+                         'transient skip, capped here, instead of the Floquet estimate')
+    ap.add_argument('--relax-tag', default=None)
     ap.add_argument('--chunk', type=int, default=None,
                     help='points per vmapped call; lower it if RAM is tight')
     a = ap.parse_args(argv)
     run(a.model, mode=a.mode, targets=(a.targets.split(',') if a.targets else None),
         n_phase=a.n_phase, shard=a.shard, nshards=a.nshards, tag=a.tag,
-        scrit_tag=a.scrit_tag, shared=a.shared, chunk=a.chunk)
+        scrit_tag=a.scrit_tag, shared=a.shared, chunk=a.chunk,
+        skip_cap=a.skip_cap, relax_tag=a.relax_tag)
     return 0
 
 

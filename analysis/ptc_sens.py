@@ -107,7 +107,8 @@ def features(old, doses, ptc, base):
 
 
 def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=None,
-        nshards=None, tag=None, scrit_tag=None, doses=None, dt=None, save_grids=True):
+        nshards=None, tag=None, scrit_tag=None, doses=None, dt=None, save_grids=True,
+        resume=True):
     from models import get_model
     from engine.ptc import recommended_skip
     from analysis import winding as W
@@ -158,9 +159,58 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
     amps = np.full((len(mine), nf, n_phase, len(doses)), np.nan, np.float32)
     vals = np.zeros((len(mine), nf, n_phase, len(doses)), bool)
 
+    def build(done):
+        span = lambda A: np.nanmax(np.abs(A), axis=1) if A.size else A
+        b = dict(model=model_name, target=target, mode=mode, params=np.array(mine),
+                 factors=factors, doses=doses, old=old, dt=dt, skip_p=skip_p, mu=mu,
+                 base_ptc=p0.astype(np.float32), base_twist=base['twist'],
+                 base_S=S0, base_phi=phi0, status=ST.astype(str),
+                 pointwise=PT, twist=TW, dS=DS, dphi=DP, total_twist=TT,
+                 S=SS, phi=PH,
+                 pointwise_span=span(PT), twist_span=span(TW),
+                 dS_span=span(DS), dphi_span=span(DP),
+                 done=np.asarray(done, bool), complete=bool(np.all(done)))
+        if save_grids:
+            b['ptc_grids'] = grids
+            b['amp_grids'] = amps
+            b['valid_grids'] = vals
+            b['base_amp'] = a0.astype(np.float32)
+            b['base_valid'] = v0
+        return b
+
+    out = paths.out_path(model_name, 'ptc_sens',
+                         paths.shard_filename(f'ptc_sens_{target}_{mode}',
+                                              idx if n > 1 else None), tag)
+    ckpt = out.replace('.npz', '.partial.npz')
+    done = np.zeros(len(mine), bool)
+
+    # RESUME. This sweep is ~2 h and wrote nothing until the very end, so a kill at 90 minutes
+    # left no output at all -- the same all-or-nothing failure lc_sens had.
+    if resume and os.path.exists(ckpt):
+        c = np.load(ckpt, allow_pickle=True)
+        if list(c['params']) == list(mine) and len(c['doses']) == len(doses):
+            done = np.asarray(c['done'], bool)
+            for dst, key in ((PT, 'pointwise'), (TW, 'twist'), (DS, 'dS'), (DP, 'dphi'),
+                             (TT, 'total_twist'), (SS, 'S'), (PH, 'phi')):
+                dst[...] = c[key]
+            ST[...] = c['status'].astype(object)
+            if save_grids and 'ptc_grids' in c:
+                grids[...], amps[...], vals[...] = (c['ptc_grids'], c['amp_grids'],
+                                                    c['valid_grids'])
+            print(f"[ptc-sens] resuming from {ckpt}: {int(done.sum())}/{len(mine)} "
+                  f"parameter(s) already done", flush=True)
+        else:
+            print(f"[ptc-sens] checkpoint {ckpt} does not match this run "
+                  f"(different parameters or dose grid) -- starting over", flush=True)
+
     t0 = time.time()
+    nsolve = [0]
+    total = int((~done).sum()) * nf
     for i, name in enumerate(mine):
+        if done[i]:
+            continue
         def one(k, y_seed):
+            tk = time.time()
             pd = dict(base_params)
             pd[name] = base_params[name] * float(factors[k])
             try:                                     # (1) PTC generation
@@ -169,9 +219,11 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
                 print(f"    [{name} x{factors[k]}] PTC FAILED {type(e).__name__}: {e}",
                       flush=True)
                 ST[i, k] = 'error'
+                tick(k, 'error', time.time() - tk)
                 return None
             ST[i, k] = st
             if p is None:
+                tick(k, st, time.time() - tk)
                 return None
             grids[i, k] = p.astype(np.float32)       # raw grids saved BEFORE any detection
             amps[i, k] = a.astype(np.float32)
@@ -184,7 +236,19 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
             except Exception as e:
                 print(f"    [{name} x{factors[k]}] DETECT FAILED {type(e).__name__}: {e}",
                       flush=True)
+            tick(k, st, time.time() - tk)
             return y0
+
+        def tick(k, st, secs, _i=i, _n=name):
+            """One line per FACTOR. A per-parameter line is ~6 min apart here, which cannot
+            tell a slow sweep from a hung one."""
+            nsolve[0] += 1
+            el = time.time() - t0
+            rate = el / max(nsolve[0], 1)
+            print(f"[ptc-sens] {_i + 1:2d}/{len(mine)} {_n:>10s}  x{factors[k]:<5g} "
+                  f"({k + 1}/{nf})  {str(st):<18s} {secs:6.1f}s  | {nsolve[0]:3d}/{total} "
+                  f"grids, {el / 60:5.1f} min elapsed, "
+                  f"eta {rate * (total - nsolve[0]) / 60:5.1f} min", flush=True)
 
         yb = one(BASE_IDX, None)
         for rng in (range(BASE_IDX + 1, nf), range(BASE_IDX - 1, -1, -1)):
@@ -193,33 +257,19 @@ def run(model_name, target, mode='pulse', n_phase=32, factors=FACTORS, shard=Non
                 yn = one(k, y)
                 if yn is not None:
                     y = yn
-        if (i + 1) % 5 == 0 or i + 1 == len(mine):
-            print(f"[ptc-sens] {i + 1}/{len(mine)} params ({time.time() - t0:.0f}s)",
-                  flush=True)
+        done[i] = True
+        paths.savez(ckpt, **build(done))     # an interrupt now costs one parameter
 
-    span = lambda A: np.nanmax(np.abs(A), axis=1) if A.size else A
-    blob = dict(model=model_name, target=target, mode=mode, params=np.array(mine),
-                factors=factors, doses=doses, old=old, dt=dt, skip_p=skip_p, mu=mu,
-                base_ptc=p0.astype(np.float32), base_twist=base['twist'],
-                base_S=S0, base_phi=phi0, status=ST.astype(str),
-                pointwise=PT, twist=TW, dS=DS, dphi=DP, total_twist=TT,
-                S=SS, phi=PH,
-                pointwise_span=span(PT), twist_span=span(TW),
-                dS_span=span(DS), dphi_span=span(DP))
-    if save_grids:
-        blob['ptc_grids'] = grids
-        blob['amp_grids'] = amps
-        blob['valid_grids'] = vals
-        blob['base_amp'] = a0.astype(np.float32)
-        blob['base_valid'] = v0
-    else:
+    blob = build(done)
+    if not save_grids:
         print("[ptc-sens] WARNING --no-grids: the raw surfaces are NOT being saved, so every "
               "plot or re-analysis will need the whole sweep re-run", file=sys.stderr)
-    out = paths.out_path(model_name, 'ptc_sens',
-                         paths.shard_filename(f'ptc_sens_{target}_{mode}',
-                                              idx if n > 1 else None), tag)
     paths.savez(out, **blob)
-    print(f"[ptc-sens] -> {out}", flush=True)
+    print(f"[ptc-sens] -> {out}  ({int(done.sum())}/{len(mine)} parameters, "
+          f"{(time.time() - t0) / 60:.1f} min)", flush=True)
+    for stale in (ckpt, ckpt + '.meta.json'):    # savez writes a provenance sidecar too
+        if os.path.exists(stale):
+            os.remove(stale)                      # the real output supersedes the checkpoint
     if n == 1:
         report(blob)
     return blob
@@ -280,7 +330,14 @@ def main(argv=None):
     ap.add_argument('--n-phase', type=int, default=32)
     ap.add_argument('--dt', type=float, default=None)
     ap.add_argument('--scrit-tag', default=None)
+    ap.add_argument('--doses', default=None,
+                    help="explicit grid 'lo,hi,n' instead of scrit's adaptive one -- for "
+                         'when the result must share a dose axis with another figure')
+    ap.add_argument('--scale', default='linear', choices=('linear', 'log'),
+                    help='spacing for --doses (default linear, as the R01 figures use)')
     ap.add_argument('--no-grids', action='store_true', help='do not save the raw PTC grids')
+    ap.add_argument('--no-resume', action='store_true',
+                    help='ignore any checkpoint and start over')
     ap.add_argument('--shard', type=int, default=None)
     ap.add_argument('--nshards', type=int, default=None)
     ap.add_argument('--tag', default=None)
@@ -290,8 +347,17 @@ def main(argv=None):
         raise SystemExit('--target is required (pick a resetting one from analysis.scrit)')
     if a.merge:
         return 0 if merge(a.model, a.target, a.mode, a.tag) is not None else 1
+    dz = None
+    if a.doses:
+        lo, hi, nd = a.doses.split(',')
+        lo, hi, nd = float(lo), float(hi), int(nd)
+        # A linear grid starts at `lo` INCLUSIVE, so '0,100,49' puts a genuine dose-0 row
+        # on the grid -- the readout-calibration control (REPO_MAP hazard 20).
+        dz = (np.linspace(lo, hi, nd) if a.scale == 'linear'
+              else np.geomspace(max(lo, 1e-12), hi, nd))
     run(a.model, a.target, mode=a.mode, n_phase=a.n_phase, dt=a.dt, shard=a.shard,
-        nshards=a.nshards, tag=a.tag, scrit_tag=a.scrit_tag, save_grids=not a.no_grids)
+        nshards=a.nshards, tag=a.tag, scrit_tag=a.scrit_tag, doses=dz,
+        save_grids=not a.no_grids, resume=not a.no_resume)
     return 0
 
 

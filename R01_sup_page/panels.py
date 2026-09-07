@@ -147,8 +147,11 @@ def _git(*a):
         return 'nogit'
 
 
-def save(fig, name, dpi=600, note=''):
-    """PNG + SVG, plus a sidecar so a clean figure is still traceable."""
+def save(fig, name, dpi=600, note='', script='R01_sup_page/panels.py'):
+    """PNG + SVG, plus a sidecar so a clean figure is still traceable.
+
+    `script` names the module that actually built the figure -- callers outside this file
+    (fig3.py) must pass their own, or the sidecar sends a future reader to the wrong source."""
     os.makedirs(HERE, exist_ok=True)
     out = []
     for ext in ('png', 'svg'):
@@ -158,7 +161,7 @@ def save(fig, name, dpi=600, note=''):
         out.append(p)
     with open(os.path.join(HERE, f'{name}.source.txt'), 'w') as f:
         f.write(f"{name}.png / .svg\n"
-                f"script   R01_sup_page/panels.py\n"
+                f"script   {script}\n"
                 f"commit   {_git('rev-parse', '--short', 'HEAD')}"
                 f"{' (DIRTY)' if _git('status', '--porcelain', '-uno') else ''}\n"
                 f"built    {datetime.now().isoformat(timespec='seconds')}\n"

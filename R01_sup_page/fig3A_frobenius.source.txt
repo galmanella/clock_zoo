@@ -1,0 +1,10 @@
+fig3A_frobenius.png / .svg
+script   R01_sup_page/fig3.py
+commit   de7ec1e (DIRTY)
+built    2026-09-02T00:46:35
+size     10.00 x 6.00 cm at 600 dpi
+data:
+  out/almeida/coupling/coupling_BMAL1_instant_twist.npz
+  BMAL1 / instant, feature twist
+  14 directions at lc_floor=1e-03, rho 0.07856..931
+  best single parameter rho = 8.963

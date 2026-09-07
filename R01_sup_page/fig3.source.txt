@@ -1,0 +1,13 @@
+fig3.png / .svg
+script   R01_sup_page/fig3_final.py
+commit   de7ec1e (DIRTY)
+built    2026-09-02T09:52:27
+size     16.39 x 5.20 cm at 600 dpi
+data:
+  C:\Users\galma\OneDrive\postdoc\Python\ModelingAndDataProcessingCodes (1)\ModelingAndDataProcessingCodes\Modeling\clock_zoo\out\almeida\coupling\coupling_BMAL1_instant_twist.npz
+  C:\Users\galma\OneDrive\postdoc\Python\ModelingAndDataProcessingCodes (1)\ModelingAndDataProcessingCodes\Modeling\clock_zoo\out\almeida\coupling\displace_BMAL1_instant_x2.npz
+panel a: 14 directions at lc_floor=1e-03; rho 0.0786..931; best single parameter rho = 8.963
+panels b,c: dir 02 sign +1, largest single-parameter change 2x
+  dLC=0.0566  dT/T=-0.1168  dPTC_rms=0.2886
+  of which rigid slide=+0.2743, shape only=0.0986 (34% of total)
+  delta colour range +/-0.5

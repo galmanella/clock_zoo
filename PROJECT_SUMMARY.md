@@ -46,6 +46,17 @@ are bit-identical over all 8000 population evaluations. It is fixed and now guar
 0.01 x S_crit takes the difficult start from 3 contract failures to 0 in 2 of 3 seeds, at 3-4x
 lower cost on a common yardstick.
 
+**KORENCIC (5c) is now the second rung, and it replicates the answer while inverting several
+of the reasons.** Objective (b) is affirmative there too -- matched single-gene, a PTC is worth
+1.6-3.5 trajectories against Almeida's ~3-4 -- and the finite-displacement decoupling spread is
+**252x** best-to-control against Almeida's 11x. But three things go the other way: Korencic HAS
+sloppy parameters where Almeida has none (156x spread of single-parameter LC sensitivity
+against 3.3x); its `rho` FAILS the ridge-artifact check Almeida passed, collapsing five orders
+across a floor sweep with a different eigenvector each time, so **no Korencic rho is quotable**
+even though `--all-dirs` shows the ordering is near-perfect (Spearman +0.976); and its probes
+saturate at three genes rather than continuing to four. It is also a far better conditioned
+model -- 2.7 decades of state spread against the thirty that produced Almeida's retraction.
+
 The most consequential methodological findings, each of which changed a scientific answer:
 
 - **Almeida's PTC type-transition dose is a property of the integrator step until you refine
@@ -2092,14 +2103,111 @@ Principal angles, LC(all species) vs PTC(Bmalx), top-6: **11.8, 15.9, 24.0, 58.0
 deg**. Closely comparable to Almeida's 5.4b (0.2, 0.9, 9.1, 19.2, 36.7, 57.1, 77.6): the two
 experiments agree on their leading directions and diverge to near-orthogonality by the sixth.
 
-### 5c.6 What is NOT done
+### 5c.6 LC sensitivity: Korencic HAS sloppy parameters, and Almeida does not
 
-`lc_sens`, `ptc_sens`, `coupling`, `confirm` and `sweep` have not run for Korencic in either
-mode, so **there is no Korencic decoupling number yet** and 5b item 5 -- re-testing the "same
-decoupled direction" claim, which rests on two Almeida probes -- is still open. The fit has not
-been commissioned. Pulse-mode identifiability wants `--no-include-time` (5c.7).
+`analysis/lc_sens.py`, 34 parameters x 9 factors, **7.3 min** locally -- 306 orbit solves at
+0.6 s each, which is the Newton early-exit doing what it was committed for (the same sweep on
+Almeida's 18 parameters used to take 80+ minutes).
 
-### 5c.7 The pulse quotient is one direction larger, and now the driver knows it
+| | Almeida | **Korencic** |
+|---|---|---|
+| `lc_sens` range | 0.20 – 0.66 = **3.3x** | 0.043 – 50.5 = **1165x** |
+| ... excluding the top value | — | **156x** |
+| median / IQR | — | 0.88 / 0.41 – 2.17 |
+| rejected settings | 51 of 162 = **31%** | 39 of 306 = **12.7%** |
+
+**This is the direct opposite of 3.3's headline for Almeida** -- "no sloppy parameters in the
+single-parameter sense; every one of its 18 moves the limit cycle by a comparable amount".
+Korencic has a two-order tail. Top movers `actn15` 50.5, `dDbp` 6.75, `dBmal` 5.81, `inh35`
+4.16; least `act14` 0.043, `act15` 0.049, `act52` 0.057, `inh42` 0.058.
+
+**The top value was audited before being believed, because 4 records exactly this trap
+producing sensitivities of 5e98 and 1e11.** `actn15` is NOT an artifact: all nine factors
+return `ok`, every state stays strictly positive (min 0.012–0.06), and the period moves only
+-2.9% to +9.8%. It is the Bmalz->Dbp activation gain, and quadrupling it grows the cycle's
+amplitude 155x (max 21.9 -> 3405). So it is a real, healthy, enormous response -- but it is
+**amplitude growth rather than shape change**, and `shape_all` normalises by each species'
+peak-to-trough on the BASE cycle, so pure scaling reports as displacement. **Quote 156x as the
+robust spread and name the mechanism**; 1165x is true and misleading.
+
+*Caveat, same as Almeida's:* the 39 rejections are all `dead` (plus one `no-converge`) and
+concentrate at x0.25 and x4, so the reported spans are mild UNDER-estimates.
+
+### 5c.7 Objective (b): rho's ORDER is trustworthy, rho's VALUE is not
+
+`analysis/coupling.py` on Korencic/Bmalx/instant, gauge quotiented (1 of 33 removed),
+J_LC = 961 x 33, J_PTC = 512 x 33.
+
+**THE LINEAR NUMBER FAILS ITS OWN ROBUSTNESS CHECK.** 3.5 established the test: sweep the LC
+singular-value floor, and if `rho_max` collapses, the big values lived on LC directions the
+finite-difference jacobian cannot RESOLVE (noise floor ~1e-5 relative) rather than on
+directions the limit cycle genuinely does not move. Almeida passed -- 122.3, unchanged in value
+AND composition from 1e-10 to 1e-2. Korencic fails on both counts:
+
+| LC floor | kept | rho_max | dominant parameters |
+|---|---|---|---|
+| 1e-10 | 32/33 | **4.3e7** | `act15`, `inh34`, `inh42` |
+| 1e-04 | 29/33 | 1.0e6 | `actn54`, `act54`, `inh33` |
+| 1e-03 | 23/33 | 4.1e4 | `actn52`, `inh34`, `act12` |
+| 1e-02 | 14/33 | 4.9e2 | `deg4`, `actn13`, `inh21` |
+| 3e-02 | 10/33 | 1.3e2 | `dReverb`, `deg1`, `deg4` |
+
+Five orders, and a different eigenvector every time. **No Korencic `rho` should be quoted.**
+
+**BUT THE ORDERING IS ALMOST PERFECT, AND THAT IS THE RESULT.** `analysis.confirm --all-dirs`
+steps every one of the 23 directions (both signs, `eps = 0.15`) and recomputes the PTC on
+`engine/reference.py` -- scipy LSODA with peak matching, sharing no numerical machinery with
+the engine the jacobian came from. 48 runs, 35 min.
+
+    Spearman(rho, measured dPTC/dLC) = +0.976   p = 2e-15   n = 23
+    Pearson on log10                 = +0.980
+
+| direction | rho | measured dPTC/dLC |
+|---|---|---|
+| dir 00 | 40872 | 5.65 |
+| dir 01 | 13545 | **7.01** |
+| dir 02 | 10165 | 5.53 |
+| dir 06 | 521 | 2.26 |
+| dir 10 | 75.0 | 0.94 |
+| dir 17 | 2.00 | 0.23 |
+| dir 22 | 0.00 | **0.022** |
+| *stiffest LC (positive control)* | — | *0.036* |
+
+So the eigenvalue **ranks** directions correctly across six orders of magnitude while being
+**wrong about magnitude by 36x** -- `sqrt(40872) = 202` predicted against 5.65 measured, worse
+than the ~13x 3.6 recorded for Almeida. The two statements are compatible: a ranking within one
+floor survives even when the value and the eigenvector do not.
+
+**The measured spread is 252x**, best to worst (5.65 / 0.022), against **11x** for Almeida
+(18.1 / 1.64). The positive control behaves: the stiffest LC direction moves the limit cycle by
+0.94 -- two orders more than any candidate -- and lands at ratio 0.036, at the LC-favouring end
+where it belongs. Both signs agree throughout, so none of this is a one-sided artifact of the
+step.
+
+> **The absolute ratios are not comparable across models** and must not be read that way:
+> `dLC` normalises by each species' own base amplitude, so its scale is model-specific.
+> Almeida's best is 18.1 and Korencic's 5.65, which says nothing. The comparable quantity is
+> best-against-control WITHIN a model: 11x for Almeida, 252x for Korencic.
+
+**So Korencic answers objective (b) affirmatively, and more sharply than Almeida** -- there are
+directions the PTC constrains and the limit cycle leaves hundreds of times freer, confirmed by
+finite displacement on an independent engine with a working positive control. What cannot be
+said is WHICH combination: the composition is floor-dependent, so the direction is not
+identified even though its existence is.
+
+Supporting, and consistent: the per-parameter log-log correlation is **+0.470** (Almeida
++0.660) with 7 of 34 parameters in the low-LC/high-PTC quadrant; the top-k principal angles
+between the best-determined subspaces run 67.3 / 26.2, 87.6 / 22.0, 48.4, 83.0 deg, so the two
+experiments diverge to near-orthogonality by the second or third direction. The
+LC-sloppiest directions carry **57%** of the total PTC response against Almeida's 7.7% -- but
+that figure shares the under-resolution caveat above and is reported, not leaned on.
+
+*Bookkeeping:* `ptc_sens` measures the base singularity at S* = 43.14 where the fixture S_crit
+is 38.56, a **1.12x** disagreement -- the same mismatch that reaches 4.7x on Almeida (5.10e) and
+makes per-gene costs incomparable there. At 1.12x it is not a threat to the Korencic fit window,
+which is worth knowing before commissioning it.
+
+### 5c.8 The pulse quotient is one direction larger, and now the driver knows it
 
 FIT_VALIDITY 3c: a pulse of duration fixed in HOURS is itself a clock, so pulse data can see the
 time rescale and quotienting it out projects away a direction the experiment determines
@@ -2110,6 +2218,22 @@ store it -- because two runs of one (target, mode) at different `include_time` h
 different SIZE and their counts are not comparable. Korencic pulse is **34** directions, not 33.
 This closes the REPO_MAP Open item; it changes no existing result, since the default is
 unchanged and every published count is instant-mode or explicitly pulse-with-include_time.
+
+### 5c.9 What is NOT done
+
+Done for **Bmalx / instant only**: `lc_sens` (target-independent, so it covers everything),
+`ptc_sens`, `coupling`, `confirm --all-dirs`. Still open:
+
+* `ptc_sens` + `coupling` + `confirm` for **Perx, Reverbx, Cryx** -- prepared as
+  `logs/run_kor01_cluster.sh`, one sharded array per gene.
+* **PULSE mode entirely.** It needs `--no-include-time` (5c.8), so its counts sit on a
+  34-direction quotient and are not comparable with the instant ones above.
+* `analysis.sweep`, the direction gallery.
+* The fit: not commissioned. No `fit.rescan` grid study, no budget measurement for a
+  33-dimensional search (Almeida's campaigns used `popsize=32, maxfev=8000` in **16**
+  dimensions, and 5b's budget note says re-derive rather than inherit).
+* 5b item 5 -- whether the decoupled direction is a property of the MODEL or of the probe --
+  needs the other three genes, since it is a statement about agreement ACROSS probes.
 
 
 ## 6. Figures

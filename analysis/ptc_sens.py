@@ -62,15 +62,20 @@ def load_grid(model_name, target, mode='pulse', tag=None):
     return None, None
 
 
-def make_ptc_at(model, target, mode, doses, n_phase, dt, skip_p):
-    """(ptc_of(params, y_seed) -> (grid[n_phase, n_dose], amp, valid, y0, status), doses)."""
+def make_ptc_at(model, target, mode, doses, n_phase, dt, skip_p, readout_ref=None):
+    """(ptc_of(params, y_seed) -> (grid[n_phase, n_dose], amp, valid, y0, status), doses).
+
+    `readout_ref` overrides which species carries the phase; None uses the model's own
+    `readout_variable`. Exposed for `analysis/observable.py`, which reads the SAME surface
+    through several candidate species to check they differ only by the calibrated origin
+    (REPO_MAP hazard 14). Every other caller wants the default and is unaffected."""
     import jax
     import jax.numpy as jnp
     from engine.orbit import make_orbit_finder
     from engine.ptc import make_ptc, grid_points, phase_or_nan, valid_mask
 
     f, _solver = make_ptc(model, target, mode=mode, readout='raw', skip_p=skip_p, dt=dt,
-                          track_min=True)
+                          track_min=True, readout_ref=readout_ref)
     fj = jax.jit(f)
     find, _s = make_orbit_finder(model)
     ph, dz = grid_points(n_phase, doses)

@@ -49,21 +49,27 @@ GENE_MAP = {
         'almeida':   [('BMAL1', 'protein')],
         'korencic':  [('Bmalx', 'mrna'), ('Bmalz', 'protein')],
         'goldbeter': [('MB', 'mrna'), ('BC', 'protein'), ('BN', 'nuclear')],
+        'goldbeter_rev': [('MB', 'mrna'), ('BC', 'protein'), ('BN', 'nuclear')],
     },
     'Per': {
         'almeida':   [('PER', 'protein')],
         'korencic':  [('Perx', 'mrna'), ('Perz', 'protein')],
         'goldbeter': [('MP', 'mrna'), ('PC', 'protein')],
+        'goldbeter_rev': [('MP', 'mrna'), ('PC', 'protein')],
     },
     'Cry': {
         'almeida':   [('CRY', 'protein')],
         'korencic':  [('Cryx', 'mrna'), ('Cryz', 'protein')],
         'goldbeter': [('MC', 'mrna'), ('CC', 'protein')],
+        'goldbeter_rev': [('MC', 'mrna'), ('CC', 'protein')],
     },
     'RevErb': {
         'almeida':   [('REV', 'protein')],
         'korencic':  [('Reverbx', 'mrna'), ('Reverbz', 'protein')],
-        # Goldbeter 2003 has no REV-ERB species.
+        # Goldbeter 2003 has no REV-ERB species; the 2003 Rev-erb variant is the whole
+        # reason it was ported -- it is what makes RevErb an mRNA-level comparison rather
+        # than an Almeida-protein-vs-Korencic-mRNA one.
+        'goldbeter_rev': [('MR', 'mrna'), ('RC', 'protein'), ('RN', 'nuclear')],
     },
     'Dbp': {
         'almeida':   [('DBP', 'protein')],
@@ -73,6 +79,7 @@ GENE_MAP = {
     'PerCry': {
         'almeida':   [('PER_CRY', 'complex')],
         'goldbeter': [('PCC', 'complex'), ('PCN', 'nuclear')],
+        'goldbeter_rev': [('PCC', 'complex'), ('PCN', 'nuclear')],
         # Korencic has no complexes -- its genes never bind each other explicitly.
     },
     'Ror': {
@@ -84,7 +91,7 @@ GENE_MAP = {
 }
 
 #: Order the models are drawn in, everywhere.
-MODELS = ('almeida', 'korencic', 'goldbeter')
+MODELS = ('almeida', 'korencic', 'goldbeter', 'goldbeter_rev')
 
 #: Genes, in the order figures should present them: the shared ones first, by how many models
 #: carry them, then the model-specific tails.
@@ -205,7 +212,8 @@ if __name__ == '__main__':
 SCOPE_LEVELS = {
     'almeida':   ('protein',),      # no mRNA exists; the TFs are the gene products
     'korencic':  ('mrna',),         # the x stage; y and z are the delay chain
-    'goldbeter': ('mrna',),         # MP / MC / MB (and MR in the Rev-erb variant)
+    'goldbeter': ('mrna',),         # MP / MC / MB
+    'goldbeter_rev': ('mrna',),     # MP / MC / MB / MR
 }
 
 

@@ -52,7 +52,11 @@ from analysis.features import ZOO
 from plotting import phase_cmap, broken
 
 #: One colour per model, one marker per expression level. See the header.
-MODEL_COLOR = {'almeida': '#1f77b4', 'korencic': '#d95f02', 'goldbeter': '#2ca02c'}
+#: One colour per model. goldbeter_rev sits next to goldbeter in hue on purpose -- it is the
+#: same model plus explicit REV-ERBalpha, and the figures are read as "did adding Rev-erb
+#: change this", which a contrasting colour would fight.
+MODEL_COLOR = {'almeida': '#1f77b4', 'korencic': '#d95f02', 'goldbeter': '#2ca02c',
+               'goldbeter_rev': '#8c9e00'}
 LEVEL_MARKER = {'mrna': 'o', 'protein': 's', 'nuclear': '^', 'complex': 'D'}
 
 NL = chr(10)
@@ -414,7 +418,8 @@ def _scatter_feature(ax, rows, col, genes, gx, off, log=False, ylim=None):
 
 
 def _legend_handles(rows):
-    ms = [Line2D([], [], color=MODEL_COLOR[m], marker='s', ls='none', ms=7, label=m)
+    ms = [Line2D([], [], color=MODEL_COLOR.get(m, 'k'), marker='s', ls='none', ms=7,
+                 label=m)
           for m in GM.MODELS if any(r['model'] == m for r in rows)]
     ls = [Line2D([], [], color='0.35', marker=LEVEL_MARKER[l], ls='none', ms=7, label=l)
           for l in GM.LEVELS if any(r['level'] == l for r in rows)]

@@ -78,8 +78,53 @@ _IC = {
 class KorencicModel(JaxDictParams, ClockModel):
     """Korencic/Grabe 5-gene delay-chain clock (15 ODEs, 34 parameters)."""
 
-    #: Reverbx: the largest relative amplitude (2.44) and cleanly unimodal.
+    #: SECTION. Reverbx: the largest relative amplitude (2.44 at base, 2.35 median over the
+    #: search box) and cleanly unimodal -- and, unlike Almeida's BMAL1, it stays that way under
+    #: displacement. `analysis.observable` (49 draws at |v| = 0.25..3.0, 25 with a usable orbit)
+    #: finds ALL FIFTEEN species unimodal at 100% of live points, so the section is essentially
+    #: unconstrained here and amplitude is the only tie-break. Korencic's whole state vector
+    #: spans 2.7 decades (median; 5.1 worst) against the THIRTY that made Almeida's RAD01
+    #: optimum stiff enough to stall Newton -- this model is far better conditioned.
     reference_variable = 'Reverbx'
+
+    #: READOUT, AND IT IS DELIBERATELY NOT THE SECTION -- the one place Korencic does need the
+    #: split (REPO_MAP hazard 14). Two quantities decide it and they pull in opposite
+    #: directions, so both were measured rather than argued:
+    #:
+    #:   base_ratio = min/|mean| over the cycle is the COLLAPSE signature -- what reached
+    #:       1e-27 on Almeida and what `fit/viability` rejects an entire parameter set for
+    #:       below 1e-3. It is measured at DISPLACED parameter sets, because that is where a
+    #:       fit goes. Reverbx is the WORST of all fifteen species here.
+    #:   the two-engine cross-check (`engine.reference.cross_check`) is measured at BASE and
+    #:       rewards a LARGE relative amplitude, because the reference engine matches peaks
+    #:       and a shallow oscillation gives it a noisier peak. Reverbx is the best here.
+    #:
+    #: Picking on either alone gives a different answer. Measured, korencic/Bmalx/pulse:
+    #:
+    #:     readout    cross-check (cyc)   base_ratio    median rel_amp
+    #:     Reverbx           6.56e-04      1.92e-03           2.350   <- section, worst baseline
+    #:     Dbpx              5.35e-04      8.02e-02           1.410   <- best on BOTH counts
+    #:     Perx              9.88e-04      2.14e-01           1.081
+    #:     Bmalx             1.11e-03      3.35e-02           1.771
+    #:     Cryx              1.26e-03      2.69e-02           1.661
+    #:
+    #: Dbpx wins outright: the lowest cross-check error of any species -- better than Reverbx's
+    #: -- with a baseline 42x safer. There is no trade-off left to make.
+    #:
+    #: Three things make it the natural choice beyond the numbers. It is a TRANSCRIPT, so it is
+    #: in `observable_states()` and at the mRNA level `analysis/genemap` scopes Korencic to.
+    #: Dbp-luciferase is the standard circadian reporter, so this is what the experiment
+    #: actually watches. And Dbpx is Korencic's sole NON-RESETTER (no S_crit out to dose 1e4),
+    #: so it is excluded from perturbation work anyway -- the readout therefore shares no role
+    #: with any target, which is the overlap that started hazard 14 in the first place.
+    #:
+    #: THE SWITCH IS FREE, AND THAT IS CHECKED RATHER THAN ASSERTED: asymptotic phase is a
+    #: property of the state, so candidates must agree up to the calibrated origin. Measured on
+    #: Bmalx over 12 phases x 4 doses, worst |d new_phase| after removing the constant offset is
+    #: 1.0e-03 cyc (instant) and 1.4e-03 (pulse) across the candidates -- ~1.5 s of a 25.81 h
+    #: period.
+    readout_variable = 'Dbpx'
+
     approx_period = 25.81
 
     def __init__(self):

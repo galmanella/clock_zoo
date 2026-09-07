@@ -86,6 +86,11 @@ def _rk4_step(rhs, y, h, T, P):
 #: Pass backend='rk4' for the old fixed-step path, e.g. to A/B against it.
 ORBIT_BACKEND = 'diffrax'
 
+#: Newton stops here. Well inside the quadratic basin -- `solve` then takes one more
+#: differentiable step -- and reached by iteration 3 on Almeida, so this changes the answer
+#: by nothing while cutting the iteration count by ~6x.
+NEWTON_TOL = 1e-12
+
 
 def _flow(rhs, y0, T, P, n_steps, full=False, backend=None, grad_mode='fwd'):
     """Integrate (1) over one period. full=False -> endpoint; True -> (n_steps+1, n) trace
@@ -121,7 +126,7 @@ class OrbitSolver:
     """
 
     def __init__(self, model, n_steps=None, ref=None, newton_iters=8, damping=1.0,
-                 phase_condition=None, backend=None):
+                 phase_condition=None, backend=None, newton_tol=NEWTON_TOL):
         # newton_iters=8 by default, not 4: Almeida converges to |F| ~ 1e-13 in 4, but Goodwin
         # (whose guess starts further out) still sits at 1.8e-6 after 4 and only reaches 8e-16
         # at 8. Under-convergence is invisible in the self-convergence check -- a coarse and a
@@ -136,6 +141,7 @@ class OrbitSolver:
         self.n_steps = int(n_steps or getattr(model, 'orbit_steps', None) or 1024)
         self.backend = backend or ORBIT_BACKEND
         self.newton_iters = int(newton_iters)
+        self.newton_tol = float(newton_tol)
         self.damping = float(damping)
         ref = ref or getattr(model, 'reference_variable', None) or model.state_names[0]
         self.ref_idx = int(model.var_index(ref))
@@ -152,14 +158,43 @@ class OrbitSolver:
                                 jnp.array([self._phase(y0, P)])])
 
     def _newton(self, x0, P):
-        """Damped Newton, value only (stop_gradient)."""
+        """Damped Newton, value only (stop_gradient), with an EARLY EXIT.
+
+        The exit is not a micro-optimisation, it is most of the runtime. `lax.scan` ran a fixed
+        `newton_iters` passes with no test, so:
+
+          - a converged solve paid 20 iterations to do the work of 3 (measured on Almeida:
+            median 3, worst 8, and each iteration is one residual plus a jacfwd = n+1 more
+            orbit flows);
+          - far worse, a DIVERGENT solve kept iterating on a NaN state, and an adaptive Tsit5
+            asked to integrate a blow-up drives its step size toward zero. Measured on Almeida:
+            29 ms for a good solve against 34-45 s for `ve x0.25`, `ve x4.0`, `vr x4.0` -- a
+            factor of ~1000. `find` then retries each through 8 T-multistarts, so ONE bad
+            factor cost ~6 minutes. That is what made an 18-parameter sweep take 80+ minutes.
+
+        Stopping on a non-finite residual reaches the same verdict (`find` rejects it as
+        'no-converge' either way) without integrating garbage 20 times. Stopping on a converged
+        residual is a fixed point -- further iterations do not move x -- so both branches leave
+        the answer alone; `tools/newton_ab.py` checks that against the old fixed-count loop.
+
+        `lax.while_loop` is legitimate here only because this result is stop_gradient'ed: the
+        exact dx*/dP comes from the single differentiable step in `solve`, not from unrolling
+        this loop."""
         eye = jnp.eye(self.n + 1)
 
-        def body(x, _):
-            F = self.residual(x, P)
+        def cond(c):
+            i, _x, F = c
+            r = jnp.linalg.norm(F)
+            return (i < self.newton_iters) & (r > self.newton_tol) & jnp.isfinite(r)
+
+        def body(c):
+            i, x, F = c                       # F is the residual AT x, already computed
             J = jax.jacfwd(self.residual)(x, P)
-            return x - self.damping * jnp.linalg.solve(J + 1e-12 * eye, F), None
-        xc, _ = lax.scan(body, x0, None, length=self.newton_iters)
+            xn = x - self.damping * jnp.linalg.solve(J + 1e-12 * eye, F)
+            return i + 1, xn, self.residual(xn, P)
+
+        x0 = jnp.asarray(x0, jnp.float64)
+        _i, xc, _F = lax.while_loop(cond, body, (0, x0, self.residual(x0, P)))
         return lax.stop_gradient(xc)
 
     def solve(self, P, x0):

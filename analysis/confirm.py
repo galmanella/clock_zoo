@@ -53,7 +53,7 @@ def _full_params(model, names, values):
     return pd
 
 
-def dense_render(model_name, target, mode='pulse', n_phase=32):
+def dense_render(model_name, target, mode='pulse', n_phase=32, tag=None, scrit_tag=None):
     """Add a dense JAX render of an EXISTING confirm run, in place.
 
     This is what saving `param_values` buys: the expensive adaptive verification does not have
@@ -66,10 +66,10 @@ def dense_render(model_name, target, mode='pulse', n_phase=32):
     from analysis.ptc_sens import load_grid
 
     model = get_model(model_name)
-    fp = paths.out_path(model_name, 'coupling', f'confirm_{target}_{mode}.npz')
+    fp = paths.out_path(model_name, 'coupling', f'confirm_{target}_{mode}.npz', tag)
     cf = dict(np.load(fp, allow_pickle=True))
     names = [str(x) for x in cf['param_names']]
-    dgrid, ddt = load_grid(model_name, target, mode)
+    dgrid, ddt = load_grid(model_name, target, mode, scrit_tag)
     skip_p, _mu, _r = recommended_skip(model, tol=1e-2, verbose=False)
     f, _sv = make_ptc(model, target, mode=mode, readout='raw', skip_p=skip_p,
                       dt=ddt or 0.02, track_min=True)
@@ -140,15 +140,21 @@ def ptc_change(model, params, target, doses, base_new, mode='pulse', n_phases=16
 
 
 def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, feature='twist',
-        all_dirs=False, doses=None, resume=True):
+        all_dirs=False, doses=None, resume=True, tag=None, scrit_tag=None):
     from models import get_model
     from engine.orbit import make_orbit_finder
 
     model = get_model(model_name)
-    fp = paths.out_path(model_name, 'coupling', f'coupling_{target}_{mode}_{feature}.npz')
+    # SAME TAG as the coupling run. analysis.coupling gained --tag so two variants of one
+    # (target, mode) -- above all include_time, whose settings give quotients of different
+    # SIZE -- cannot overwrite each other. This read has to follow it, or confirm silently
+    # verifies a DIFFERENT run's directions than the ones just computed.
+    fp = paths.out_path(model_name, 'coupling', f'coupling_{target}_{mode}_{feature}.npz',
+                        tag)
     if not os.path.exists(fp):
-        raise SystemExit(f"run `python -m analysis.coupling --model {model_name} "
-                         f"--target {target}` first")
+        msg = "run `python -m analysis.coupling --model %s --target %s --mode %s%s` first" % (
+            model_name, target, mode, (' --tag ' + tag) if tag else '')
+        raise SystemExit("no " + fp + chr(10) + "  " + msg)
     cp = dict(np.load(fp, allow_pickle=True))
     names = [str(p) for p in cp['params']]
     V, rho = np.asarray(cp['V']), np.asarray(cp['rho'])
@@ -175,7 +181,7 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
     # sample the target's own grid: low, near-S_crit, high
     if doses is None:
         from analysis.ptc_sens import load_grid
-        grid, _dt = load_grid(model_name, target, mode)
+        grid, _dt = load_grid(model_name, target, mode, scrit_tag)
         if grid is None:
             raise SystemExit('no dose grid; run analysis.scrit first')
         doses = grid[np.linspace(0, len(grid) - 1, n_dose).astype(int)]
@@ -263,7 +269,7 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
         import jax.numpy as jnp
         from engine.ptc import make_ptc, grid_points, phase_or_nan, valid_mask, recommended_skip
         from analysis.ptc_sens import load_grid
-        dgrid, ddt = load_grid(model_name, target, mode)
+        dgrid, ddt = load_grid(model_name, target, mode, scrit_tag)
         skip_p, _mu, _r = recommended_skip(model, tol=1e-2, verbose=False)
         nph = 32
         fj_fn, solver = make_ptc(model, target, mode=mode, readout='raw', skip_p=skip_p,
@@ -299,7 +305,7 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
     except Exception as e:                     # never let the picture break the verification
         print(f"[confirm] dense render skipped ({type(e).__name__}: {e})", file=sys.stderr)
 
-    out = paths.out_path(model_name, 'coupling', f'confirm_{target}_{mode}.npz')
+    out = paths.out_path(model_name, 'coupling', f'confirm_{target}_{mode}.npz', tag)
     paths.savez(
         out,
         # --- configuration, so the run is reconstructible ---------------------------- #
@@ -349,18 +355,23 @@ def main(argv=None):
                     help='every eigen-direction, not just the two extremes')
     ap.add_argument('--doses', default=None,
                     help="explicit linear dose grid 'lo,hi,n' (default: the scrit grid)")
+    ap.add_argument('--tag', default=None,
+                    help='tag of the analysis.coupling run being confirmed; also where '
+                         'this writes. Must match, or a different run gets verified.')
+    ap.add_argument('--scrit-tag', default=None,
+                    help='analysis.scrit run supplying the dose grid (default: newest)')
     ap.add_argument('--dense-only', action='store_true',
                     help='add/refresh the dense JAX render of an existing run, no re-verify')
     a = ap.parse_args(argv)
     if a.dense_only:
-        dense_render(a.model, a.target, a.mode)
+        dense_render(a.model, a.target, a.mode, tag=a.tag, scrit_tag=a.scrit_tag)
         return 0
     dz = None
     if a.doses:
         lo, hi, nd = a.doses.split(',')
         dz = np.linspace(float(lo), float(hi), int(nd))
     run(a.model, a.target, a.mode, a.eps, a.n_phases, a.n_dose, all_dirs=a.all_dirs,
-        doses=dz)
+        doses=dz, tag=a.tag, scrit_tag=a.scrit_tag)
     return 0
 
 

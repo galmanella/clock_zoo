@@ -246,7 +246,7 @@ def principal_angles(A, B, tol=1e-10):
 
 
 def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=None,
-        plot=True, lc_floor=1e-3):
+        plot=True, lc_floor=1e-3, include_time=True, tag=None):
     from gauge.gauge import Gauge
     from models import get_model
 
@@ -284,7 +284,12 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
     # ---- 2. local coupling matrix ---------------------------------------------------- #
     J_LC, J_PT, kept, keep = build_jacobians(lc, pt, names, li, pi, ok)
 
-    g = Gauge(get_model(model_name))
+    # include_time=False keeps the TIME RESCALE in the quotient instead of projecting it
+    # out. Required for PULSE mode: a pulse of duration fixed in HOURS is itself a clock,
+    # so pulse data CAN see the time rescale and removing it discards a direction the
+    # experiment determines (FIT_VALIDITY 3c). Measured: under a pure time rescale an
+    # instant-mode PTC moves 1.1e-07 cyc and an 8 h-pulse PTC moves 3.8e-01.
+    g = Gauge(get_model(model_name), include_time=include_time)
     gi = [g.names.index(p) for p in kept if p in g.names]
     n_obs_lc, n_obs_pt = J_LC.shape[0], J_PT.shape[0]
     Gsub = g.G[gi] if len(gi) == len(kept) else None
@@ -411,8 +416,13 @@ def run(model_name, target, mode='pulse', feature='twist', lc_tag=None, pt_tag=N
                 lc_floor=lc_floor, n_kept_lc=info['n_kept'],
                 top_angles=np.array([np.mean(a) for a in ang.values()]),
                 top_angle_ks=np.array(list(ang)), sigma_lc=s_lc, ptc_response=resp,
-                sloppy_ptc_fraction=frac, J_LC=J_LCq, J_PTC=J_PTq)
-    out = paths.out_path(model_name, 'coupling', f'coupling_{target}_{mode}_{feature}.npz')
+                sloppy_ptc_fraction=frac, J_LC=J_LCq, J_PTC=J_PTq,
+                include_time=include_time)
+    # `mode` is already in the filename, so instant and pulse never collide. `tag` is for
+    # VARIANTS of one (target, mode): most of all include_time, whose two settings give
+    # quotients of different SIZE and whose counts must not overwrite each other.
+    out = paths.out_path(model_name, 'coupling',
+                         f'coupling_{target}_{mode}_{feature}.npz', tag)
     paths.savez(out, **blob)
     print(f"\n[coupling] -> {out}")
     if plot:
@@ -438,11 +448,20 @@ def main(argv=None):
     ap.add_argument('--no-plot', action='store_true')
     ap.add_argument('--lc-floor', type=float, default=1e-3,
                     help='relative singular-value cut on J_LC for the decoupling pencil')
+    ap.add_argument('--no-include-time', dest='include_time', action='store_false',
+                    help='keep the time rescale IN the quotient -- USE FOR PULSE MODE')
+    ap.add_argument('--tag', default=None,
+                    help='output tag, for variants of one (target, mode)')
     a = ap.parse_args(argv)
     if not a.target:
         raise SystemExit('--target is required')
+    if a.mode == 'pulse' and a.include_time:
+        print('[coupling] NOTE: pulse mode with include_time=True quotients out a')
+        print('  direction the data CAN see -- an 8 h pulse is itself a clock')
+        print('  (FIT_VALIDITY 3c). Pass --no-include-time unless you mean to')
+        print('  reproduce an older count.')
     run(a.model, a.target, a.mode, a.feature, a.lc_tag, a.pt_tag, plot=not a.no_plot,
-        lc_floor=a.lc_floor)
+        lc_floor=a.lc_floor, include_time=a.include_time, tag=a.tag)
     return 0
 
 

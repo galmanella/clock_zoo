@@ -139,7 +139,8 @@ def ptc_change(model, params, target, doses, base_new, mode='pulse', n_phases=16
             int(np.sum(~np.isfinite(new))), new, ref.period)
 
 
-def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, feature='twist'):
+def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, feature='twist',
+        all_dirs=False, doses=None, resume=True):
     from models import get_model
     from engine.orbit import make_orbit_finder
 
@@ -153,9 +154,17 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
     V, rho = np.asarray(cp['V']), np.asarray(cp['rho'])
     # the stiffest LC direction, as the positive control
     _u, _s, vt = np.linalg.svd(np.nan_to_num(np.asarray(cp['J_LC'])), full_matrices=False)
-    dirs = [('decoupled (candidate)', V[:, 0], rho[0]),
-            ('coupled  (control)', V[:, -1], rho[-1]),
-            ('stiffest LC (positive control)', vt[0], np.nan)]
+    if all_dirs:
+        # EVERY eigen-direction, not just the extremes. The 3-direction version answers "is
+        # the top candidate real?"; sweeping the whole spectrum answers the stronger question,
+        # whether dPTC/dLC actually ORDERS with rho or whether the top one is a lucky draw.
+        # The stiffest LC direction stays as the positive control -- it must move both.
+        dirs = [(f'dir {k:02d}', V[:, k], rho[k]) for k in range(V.shape[1])]
+        dirs.append(('stiffest LC (positive control)', vt[0], np.nan))
+    else:
+        dirs = [('decoupled (candidate)', V[:, 0], rho[0]),
+                ('coupled  (control)', V[:, -1], rho[-1]),
+                ('stiffest LC (positive control)', vt[0], np.nan)]
 
     # base LC + base PTC on the adaptive engine
     find, _s2 = make_orbit_finder(model)
@@ -164,11 +173,13 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
         raise SystemExit(f"base orbit not usable ({st0})")
     scale = np.maximum(C0.max(1) - C0.min(1), 1e-9)
     # sample the target's own grid: low, near-S_crit, high
-    from analysis.ptc_sens import load_grid
-    grid, _dt = load_grid(model_name, target, mode)
-    if grid is None:
-        raise SystemExit('no dose grid; run analysis.scrit first')
-    doses = grid[np.linspace(0, len(grid) - 1, n_dose).astype(int)]
+    if doses is None:
+        from analysis.ptc_sens import load_grid
+        grid, _dt = load_grid(model_name, target, mode)
+        if grid is None:
+            raise SystemExit('no dose grid; run analysis.scrit first')
+        doses = grid[np.linspace(0, len(grid) - 1, n_dose).astype(int)]
+    doses = np.asarray(doses, float)
 
     print(f"[confirm] {model_name} / {target} ({mode}); eps = {eps} in log-parameter space")
     print(f"[confirm] doses {np.array2string(doses, precision=3)}; "
@@ -187,19 +198,30 @@ def run(model_name, target, mode='pulse', eps=0.15, n_phases=16, n_dose=3, featu
     # adaptive integration; storing it costs a few hundred kB. Every plot and every re-analysis
     # downstream reads these rather than re-running anything.
     LCP, PTCG, VECS, PARAMSETS = [], [], [], []
+    import time
+    t0 = time.time()
+    nrun = [0]
+    total = 2 * len(dirs)
     for label, v, r in dirs:
         v = np.asarray(v, float)
         v = v / np.linalg.norm(v)
         for sgn in (+1, -1):
+            tk = time.time()
+            nrun[0] += 1
             pd = displaced(model, names, sgn * v, eps)
             dlc, dT, st, C = lc_change(model, pd, C0, T0, scale)
             if not np.isfinite(dlc):
-                print(f"  {label:32s} {r:8.2f} {sgn:+5d} {'orbit ' + st:>9s}")
+                print(f"  {label:32s} {r:8.2f} {sgn:+5d} {'orbit ' + st:>9s}"
+                      f"   [{nrun[0]}/{total}, {time.time() - tk:.0f}s]", flush=True)
                 continue
             prms, pmax, nbad, new, per = ptc_change(model, pd, target, doses, base_new,
                                                     mode=mode, n_phases=n_phases)
+            el = time.time() - t0
             print(f"  {label:32s} {r:8.2f} {sgn:+5d} {dlc:9.4f} {abs(dT):9.4f} "
-                  f"{prms:9.4f} {pmax:9.4f}" + (f"  ({nbad} bad)" if nbad else ""))
+                  f"{prms:9.4f} {pmax:9.4f}" + (f"  ({nbad} bad)" if nbad else "")
+                  + f"   [{nrun[0]}/{total}, {time.time() - tk:.0f}s, "
+                    f"{el / 60:.1f} min elapsed, eta "
+                    f"{el / nrun[0] * (total - nrun[0]) / 60:.1f} min]", flush=True)
             rows.append(dict(label=label, rho=r, sign=sgn, dLC=dlc, dT=dT,
                              dPTC_rms=prms, dPTC_max=pmax, n_bad=nbad, period=per))
             LCP.append(C)                                   # (n_states, m) perturbed cycle
@@ -323,13 +345,22 @@ def main(argv=None):
     ap.add_argument('--eps', type=float, default=0.15)
     ap.add_argument('--n-phases', type=int, default=16)
     ap.add_argument('--n-dose', type=int, default=3)
+    ap.add_argument('--all-dirs', action='store_true',
+                    help='every eigen-direction, not just the two extremes')
+    ap.add_argument('--doses', default=None,
+                    help="explicit linear dose grid 'lo,hi,n' (default: the scrit grid)")
     ap.add_argument('--dense-only', action='store_true',
                     help='add/refresh the dense JAX render of an existing run, no re-verify')
     a = ap.parse_args(argv)
     if a.dense_only:
         dense_render(a.model, a.target, a.mode)
         return 0
-    run(a.model, a.target, a.mode, a.eps, a.n_phases, a.n_dose)
+    dz = None
+    if a.doses:
+        lo, hi, nd = a.doses.split(',')
+        dz = np.linspace(float(lo), float(hi), int(nd))
+    run(a.model, a.target, a.mode, a.eps, a.n_phases, a.n_dose, all_dirs=a.all_dirs,
+        doses=dz)
     return 0
 
 

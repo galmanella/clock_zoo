@@ -78,6 +78,7 @@ parameters, so **no re-fit was needed** before characterization.
 | **Almeida 2020** | 8 | 18 | 24.826 h | transcription-factor level; EBOX/RRE/DBOX; one reversible complex | 0.546 | 2 |
 | **Korencic/Grabe** | 15 | 34 | 25.809 h | 5 genes x a 3-stage delay chain; no complexes | 0.505 | 1 |
 | **Leloup–Goldbeter 2003** | 16 | 52 | 23.849 h | phosphorylation + nuclear transport + MM degradation | 0.334 | 5 |
+| **Goldbeter + REV-ERB** | 19 | 63 | 28.275 h | the above, with BMAL1 repression routed through nuclear REV-ERB | 0.583 | — |
 | *(Mirsky 2009, for scale)* | *21* | *132* | *23.7 h* | *mass-action dimers* | — | *13* |
 
 Goodwin is a **smoke test, not a science target**: it is the smallest thing that oscillates and
@@ -480,12 +481,19 @@ produced a plausible-looking wrong number.
 | 8x self-convergence | 2.9e-09 | 1.3e-11 | 4.4e-11 | 6.7e-12 |
 | gauge identity | 1.3e-13 | 6.3e-15 | 1.6e-15 | 3.6e-16 |
 | gauge covariance of the orbit | 1.4e-14 | 3.9e-15 | 2.6e-15 | 1.5e-14 |
-| **two PTC engines agree** | **1.6e-05** | **7.8e-04** | **2.3e-03** | **2.6e-04** |
+| **two PTC engines agree** | **4.9e-04** | **5.4e-04** | **2.3e-03** | **6.5e-04** |
 
 The last row is the one that matters: `engine/ptc.py` (JAX, Fourier phase) against
 `engine/reference.py` (scipy LSODA, peak-matching phase) — no shared numerical machinery,
 **no offset fitting**, and agreement required on which cells are dead as well as on the live
 phases.
+
+> **These numbers were re-measured after the Newton early-exit and Korencic's readout
+> split** (5c.2), on the adaptive backend throughout, and they moved: Almeida
+> 1.6e-05 → 4.9e-04 and Goodwin 2.6e-04 → 6.5e-04 are the fixed-step-to-Tsit5 change
+> recorded in 7510e9e, while **Korencic 7.8e-04 → 5.4e-04 is the readout moving to
+> `Dbpx`**. goldbeter_rev, not in this table, measures 8.4e-04. All still PASS except
+> Goldbeter, and the ordering of which model is hardest is unchanged.
 
 **Goldbeter is the one that misses**, at 2.3e-03 cyc against a 1e-03 threshold, and the dash
 above was not a pass — it had never been measured. Three things pin down what it is and is
@@ -1938,6 +1946,171 @@ should stay held: the rule recorded there -- if the ramp wins, set `amp_lo=0.05`
 arms and make `arm1_ramp` the control -- cannot be applied until the ramp has actually been
 measured, which is what the re-submission does. Note also that the relative branch DID forward
 `amp_ramp`, so batch 2 would not have been hit by this defect.
+
+---
+
+## 5c. KORENCIC: the second rung of the ladder
+
+*In progress. Commissioning and objective (b)'s rank comparison are done; `lc_sens` /
+`ptc_sens` / `coupling` / `confirm` and the fit are not. Tag `kor01`, both modes.*
+
+The point of the complexity ladder (11 -> 18 -> **34** -> 52 -> 132) is to turn "identifiability
+vs model size" into a measurement, and to re-test on a structurally different model the claims
+Almeida now rests on. Korencic is the right second rung: five genes x a three-stage delay chain,
+no complexes, no protein species, and **1 gauge generator of 34** against Almeida's 2 of 18, so
+33 of its 34 parameters are physically meaningful and the question is essentially unconfounded
+by units.
+
+### 5c.1 It is a MUCH better conditioned model, and that is the first result
+
+Almeida's retraction chain (5.7, hazard 14) came from a state vector spanning **thirty decades**
+at a fitted optimum, which stalled Newton and exhausted the integrator. `analysis/observable.py`
+-- written for this, because the equivalent Almeida measurement existed only as numbers in a
+docstring -- samples the gauge-quotient box at a ladder of radii (|v| = 0.25 .. 3.0, 49 draws,
+25 with a usable orbit) and measures every species at every point:
+
+| | Almeida (at RAD01) | **Korencic (over the box)** |
+|---|---|---|
+| state-vector spread | ~30 decades | **2.7 median, 5.1 worst** |
+| species unimodal | the section stopped being | **15 of 15, at 100% of live points** |
+
+So the Poincare **section is essentially unconstrained** here and stays `Reverbx` (largest
+relative amplitude, 2.35 median). This is not a small difference in degree: the failure mode
+that dominated three weeks of Almeida work does not exist on this model.
+
+### 5c.2 The readout still needed splitting off, and the two criteria disagreed
+
+`readout_variable` was undeclared, so `Reverbx` was section, phase readout and -- for one target
+-- perturbation target at once: Almeida's exact pre-retraction configuration. Two quantities
+decide the readout and they **point opposite ways**, which is why both were measured:
+
+* `base_ratio` = min/|mean| over the cycle is the COLLAPSE signature (what reached 1e-27 on
+  Almeida; `fit/viability` rejects a whole parameter set below 1e-3). Measured at DISPLACED
+  parameters, because that is where a fit goes.
+* the two-engine cross-check is measured at BASE and rewards a LARGE relative amplitude, because
+  `engine/reference` matches peaks and a shallow oscillation gives it a noisier peak.
+
+| readout | cross-check (cyc) | base_ratio | median rel amp |
+|---|---|---|---|
+| Reverbx | 6.56e-04 | **1.92e-03** (worst of 15) | 2.350 |
+| **Dbpx** | **5.35e-04** | 8.02e-02 | 1.410 |
+| Perx | 9.88e-04 | 2.14e-01 (best) | 1.081 |
+| Bmalx | 1.11e-03 | 3.35e-02 | 1.771 |
+| Cryx | 1.26e-03 | 2.69e-02 | 1.661 |
+
+**Reverbx is the worst species in the model on the quantity that matters at displaced
+parameters** -- the only one under 1e-2, a factor 1.9 off outright rejection. Picking on
+`base_ratio` alone gives Perx; picking on the cross-check alone keeps Reverbx. **Dbpx wins
+both**, and three things confirm it beyond the numbers: it is a transcript (in
+`observable_states()`, the mRNA level `genemap` scopes Korencic at), Dbp-luciferase is the
+standard circadian reporter, and Dbpx is the sole NON-RESETTER, so it shares no role with any
+perturbation target -- the overlap that started hazard 14. `engine.validate korencic` improves
+to **5.35e-04 cyc**, from the 7.8e-04 in 4.1.
+
+> **CORRECTION, recorded because the wrong version was committed first.** Changing the readout
+> was said to move the phase ORIGIN, requiring every surface to be re-derived. **It does not.**
+> `engine/orbit` anchors old phase at a maximum of `reference_variable` (the SECTION, unchanged),
+> and `engine/ptc` calibrates the new-phase origin to the identity at dose 0, which pins it to
+> that same origin whatever species carries the Fourier readout. Measured against tag `zoo04`:
+> S_crit **and** phi\* come back bit-identical for all four resetters. `analysis/phaseref.py`
+> already said this. A readout change is free in the strong sense -- not "an offset that
+> cancels", but no change at all at the resolution features are read at.
+
+### 5c.3 Objective (a): four of five reset, and the gate passes 10 of 10
+
+Canonical, promoted to `fixtures/scrit/korencic/`. Do not recompute.
+
+| target | S_crit instant | S_crit pulse | note |
+|---|---|---|---|
+| **Bmalx** | **38.56** | **0.935** | re-entrant |
+| **Perx** | **7.382** | **0.935** | |
+| **Reverbx** | **7.382** | **0.935** | |
+| **Cryx** | **0.409** | **0.078** | |
+| Dbpx | — | — | **NO RESET to 1e4**, `ceiling_reason = none` |
+
+Dbpx is the clean non-resetter -- scanned to the top of the range without the integrator going
+unstable, so this is a statement about the model, not about where the numerics gave up. It is
+Korencic's ROR (Almeida: 1 of 8). Perx and Reverbx share an S_crit exactly because they land on
+the same scan node -- grid quantisation, not a coincidence.
+
+**`analysis.quality`: 10 of 10 surfaces PASS**, five targets x both modes, where Almeida had CRY
+and PER FAIL in pulse and CRY in instant. Perx and Reverbx come back `plaq 1 -> 1` -- a single
+raw winding plaquette with nothing for the dipole filter to do, the analogue of Almeida/BMAL1
+instant, "the cleanest surface in the project".
+
+*One caveat the gate cannot state.* Cryx reads `W = [0]` and Dbpx `W = [1]` -- neither shows a
+winding CHANGE -- because `characterize --shared` uses one grid for cross-model figures and
+Korencic's S_crit spans **94x**, which no single shared grid can bracket. Cryx's transition is
+real and sits below the shared floor. `ptc_sens` and `fit_dose_grid` read the PER-TARGET grid,
+which does bracket; **a Cryx feature must not be quoted off the shared surface.**
+
+### 5c.4 Objective (b), the rank comparison: a PTC is worth 1.6-3.5 trajectories, per gene
+
+`analysis.identifiability` (given a CLI for this), instant, h = 1e-3, 33 free directions.
+**MATCHED** -- one gene's PTC against the SAME species' trajectory, so both sides are one
+species and the comparison can support a design claim:
+
+| probe | LC alone | PTC alone | LC+PTC | PTC adds | worth |
+|---|---|---|---|---|---|
+| **Bmalx** | 4/33 | **11/33** | 12/33 | **+8** | 2.8x |
+| Perx | 5/33 | 8/33 | 9/33 | +4 | 1.6x |
+| Reverbx | 2/33 | 7/33 | 7/33 | +5 | **3.5x** |
+| Cryx | 5/33 | 8/33 | 10/33 | +5 | 1.6x |
+
+**Almeida's 5.4b result REPLICATES on a structurally unrelated model**: there, matched
+single-gene, LC 3/16 against PTC 7/16 -- "a PTC is worth ~3-4 trajectories, per gene". Korencic
+gives 1.6-3.5x across four probes. The affirmative answer to objective (b) is therefore not a
+property of Almeida's architecture.
+
+**As a FRACTION of the free directions it falls with model size**, which is what the ladder was
+built to see: Almeida's best probe determines 7/16 = 44%, Korencic's 11/33 = 33%.
+
+### 5c.5 Genes are not redundant here either -- but they SATURATE at three
+
+| probes | rank@1e-2 | condition | best set |
+|---|---|---|---|
+| 1 | 7-11/33 | 4.3e5 - 3.0e6 | Bmalx **11** |
+| 2 | 10-14/33 | 1.4e4 - 2.3e5 | Bmalx+Cryx **14** |
+| 3 | 12-16/33 | 1.0e4 - 3.5e4 | Bmalx+Reverbx+Cryx **16** |
+| 4 | 16/33 | 6.4e3 | (all four) **16** |
+
+One probe to three is 11 -> 16, a 45% gain, so gene is again the informative axis -- Almeida's
+5.5 finding, and again the opposite of Mirsky's "vary dose, not gene". **But the fourth probe
+adds nothing at 1e-2** (16 -> 16); it buys only conditioning (1.3e4 -> 6.4e3) and one direction
+at 1e-3 (26 -> 27). **`Bmalx + Reverbx + Cryx` is the efficient set, and Perx is the redundant
+one** -- `Bmalx+Perx+Reverbx` reaches only 14 where swapping Perx for Cryx reaches 16.
+
+**AND THE RANKING INVERTS WHAT THE SURFACES LOOK LIKE, WHICH IS THE WHOLE REASON IT WAS RUN
+FIRST.** Perx and Reverbx have the *cleanest* surfaces in the model (`plaq 1 -> 1`) and are the
+two *weakest* single probes (8 and 7). Bmalx has the messiest of the four (`plaq 3 -> 1`,
+scramble 0.025) and is the *best* (11). Choosing the fit probe on surface cleanliness -- which
+is how Almeida's BMAL1 was chosen, and 5.5 records that it was "the WEAKEST probe (7/16) despite
+having the cleanest surface in the project" -- would have picked Perx or Reverbx here. The same
+trap, with the roles reassigned, so the lesson is about the METHOD and not about a gene.
+
+Principal angles, LC(all species) vs PTC(Bmalx), top-6: **11.8, 15.9, 24.0, 58.0, 63.9, 78.2
+deg**. Closely comparable to Almeida's 5.4b (0.2, 0.9, 9.1, 19.2, 36.7, 57.1, 77.6): the two
+experiments agree on their leading directions and diverge to near-orthogonality by the sixth.
+
+### 5c.6 What is NOT done
+
+`lc_sens`, `ptc_sens`, `coupling`, `confirm` and `sweep` have not run for Korencic in either
+mode, so **there is no Korencic decoupling number yet** and 5b item 5 -- re-testing the "same
+decoupled direction" claim, which rests on two Almeida probes -- is still open. The fit has not
+been commissioned. Pulse-mode identifiability wants `--no-include-time` (5c.7).
+
+### 5c.7 The pulse quotient is one direction larger, and now the driver knows it
+
+FIT_VALIDITY 3c: a pulse of duration fixed in HOURS is itself a clock, so pulse data can see the
+time rescale and quotienting it out projects away a direction the experiment determines
+(measured: instant PTC invariant to 1.1e-07 cyc under a pure time rescale, 8 h-pulse PTC moves
+3.8e-01). Until now no driver could pass `include_time=False`. `analysis.coupling` and
+`analysis.identifiability` both take it, both WARN when run in pulse mode without it, and both
+store it -- because two runs of one (target, mode) at different `include_time` have quotients of
+different SIZE and their counts are not comparable. Korencic pulse is **34** directions, not 33.
+This closes the REPO_MAP Open item; it changes no existing result, since the default is
+unchanged and every published count is instant-mode or explicitly pulse-with-include_time.
+
 
 ## 6. Figures
 

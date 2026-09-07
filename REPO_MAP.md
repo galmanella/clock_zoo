@@ -70,6 +70,7 @@ until the tasks are joined.
 | `almeida.py` | Almeida 2020, 8 states / 18 params. Transcription-factor level, one reversible complex. |
 | `korencic.py` | Korencic/Grabe, 15 states / 34 params. Five genes x a 3-stage delay chain; no complexes. |
 | `goldbeter.py` | Leloup & Goldbeter 2003, 16 states / 52 params. Phosphorylation + transport + MM degradation. |
+| `goldbeter_rev.py` | Leloup & Goldbeter 2003 **+ REV-ERBalpha**, 19 states / 63 params. BMAL1 self-repression routed through nuclear REV-ERB; nominal parameters from Fig. S8, NOT the base model's. The only model overriding `orbit_steps` (4096). |
 | `goodwin.py` | Goodwin/Gonze, 3 states / 11 params. **Smoke test, not a science target** — smallest thing that oscillates, structurally unlike the others, gauge known-good from input_screen. |
 
 ### `engine/`
@@ -90,6 +91,19 @@ until the tasks are joined.
 | `lc_sens.py` | ENTRY. Per-parameter limit-cycle sensitivity. Target-independent: runs once per model. |
 | `ptc_sens.py` | ENTRY. Per-parameter PTC sensitivity on a FIXED base dose grid. Saves every raw grid. |
 | `coupling.py` | ENTRY. Objective (b): the scatter, the gauge-quotiented principal angles, and the shortlist to confirm. Pure read. |
+| `confirm.py` | ENTRY. Finite displacement along each direction on the INDEPENDENT adaptive engine. `--all-dirs` asks whether the measured ratio ORDERS with rho, not just whether the top one is real. |
+| `sweep.py` | ENTRY. A range of displacements along one direction. |
+| `identifiability.py` | ENTRY. rank(J) / dim(solution set) per observable -- the crispest form of objective (b) -- plus the multi-gene subset table. `--no-include-time` for pulse. |
+| `observable.py` | **ENTRY. Which species carries the SECTION and which the READOUT** (hazard 14), measured over the search box rather than at base. |
+| `quality.py` | **ENTRY. THE SURFACE GATE.** Winding set + scramble fraction. Run before any feature is quoted (hazard 12). |
+| `features.py` | The tidy cross-model feature table, derived from saved surfaces only. |
+| `figures_zoo.py` | The cross-model figures. Pure read of `features`. |
+| `genemap.py` | **Declares which species of which model is "the same gene."** Computes nothing; `--no-audit` off by default so it checks itself against the models. |
+| `dosegrid.py` | ONE shared dose grid per (model, mode), for cross-gene comparison. |
+| `phaseref.py` | A common phase origin across models. A relabelling, reversible, leaves every twist metric invariant. |
+| `relax.py` | How long the clock takes to come back vs dose; is the PTC readout window past it? |
+| `deadcheck.py` | A cell reads amplitude ~0: clock stopped, integrator broke, or on the singularity? |
+| `zoom.py` | High-resolution patch of the (phase, dose) plane + a closed-loop winding test. |
 
 ### `fit/`
 | File | Role |
@@ -499,12 +513,15 @@ tracking.
 
 ## Open
 
-- `analysis/characterize.py` and `ptc_sens.py` have not yet been run for Korencic or
-  Goldbeter (Almeida only).
-- `instant` mode: `scrit` + `characterize` + `quality` done for Almeida
-  (BMAL1 is the cleanest surface in the project); not yet swept through `ptc_sens`/`coupling`.
-- Fitting (`fit/`) is in progress: target, cost and search are built and self-tested; the T1
-  self-recovery control has not yet been run.
+- `analysis/ptc_sens.py` has not been run for Korencic, Goldbeter or goldbeter_rev (Almeida
+  only). `scrit` + `dosegrid` + `characterize` + `quality` ARE done for all of them --
+  Korencic at tag `kor01` (both modes, 10/10 surfaces PASS), the rest at `zoo04`.
+- Korencic: `lc_sens`/`ptc_sens`/`coupling`/`confirm`/`sweep` not run, so **there is no
+  Korencic decoupling number**; commissioning and the rank comparison are done
+  (PROJECT_SUMMARY 5c). Its fit is not commissioned.
+- The zoo comparison stack (`features`, `figures_zoo`, `genemap`, `dosegrid`, `phaseref`) has
+  produced four models' surfaces and a cross-model feature table that PROJECT_SUMMARY does not
+  yet describe.
 - `fit/radial._diagnose` still solves the orbit with `solver.guess` where the cost uses `make_guess_fn` -- hazard 15's first bullet, fixed in `figures._backfill` but not here. It cost three runs of the Aug-30 campaign their verdict (PROJECT_SUMMARY 5.10f). One line; not changed yet because it re-opens finished fits.
 - The radialization cost has no term requiring the fitted surface to RESOLVE OLD PHASE, and no weighting toward the doses where the target is informative. Both are what hazard 17 is about.
 - **The time gauge is broken by pulse-mode data, and no driver knows it.** A pulse of duration
